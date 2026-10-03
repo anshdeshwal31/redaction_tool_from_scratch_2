@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+*.egg-info/
+dist/
+build/
+
+# Model artifacts are fetched and hash-verified, never committed
+.models/
+
+# Never commit documents or job outputs
+*.pdf
+!tests/fixtures/**/*.pdf
+out/
+workspace/

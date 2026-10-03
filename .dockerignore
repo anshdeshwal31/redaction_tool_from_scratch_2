@@ -1,0 +1,11 @@
+.venv
+.models
+.git
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.hypothesis
+out
+workspace
+*.pdf
