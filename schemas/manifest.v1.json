@@ -1,0 +1,755 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mlredact.local/schemas/manifest.v1.json",
+  "title": "mlredact manifest v1",
+  "description": "Deterministic, non-sensitive record of one redaction job (plan Appendix A). Contains geometry, types, actions, evidence, verification and provenance - never document text. Surrogate/label strings are included because they are visible in the released PDF. Additive changes bump the minor version of schema_version; any other change bumps the major version and this file's name.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "reasons",
+    "job",
+    "provenance",
+    "input",
+    "pages",
+    "mentions",
+    "residual_boxes",
+    "low_evidence",
+    "detection",
+    "verification"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "status": {
+      "enum": [
+        "released",
+        "quarantined"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reason"
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_sha256",
+        "page_count",
+        "profile",
+        "render_style"
+      ],
+      "properties": {
+        "input_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "page_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "profile": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{1,40}$"
+        },
+        "render_style": {
+          "enum": [
+            "surrogate",
+            "label",
+            "blackout"
+          ]
+        },
+        "source_format": {
+          "enum": [
+            "pdf",
+            "tiff",
+            "png",
+            "jpeg",
+            "unknown"
+          ],
+          "description": "format of the submitted bytes; images are converted to an image-only PDF first (since 1.1.0)"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mlredact_version",
+        "config_hash",
+        "runtime_profile",
+        "models",
+        "detectors",
+        "surrogate"
+      ],
+      "properties": {
+        "mlredact_version": {
+          "type": "string"
+        },
+        "config_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtime_profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "libraries"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "libraries": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "version",
+              "license",
+              "files"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "license": {
+                "type": "string"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "$ref": "#/$defs/sha256"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "detectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "version"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "surrogate": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key_id",
+                "scope"
+              ],
+              "properties": {
+                "key_id": {
+                  "type": "string",
+                  "pattern": "^k-[0-9a-f]{16}$"
+                },
+                "scope": {
+                  "enum": [
+                    "document",
+                    "caller"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "input": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "page_count",
+            "encrypted",
+            "has_acroform",
+            "has_xfa",
+            "has_javascript",
+            "attachments_dropped",
+            "annotations_flattened_or_dropped",
+            "has_optional_content",
+            "user_unit_pages"
+          ],
+          "properties": {
+            "page_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "encrypted": {
+              "type": "boolean"
+            },
+            "has_acroform": {
+              "type": "boolean"
+            },
+            "has_xfa": {
+              "type": "boolean"
+            },
+            "has_javascript": {
+              "type": "boolean"
+            },
+            "attachments_dropped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "annotations_flattened_or_dropped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "has_optional_content": {
+              "type": "boolean"
+            },
+            "user_unit_pages": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "index",
+          "width_pt",
+          "height_pt",
+          "dpi",
+          "width_px",
+          "height_px",
+          "kind",
+          "lines",
+          "tokens",
+          "notice"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "width_pt": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "height_pt": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "dpi": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "width_px": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "height_px": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "enum": [
+              "image_only",
+              "born_digital",
+              "mixed",
+              "empty"
+            ]
+          },
+          "lines": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "notice": {
+            "type": "boolean",
+            "description": "the de-identification notice was drawn on this page"
+          },
+          "unexplained_ink": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "share of the page's ink no readable token explains (since 1.1.0)"
+          },
+          "mean_ocr_confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "since 1.1.0"
+          }
+        }
+      }
+    },
+    "mentions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mention_id",
+          "type",
+          "action",
+          "render",
+          "boxes",
+          "token_ids",
+          "evidence"
+        ],
+        "properties": {
+          "mention_id": {
+            "type": "string",
+            "description": "content-derived (position + type), stable across reruns"
+          },
+          "type": {
+            "$ref": "#/$defs/entity_type"
+          },
+          "action": {
+            "$ref": "#/$defs/action"
+          },
+          "render": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/action"
+            }
+          },
+          "boxes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/box"
+            }
+          },
+          "token_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/token_id"
+            },
+            "minItems": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/evidence"
+            },
+            "minItems": 1
+          },
+          "surrogate": {
+            "type": "string",
+            "description": "the realistic replacement drawn on the page (surrogate style)"
+          },
+          "label": {
+            "type": "string",
+            "description": "the label drawn on the page (label style)"
+          }
+        }
+      }
+    },
+    "residual_boxes": {
+      "description": "extra removals planned by the V4 re-read loop (not tied to a detected mention)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "page",
+          "px",
+          "pt",
+          "type",
+          "ref_id"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "px": {
+            "$ref": "#/$defs/rect"
+          },
+          "pt": {
+            "$ref": "#/$defs/rect"
+          },
+          "erased_px": {
+            "$ref": "#/$defs/rect"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/entity_type"
+              },
+              {
+                "$ref": "#/$defs/region_kind"
+              }
+            ]
+          },
+          "ref_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "low_evidence": {
+      "description": "candidates that were kept (insufficient evidence) - for error analysis",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "token_ids",
+          "evidence"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/$defs/entity_type"
+          },
+          "token_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/token_id"
+            },
+            "minItems": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/evidence"
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "detection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "propagation_rounds"
+      ],
+      "properties": {
+        "propagation_rounds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "checks"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "check",
+              "passed",
+              "metrics"
+            ],
+            "properties": {
+              "check": {
+                "enum": [
+                  "V1_structure",
+                  "V2_text",
+                  "V3_pixels",
+                  "V4_residual",
+                  "V5_surrogate",
+                  "V6_integrity"
+                ]
+              },
+              "passed": {
+                "type": "boolean"
+              },
+              "metrics": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "integer",
+                    "number",
+                    "boolean"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "regions": {
+      "description": "non-text regions found by region detectors and ink accounting (since 1.1.0)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "region_id",
+          "kind",
+          "action",
+          "detector",
+          "rule",
+          "score",
+          "box"
+        ],
+        "properties": {
+          "region_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/region_kind"
+          },
+          "action": {
+            "$ref": "#/$defs/action"
+          },
+          "detector": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "box": {
+            "$ref": "#/$defs/box"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "token_id": {
+      "type": "string",
+      "pattern": "^p[0-9]{4}\\.l[0-9]{4}\\.w[0-9]{3,}$"
+    },
+    "reason": {
+      "enum": [
+        "E_INPUT_UNREADABLE",
+        "E_INPUT_ENCRYPTED",
+        "E_INPUT_XFA_ONLY",
+        "E_INPUT_TOO_LARGE",
+        "E_INPUT_TOO_MANY_PAGES",
+        "E_INPUT_UNSUPPORTED",
+        "E_INPUT_EMPTY",
+        "E_RENDER_FAILED",
+        "E_PAGE_TOO_LARGE",
+        "E_OCR_FAILED",
+        "E_PAGE_ILLEGIBLE",
+        "E_WORKER_TIMEOUT",
+        "E_WORKER_CRASHED",
+        "E_CONFIG_INVALID",
+        "E_MODEL_MISSING",
+        "E_MODEL_HASH_MISMATCH",
+        "E_RESOURCE_HASH_MISMATCH",
+        "E_RUNTIME_PROFILE_MISMATCH",
+        "V1_STRUCTURE",
+        "V2_TEXT_LEAK",
+        "V3_PIXELS",
+        "V4_RESIDUAL",
+        "V5_SURROGATE",
+        "V6_INTEGRITY",
+        "E_INTERNAL"
+      ]
+    },
+    "entity_type": {
+      "enum": [
+        "person",
+        "date_of_birth",
+        "date_of_death",
+        "date",
+        "age",
+        "street_address",
+        "locality",
+        "postcode",
+        "phone",
+        "email",
+        "url",
+        "ip_address",
+        "medicare",
+        "ihi",
+        "hpi",
+        "dva_file",
+        "crn",
+        "tfn",
+        "ndis",
+        "driver_licence",
+        "passport",
+        "clinical_id",
+        "provider_number",
+        "ahpra",
+        "reference",
+        "court_file",
+        "bank_account",
+        "card_number",
+        "abn",
+        "acn",
+        "employee_id",
+        "vehicle_reg",
+        "vin",
+        "organisation",
+        "other_id"
+      ]
+    },
+    "action": {
+      "enum": [
+        "surrogate",
+        "retypeset_region",
+        "remove",
+        "blackout",
+        "label",
+        "suppress_ink",
+        "generalise",
+        "date_shift",
+        "keep"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "detector",
+        "version",
+        "rule",
+        "strength",
+        "score"
+      ],
+      "properties": {
+        "detector": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "strength": {
+          "enum": [
+            "strong",
+            "weak"
+          ]
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "box": {
+      "type": "object",
+      "required": [
+        "page",
+        "px",
+        "pt"
+      ],
+      "properties": {
+        "page": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "px": {
+          "$ref": "#/$defs/rect",
+          "description": "canonical raster pixels [x0, y0, x1, y1], half-open"
+        },
+        "pt": {
+          "$ref": "#/$defs/rect",
+          "description": "PDF points [x0, y0, x1, y1], origin bottom-left"
+        },
+        "erased_px": {
+          "$ref": "#/$defs/rect",
+          "description": "the area actually erased when it differs from px"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rect": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "region_kind": {
+      "enum": [
+        "signature",
+        "handwriting",
+        "face",
+        "photo",
+        "barcode",
+        "logo",
+        "stamp",
+        "illegible",
+        "faint_ink",
+        "graphic"
+      ]
+    }
+  }
+}
