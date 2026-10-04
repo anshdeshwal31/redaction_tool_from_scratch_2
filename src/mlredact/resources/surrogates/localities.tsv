@@ -1,0 +1,112 @@
+# Surrogate pool: real locality / postcode pairs by state (curated; replace with an ABS SAL /
+# G-NAF-derived pool for production).  Surrogate localities are always drawn from the same state.
+# state	locality	postcode
+NSW	Dubbo	2830
+NSW	Orange	2800
+NSW	Bathurst	2795
+NSW	Tamworth	2340
+NSW	Wagga Wagga	2650
+NSW	Albury	2640
+NSW	Goulburn	2580
+NSW	Lismore	2480
+NSW	Armidale	2350
+NSW	Grafton	2460
+NSW	Port Macquarie	2444
+NSW	Nowra	2541
+NSW	Bega	2550
+NSW	Cooma	2630
+NSW	Mudgee	2850
+NSW	Parkes	2870
+NSW	Griffith	2680
+NSW	Kempsey	2440
+NSW	Gosford	2250
+NSW	Maitland	2320
+NSW	Cessnock	2325
+NSW	Queanbeyan	2620
+NSW	Bowral	2576
+NSW	Ballina	2478
+NSW	Moree	2400
+VIC	Ballarat	3350
+VIC	Bendigo	3550
+VIC	Geelong	3220
+VIC	Shepparton	3630
+VIC	Mildura	3500
+VIC	Warrnambool	3280
+VIC	Traralgon	3844
+VIC	Wodonga	3690
+VIC	Horsham	3400
+VIC	Sale	3850
+VIC	Bairnsdale	3875
+VIC	Wangaratta	3677
+VIC	Echuca	3564
+VIC	Hamilton	3300
+VIC	Swan Hill	3585
+VIC	Colac	3250
+VIC	Benalla	3672
+VIC	Castlemaine	3450
+VIC	Ararat	3377
+VIC	Seymour	3660
+QLD	Toowoomba	4350
+QLD	Cairns	4870
+QLD	Townsville	4810
+QLD	Mackay	4740
+QLD	Rockhampton	4700
+QLD	Bundaberg	4670
+QLD	Gladstone	4680
+QLD	Mount Isa	4825
+QLD	Hervey Bay	4655
+QLD	Gympie	4570
+QLD	Maryborough	4650
+QLD	Warwick	4370
+QLD	Dalby	4405
+QLD	Emerald	4720
+QLD	Bowen	4805
+QLD	Ingham	4850
+QLD	Kingaroy	4610
+QLD	Nambour	4560
+SA	Mount Gambier	5290
+SA	Whyalla	5600
+SA	Port Augusta	5700
+SA	Port Lincoln	5606
+SA	Murray Bridge	5253
+SA	Victor Harbor	5211
+SA	Port Pirie	5540
+SA	Gawler	5118
+SA	Naracoorte	5271
+SA	Renmark	5341
+SA	Berri	5343
+SA	Kadina	5554
+WA	Bunbury	6230
+WA	Geraldton	6530
+WA	Kalgoorlie	6430
+WA	Albany	6330
+WA	Busselton	6280
+WA	Broome	6725
+WA	Mandurah	6210
+WA	Karratha	6714
+WA	Esperance	6450
+WA	Northam	6401
+WA	Collie	6225
+WA	Carnarvon	6701
+TAS	Launceston	7250
+TAS	Devonport	7310
+TAS	Burnie	7320
+TAS	Ulverstone	7315
+TAS	Kingston	7050
+TAS	Sorell	7172
+TAS	Scottsdale	7260
+TAS	Queenstown	7467
+TAS	Wynyard	7325
+TAS	New Norfolk	7140
+NT	Alice Springs	0870
+NT	Katherine	0850
+NT	Palmerston	0830
+NT	Tennant Creek	0860
+NT	Nhulunbuy	0880
+NT	Jabiru	0886
+ACT	Belconnen	2617
+ACT	Kambah	2902
+ACT	Gungahlin	2912
+ACT	Phillip	2606
+ACT	Dickson	2602
+ACT	Weston	2611

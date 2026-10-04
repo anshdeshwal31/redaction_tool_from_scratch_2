@@ -1,0 +1,37 @@
+# Surrogate pool: fictional organisation name stems (generic suffix words of the original, such as
+# "Lawyers", "Pty Ltd", "Medical Centre", are preserved).
+Northgate
+Southbank
+Riverbend
+Bluestone
+Coastline
+Redgum
+Silverwattle
+Greenhill
+Highpoint
+Lakeview
+Keystone
+Cornerstone
+Meridian
+Harbourline
+Ridgeline
+Stonebridge
+Oakridge
+Clearwater
+Brightwater
+Sandstone
+Tablelands
+Kingfisher
+Lyrebird
+Bowerbird
+Wedgetail
+Brolga
+Jabiru
+Currawong
+Rosella
+Saltbush
+Granite Ridge
+Copperleaf
+Tidewater
+Emberwood
+Fernbrook

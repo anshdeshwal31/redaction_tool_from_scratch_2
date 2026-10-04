@@ -1,0 +1,48 @@
+# Medicine names (Australian brands and generics) that NER models mistake for people or organisations.
+# Used only by the contextual allowlist for statistical (NER) evidence; a rule- or label-anchored hit is
+# never suppressed.  Curated interim list - to be replaced by the PBS schedule extract (plan §7.3).
+# Whitespace-separated lowercase words; '#' starts a comment line.
+# --- analgesics, opioids, NSAIDs
+panadol panadeine panamax paracetamol codeine nurofen ibuprofen brufen advil voltaren diclofenac
+mobic meloxicam celebrex celecoxib naprosyn naproxen indocid indomethacin arcoxia etoricoxib
+aspirin cartia disprin aspro tramadol tramal zydol durotram palexia tapentadol endone oxycodone
+oxynorm oxycontin targin norspan butrans buprenorphine suboxone subutex methadone biodone
+durogesic fentanyl morphine ms-contin kapanol sevredol hydromorphone dilaudid jurnista pethidine
+nucynta ordine physeptone tapentadol mersyndol digesic capadex dextropropoxyphene ketorolac toradol
+# --- neuropathic, muscle relaxants
+lyrica pregabalin neurontin gabapentin endep amitriptyline nortriptyline allegron tegretol
+carbamazepine epilim valproate topamax topiramate lamictal lamotrigine keppra levetiracetam
+baclofen lioresal orphenadrine norflex methocarbamol robaxin diazepam valium
+# --- antidepressants, anxiolytics, hypnotics, antipsychotics
+cymbalta duloxetine effexor efexor venlafaxine pristiq desvenlafaxine zoloft sertraline lexapro
+escitalopram cipramil citalopram prozac lovan fluoxetine aropax paxil paroxetine luvox fluvoxamine
+avanza remeron mirtazapine valdoxan agomelatine brintellix trintellix vortioxetine wellbutrin
+zyban bupropion tofranil imipramine anafranil clomipramine sinequan doxepin dothep dothiepin
+xanax alprazolam kalma ativan lorazepam serepax oxazepam rivotril clonazepam temaze temazepam
+normison stilnox zolpidem imovane zopiclone circadin melatonin restavit doxylamine phenergan
+promethazine seroquel quetiapine zyprexa olanzapine risperdal risperidone abilify aripiprazole
+invega paliperidone solian amisulpride clozaril clozapine haldol haloperidol largactil
+chlorpromazine lithicarb lithium ritalin methylphenidate concerta vyvanse lisdexamfetamine
+dexamphetamine strattera atomoxetine naltrexone revia campral acamprosate antabuse disulfiram
+champix varenicline nicorette nicabate
+# --- cardiovascular, metabolic, other common
+lipitor atorvastatin crestor rosuvastatin zocor simvastatin pravachol pravastatin ezetrol
+ezetimibe vytorin coversyl perindopril ramipril tritace altace avapro irbesartan karvea micardis
+telmisartan atacand candesartan cozaar losartan norvasc amlodipine caduet exforge tenormin
+atenolol betaloc metoprolol toprol nebilet nebivolol bisoprolol lasix frusemide furosemide
+spironolactone aldactone hydrochlorothiazide warfarin coumadin marevan xarelto rivaroxaban
+eliquis apixaban pradaxa dabigatran plavix clopidogrel brilinta ticagrelor cardiprin astrix
+lanoxin digoxin anginine nitrolingual imdur isosorbide metformin diabex diaformin janumet
+januvia sitagliptin jardiance empagliflozin forxiga dapagliflozin ozempic semaglutide trulicity
+dulaglutide victoza liraglutide saxenda mounjaro tirzepatide lantus novorapid humalog insulin
+gliclazide diamicron thyroxine oroxine eutroxsig levothyroxine neo-mercazole carbimazole
+nexium esomeprazole somac pantoprazole losec omeprazole pariet rabeprazole zantac ranitidine
+maxolon metoclopramide stemetil prochlorperazine ondansetron zofran movicol coloxyl senokot
+lactulose imodium loperamide buscopan ventolin salbutamol seretide symbicort flixotide
+fluticasone pulmicort budesonide spiriva tiotropium breo trelegy montelukast singulair
+prednisone prednisolone predsone panafcortelone dexamethasone hydrocortisone methotrexate
+plaquenil hydroxychloroquine humira adalimumab enbrel etanercept allopurinol zyloprim colchicine
+colgout fosamax alendronate actonel risedronate prolia denosumab caltrate ostelin vitamin
+augmentin amoxil amoxycillin amoxicillin keflex cephalexin cefalexin doxycycline doryx
+ciprofloxacin ciproxin bactrim trimethoprim flucloxacillin metronidazole flagyl valtrex
+valaciclovir botox voltaren-emulgel deep-heat
