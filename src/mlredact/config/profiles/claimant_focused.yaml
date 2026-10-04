@@ -1,0 +1,56 @@
+# Claimant-focused profile - plan section 7.1.
+# Professionals' identifiers (provider numbers, AHPRA, HPI) and organisations stay visible, and so do
+# the names of people resolved as professionals (explicit Dr/Prof title, post-nominal or adjacent role
+# word, no subject cue anywhere, surname not shared with a non-professional).  Everyone else - the
+# claimant, relatives, witnesses, anyone ambiguous - is replaced (fail-safe direction).
+policy:
+  profile_id: claimant_focused
+  keep_professionals: true
+  entity_actions:
+    person: surrogate
+    date_of_birth: surrogate
+    date_of_death: surrogate
+    date: keep
+    age: keep
+    street_address: surrogate
+    locality: surrogate
+    postcode: surrogate
+    phone: surrogate
+    email: surrogate
+    url: surrogate
+    ip_address: surrogate
+    medicare: surrogate
+    ihi: surrogate
+    hpi: keep
+    dva_file: surrogate
+    crn: surrogate
+    tfn: surrogate
+    ndis: surrogate
+    driver_licence: surrogate
+    passport: surrogate
+    clinical_id: surrogate
+    provider_number: keep
+    ahpra: keep
+    reference: surrogate
+    court_file: surrogate
+    bank_account: surrogate
+    card_number: surrogate
+    abn: surrogate
+    acn: surrogate
+    employee_id: surrogate
+    vehicle_reg: surrogate
+    vin: surrogate
+    organisation: keep
+    other_id: surrogate
+  region_actions:
+    signature: remove
+    handwriting: remove
+    face: remove
+    photo: remove
+    barcode: remove
+    logo: remove
+    stamp: remove
+    illegible: remove
+    faint_ink: suppress_ink
+    # Figures/diagrams cannot be told apart from handwriting in form cells reliably: removed.
+    graphic: remove

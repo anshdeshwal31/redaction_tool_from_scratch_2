@@ -1,0 +1,54 @@
+# Maximal (dataset release) profile - plan section 7.1: Broad + document-level date shifting
+# and generalisation of ages >= 90.  Every line with a replaced value is re-typeset (positional
+# hardening: word positions and gap widths no longer reveal the original values' lengths).
+policy:
+  profile_id: maximal
+  entity_actions:
+    person: surrogate
+    date_of_birth: surrogate
+    date_of_death: surrogate
+    date: date_shift
+    age: generalise
+    street_address: surrogate
+    locality: surrogate
+    postcode: surrogate
+    phone: surrogate
+    email: surrogate
+    url: surrogate
+    ip_address: surrogate
+    medicare: surrogate
+    ihi: surrogate
+    hpi: surrogate
+    dva_file: surrogate
+    crn: surrogate
+    tfn: surrogate
+    ndis: surrogate
+    driver_licence: surrogate
+    passport: surrogate
+    clinical_id: surrogate
+    provider_number: surrogate
+    ahpra: surrogate
+    reference: surrogate
+    court_file: surrogate
+    bank_account: surrogate
+    card_number: surrogate
+    abn: surrogate
+    acn: surrogate
+    employee_id: surrogate
+    vehicle_reg: surrogate
+    vin: surrogate
+    organisation: surrogate
+    other_id: surrogate
+  region_actions:
+    signature: remove
+    handwriting: remove
+    face: remove
+    photo: remove
+    barcode: remove
+    logo: remove
+    stamp: remove
+    illegible: remove
+    faint_ink: suppress_ink
+    graphic: remove
+redaction:
+  positional_hardening: line_retypeset

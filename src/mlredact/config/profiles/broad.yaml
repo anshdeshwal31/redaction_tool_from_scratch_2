@@ -1,0 +1,54 @@
+# Broad (default) profile - plan section 7.1.
+# Every person (claimant, relatives, clinicians, lawyers, insurer/employer staff), every identifier
+# and contact detail, DOB/DoD, street + suburb + postcode, employer and claimant-linked
+# organisations are replaced with surrogates.  Clinical content and other dates are kept.
+policy:
+  profile_id: broad
+  entity_actions:
+    person: surrogate
+    date_of_birth: surrogate
+    date_of_death: surrogate
+    date: keep
+    age: keep
+    street_address: surrogate
+    locality: surrogate
+    postcode: surrogate
+    phone: surrogate
+    email: surrogate
+    url: surrogate
+    ip_address: surrogate
+    medicare: surrogate
+    ihi: surrogate
+    hpi: surrogate
+    dva_file: surrogate
+    crn: surrogate
+    tfn: surrogate
+    ndis: surrogate
+    driver_licence: surrogate
+    passport: surrogate
+    clinical_id: surrogate
+    provider_number: surrogate
+    ahpra: surrogate
+    reference: surrogate
+    court_file: surrogate
+    bank_account: surrogate
+    card_number: surrogate
+    abn: surrogate
+    acn: surrogate
+    employee_id: surrogate
+    vehicle_reg: surrogate
+    vin: surrogate
+    organisation: surrogate
+    other_id: surrogate
+  region_actions:
+    signature: remove
+    handwriting: remove
+    face: remove
+    photo: remove
+    barcode: remove
+    logo: remove
+    stamp: remove
+    illegible: remove
+    faint_ink: suppress_ink
+    # Figures/diagrams cannot be told apart from handwriting in form cells reliably: removed.
+    graphic: remove

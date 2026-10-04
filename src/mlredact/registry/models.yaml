@@ -1,0 +1,125 @@
+# Pinned model registry.  Files are verified by SHA-256 before every use; URLs are used only by
+# `mlredact models fetch` (development / image build).  Never add pickle-based formats.
+schema_version: 1
+models:
+  ppocrv6_det_medium:
+    task: ocr_text_detection
+    version: "PP-OCRv6 medium det (RapidOCR v3.9.2 ONNX export)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: PP-OCRv6_det_medium.onnx
+        sha256: 92078b7355007ccfffcd4c8cd441a3afd4538904d06881b29a155e1e679907c2
+        url: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx
+  ppocrv6_rec_medium:
+    task: ocr_text_recognition
+    version: "PP-OCRv6 medium rec (RapidOCR v3.9.2 ONNX export)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: PP-OCRv6_rec_medium.onnx
+        sha256: eef444829dbbe18d7fea59a3f6eb75647518d2b3a9568d27c92e42940204894b
+        url: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx
+  pplcnet_textline_ori_server:
+    task: ocr_textline_orientation
+    version: "PP-LCNet x1.0 textline orientation server (RapidOCR v3.9.2 ONNX export)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: ch_PP-LCNet_x1_0_textline_ori_cls_server.onnx
+        sha256: 7d3c02ef6c7da8ae08b4347cc7695b2081aae68c325d64375724ecf39c99e743
+        url: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/cls/ch_PP-LCNet_x1_0_textline_ori_cls_server.onnx
+  ppocrv6_det_small:
+    task: ocr_text_detection
+    version: "PP-OCRv6 small det (RapidOCR v3.9.2 ONNX export)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: PP-OCRv6_det_small.onnx
+        sha256: 090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f
+        url: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx
+  ppocrv6_rec_small:
+    task: ocr_text_recognition
+    version: "PP-OCRv6 small rec (RapidOCR v3.9.2 ONNX export)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: PP-OCRv6_rec_small.onnx
+        sha256: 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
+        url: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx
+  # ---------------------------------------------------------------- NER (plan §7.2 N1/N2)
+  # Only full-precision or weight-only-quantised graphs: dynamically quantised activations make a
+  # token's scores depend on the rest of its window (plan §13).
+  gliner_pii_base:
+    task: ner_zero_shot
+    version: "knowledgator/gliner-pii-base-v1.0 @61726e0 fp32 ONNX (deberta-v3-small, span markerV0)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: model.onnx
+        sha256: c6ccec44625d46bfe3191152e41d6564b69bc9d4313b7f3e419e8372679e9fed
+        url: https://huggingface.co/knowledgator/gliner-pii-base-v1.0/resolve/61726e0ad791dcab3e29339bbec3ad42ded65641/onnx/model.onnx
+      - name: gliner_config.json
+        sha256: e33d3da38e0d369fa7574668d3798ca6c7d2b23cba7d628507112eeb426aaccb
+        url: https://huggingface.co/knowledgator/gliner-pii-base-v1.0/resolve/61726e0ad791dcab3e29339bbec3ad42ded65641/gliner_config.json
+      - name: tokenizer.json
+        sha256: ee028763434d18611c1c36356ea1d050e90a9fa94ede57fac48b39f85f818ad1
+        url: https://huggingface.co/knowledgator/gliner-pii-base-v1.0/resolve/61726e0ad791dcab3e29339bbec3ad42ded65641/tokenizer.json
+  gliner_pii_large:
+    task: ner_zero_shot
+    version: "knowledgator/gliner-pii-large-v1.0 @f847f54 fp32 ONNX (deberta-v3-large, token-level)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: model.onnx
+        sha256: 308d687c1bf41676a59edee57957a9a67e400c2ef453957733ff42d1ba48c281
+        url: https://huggingface.co/knowledgator/gliner-pii-large-v1.0/resolve/f847f54fbc97ad6e78bfa20ed9c5e5d5c43327b9/onnx/model.onnx
+      - name: gliner_config.json
+        sha256: 0f85c68effd06bad4c3bd532d2094c1b83d3a765bfbaf1e702d8ee6c44083a97
+        url: https://huggingface.co/knowledgator/gliner-pii-large-v1.0/resolve/f847f54fbc97ad6e78bfa20ed9c5e5d5c43327b9/gliner_config.json
+      - name: tokenizer.json
+        sha256: 8ab96e6f4643bf269d56818f7f507c8ac1173adb28402704dfe7b7c1e6124ccf
+        url: https://huggingface.co/knowledgator/gliner-pii-large-v1.0/resolve/f847f54fbc97ad6e78bfa20ed9c5e5d5c43327b9/tokenizer.json
+  privacy_filter_q4:
+    task: ner_token_classification
+    version: "openai/privacy-filter @7ffa9a0 ONNX q4 (int4 weight-only MatMulNBits, fp32 activations)"
+    license: Apache-2.0
+    format: onnx
+    files:
+      - name: model_q4.onnx
+        sha256: 8f7dee8b46d096f052b359375dfba5d983cc4d18c44a783bf548615c472f8dea
+        url: https://huggingface.co/openai/privacy-filter/resolve/7ffa9a043d54d1be65afb281eddf0ffbe629385b/onnx/model_q4.onnx
+      - name: model_q4.onnx_data
+        sha256: f30998e28c71c5374cc7e8b7de8f0f83e981592c0c2d652d2ad4928454dbb496
+        url: https://huggingface.co/openai/privacy-filter/resolve/7ffa9a043d54d1be65afb281eddf0ffbe629385b/onnx/model_q4.onnx_data
+      - name: tokenizer.json
+        sha256: 0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3
+        url: https://huggingface.co/openai/privacy-filter/resolve/7ffa9a043d54d1be65afb281eddf0ffbe629385b/tokenizer.json
+      - name: config.json
+        sha256: b2b26a4a4a000639ad30b0c264adbefe365bdb567fbd7bb27303b8c438375bd1
+        url: https://huggingface.co/openai/privacy-filter/resolve/7ffa9a043d54d1be65afb281eddf0ffbe629385b/config.json
+      - name: viterbi_calibration.json
+        sha256: bbc8611ef08a55ed72d64856cbbbb9a91db8dfa881f0a92e2afbad6e4bbc775a
+        url: https://huggingface.co/openai/privacy-filter/resolve/7ffa9a043d54d1be65afb281eddf0ffbe629385b/viterbi_calibration.json
+  # ---------------------------------------------------------------- regions (plan §7.2 S4)
+  yunet_face_2023mar:
+    task: face_detection
+    version: "OpenCV Zoo YuNet 2023mar fp32 ONNX (opencv/face_detection_yunet @3cc26e7)"
+    license: MIT
+    format: onnx
+    files:
+      - name: face_detection_yunet_2023mar.onnx
+        sha256: 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
+        url: https://huggingface.co/opencv/face_detection_yunet/resolve/3cc26e7f1014a5ee5d74a42acee58bafc9d0a310/face_detection_yunet_2023mar.onnx
+  # ---------------------------------------------------------------- OCR engine B (plan §6)
+  # Language model for the system Tesseract 5 binary (LSTM).  The binary's version is recorded in the
+  # runtime profile; this file is the only model input and is hash-pinned like every other model.
+  tessdata_best_eng:
+    task: ocr_engine_b
+    version: "tesseract-ocr/tessdata_best eng.traineddata @e12c65a (LSTM, best accuracy)"
+    license: Apache-2.0
+    format: traineddata
+    files:
+      - name: eng.traineddata
+        sha256: 8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba
+        url: https://github.com/tesseract-ocr/tessdata_best/raw/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/eng.traineddata
