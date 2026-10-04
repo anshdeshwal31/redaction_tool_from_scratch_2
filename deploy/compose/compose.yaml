@@ -1,0 +1,24 @@
+# Single-node deployment sketch: workers have no network, a read-only root filesystem, RAM-backed
+# scratch space and no core dumps.  Documents enter/leave through the mounted job directory only.
+services:
+  redactor:
+    image: mlredact-cpu:local
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.cpu
+    network_mode: none
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits:
+      core: 0
+    tmpfs:
+      - /tmp:size=2g,mode=1700,noexec,nosuid
+    environment:
+      MLREDACT_LOG_STRICT: "0"
+    # MLREDACT_SURROGATE_KEY=<64+ hex chars> from your secret store; never commit this file.
+    env_file: ./redactor.env
+    volumes:
+      - ./jobs:/jobs
+    command: ["run", "/jobs/in/input.pdf", "--out", "/jobs/out", "--workers", "4"]

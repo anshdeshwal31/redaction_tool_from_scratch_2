@@ -1,0 +1,63 @@
+# Pull requests: lint, types, licence gate, fast tests (unit, property, security, verifier mutations,
+# hash-seed determinism).  Nightly / on demand: model-backed end-to-end suite.
+# Model downloads happen only in the `models` step (build time); processing itself never needs network.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked environment
+        run: uv sync --locked
+      - name: Lint and type-check
+        run: make lint
+      - name: Licence gate
+        run: make licences
+      - name: Fast tests
+        run: make test
+
+  end-to-end:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked environment
+        run: uv sync --locked
+      - name: Install OCR engine B (Tesseract)
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+      - name: Cache pinned models
+        uses: actions/cache@v4
+        with:
+          path: .models
+          key: models-${{ hashFiles('src/mlredact/registry/models.yaml') }}
+      - name: Fetch and verify models
+        run: make models
+      - name: Self-check
+        run: make selfcheck
+      - name: End-to-end, determinism and leak tests
+        run: make test-slow

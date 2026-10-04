@@ -1,0 +1,7 @@
+{
+  "name": "mlredact (linux-x86_64 CPU profile)",
+  "build": { "dockerfile": "../docker/Dockerfile.cpu", "context": "..", "target": "base" },
+  "remoteUser": "root",
+  "postCreateCommand": "uv sync --frozen && uv run mlredact models fetch",
+  "customizations": { "vscode": { "extensions": ["ms-python.python", "charliermarsh.ruff"] } }
+}
