@@ -101,7 +101,10 @@ class TesseractEngine:
             str(self._cfg.page_segmentation),
             "--dpi",
             str(dpi),
-            "tsv",
+            # Not the positional ``tsv`` config name: that is looked up in <tessdata-dir>/configs/, which
+            # the hash-pinned model directory does not contain, so Tesseract silently fell back to text.
+            "-c",
+            "tessedit_create_tsv=1",
         ]
         env = {**os.environ, "OMP_THREAD_LIMIT": "1"}
         try:
