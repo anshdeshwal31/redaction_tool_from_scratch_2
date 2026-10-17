@@ -1,0 +1,13 @@
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
+# Local settings may hold a surrogate key; never commit them
+.env*.local
+
+# Job inputs and outputs: documents never enter the repository
+.jobs/
+
+# Copied from pdfjs-dist by scripts/copy-pdf-worker.mjs
+public/pdf.worker.min.mjs

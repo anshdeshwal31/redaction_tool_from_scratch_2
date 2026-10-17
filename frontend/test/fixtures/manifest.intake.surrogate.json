@@ -1,0 +1,41 @@
+{
+  "detection": {
+    "propagation_rounds": 0
+  },
+  "input": null,
+  "job": {
+    "input_sha256": "313d6c1c163210dcecc09c60c23d3f1afeeab431ac7896cc0f161bcc94b41e60",
+    "page_count": 0,
+    "profile": "broad",
+    "render_style": "surrogate",
+    "source_format": "pdf"
+  },
+  "low_evidence": [],
+  "mentions": [],
+  "pages": [],
+  "provenance": {
+    "config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "detectors": [],
+    "mlredact_version": "0.0.0-stub",
+    "models": [],
+    "runtime_profile": {
+      "id": "stub-x86_64",
+      "libraries": {}
+    },
+    "surrogate": {
+      "key_id": "k-0000000000000000",
+      "scope": "document"
+    }
+  },
+  "reasons": [
+    "E_INPUT_ENCRYPTED"
+  ],
+  "regions": [],
+  "residual_boxes": [],
+  "schema_version": "1.1.0",
+  "status": "quarantined",
+  "verification": {
+    "checks": [],
+    "passed": false
+  }
+}

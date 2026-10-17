@@ -1,0 +1,593 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens.  Dark is the default; light is opt-in from the footer toggle.  Light and dark are
+ * separately chosen steps, not an automatic inversion.  The primary colour is ink itself: selected
+ * and primary elements invert (light on dark, dark on light) rather than wearing a hue.
+ * Categorical slots (--series-*) follow the validated reference order; the order is the
+ * colour-vision-safety mechanism, so categories always take their slot by fixed position.
+ */
+:root {
+  color-scheme: dark;
+  --page: #0e1214;
+  --surface: #161a1d;
+  --surface-2: #1c2124;
+  --surface-3: #252a2e;
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --ink: #eef1f1;
+  --ink-2: #b6bcbf;
+  --muted: #858c91;
+  --grid: #22272a;
+
+  --accent: #eef1f1;
+  --accent-hover: #ffffff;
+  --accent-ink: #0e1214;
+  --accent-text: #eef1f1;
+  --accent-soft: rgba(238, 241, 241, 0.07);
+
+  --good: #5cbf78;
+  --good-text: #7fd497;
+  --good-soft: rgba(92, 191, 120, 0.11);
+  --warn: #e0a640;
+  --warn-text: #f0c066;
+  --warn-soft: rgba(224, 166, 64, 0.11);
+  --crit: #e5675f;
+  --crit-text: #f28a83;
+  --crit-soft: rgba(229, 103, 95, 0.11);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --residual: #898781;
+
+  --paper: #22272a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --page: #eef0ef;
+  --surface: #f8f9f8;
+  --surface-2: #e5e8e7;
+  --surface-3: #d9dddc;
+  --border: rgba(14, 18, 20, 0.08);
+  --border-strong: rgba(14, 18, 20, 0.18);
+  --ink: #0e1214;
+  --ink-2: #3c4347;
+  --muted: #687075;
+  --grid: #dde1e0;
+
+  --accent: #0e1214;
+  --accent-hover: #000000;
+  --accent-ink: #f8f9f8;
+  --accent-text: #0e1214;
+  --accent-soft: rgba(14, 18, 20, 0.06);
+
+  --good: #1f8a3c;
+  --good-text: #1a6e31;
+  --good-soft: rgba(31, 138, 60, 0.1);
+  --warn: #c98a12;
+  --warn-text: #7a5200;
+  --warn-soft: rgba(201, 138, 18, 0.14);
+  --crit: #c8433b;
+  --crit-text: #a02f28;
+  --crit-soft: rgba(200, 67, 59, 0.1);
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --residual: #898781;
+
+  --paper: #ffffff;
+  --shadow: 0 1px 2px rgba(11, 11, 11, 0.06), 0 1px 1px rgba(11, 11, 11, 0.04);
+}
+
+@theme inline {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Sharp edges everywhere: every radius step resolves to zero. */
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-4xl: 0;
+
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-grid: var(--grid);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-good-text: var(--good-text);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-text: var(--warn-text);
+  --color-warn-soft: var(--warn-soft);
+  --color-crit: var(--crit);
+  --color-crit-text: var(--crit-text);
+  --color-crit-soft: var(--crit-soft);
+  --color-paper: var(--paper);
+  --shadow-card: var(--shadow);
+}
+
+/* Serif display type: tight tracking and leading, regular weight. */
+@utility display {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1;
+}
+
+html {
+  background: var(--page);
+  scroll-behavior: smooth;
+  scroll-padding-top: 6rem;
+}
+
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  border-radius: 0;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A radio or checkbox drawn as a whole card: the hidden input's focus ring lands on the card. */
+.choice:has(input:focus-visible) {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* Square checkbox in ink. */
+.check {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.check::after {
+  content: "";
+  width: 0.55rem;
+  height: 0.3rem;
+  margin-top: -0.12rem;
+  border-left: 2px solid var(--page);
+  border-bottom: 2px solid var(--page);
+  transform: rotate(-45deg) scale(0);
+  transition: transform 0.12s ease-out;
+}
+.check:checked {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.check:checked::after {
+  transform: rotate(-45deg) scale(1);
+}
+.check:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ visuals (always dark media) */
+
+/* Film grain, laid over gradients so they read as photographs rather than flat fills. */
+.grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.16;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+/* Prismatic light: rainbow loops radiating from a white core. */
+.prism {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: radial-gradient(120% 95% at 50% 45%, #1c2023 0%, #111416 55%, #0a0c0d 100%);
+}
+.prism-spin {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: min(92%, 64rem);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  animation: prism-rotate 140s linear infinite;
+}
+.petal {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--l);
+  height: calc(var(--l) * 0.36);
+  transform-origin: 0 50%;
+  transform: translateY(-50%) rotate(var(--r));
+  background: conic-gradient(
+    from var(--r),
+    #ff5a36,
+    #ffb444,
+    #fff4d6,
+    #7fdcff,
+    #4f63ff,
+    #b36bff,
+    #ff5c9a,
+    #ff5a36
+  );
+  mask-image: radial-gradient(closest-side, transparent 48%, #000 66%, #000 80%, transparent 100%);
+  filter: blur(12px) saturate(0.85);
+  mix-blend-mode: screen;
+  opacity: 0.78;
+  animation: petal-breathe 9s ease-in-out infinite alternate;
+  animation-delay: var(--d);
+}
+.prism-bloom .petal {
+  filter: blur(34px);
+  opacity: 0.5;
+  animation: none;
+}
+.prism-core {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: min(32%, 21rem);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(
+    closest-side,
+    rgba(255, 253, 248, 0.95),
+    rgba(255, 236, 210, 0.55) 30%,
+    rgba(255, 200, 160, 0.18) 58%,
+    transparent 80%
+  );
+  filter: blur(6px);
+  mix-blend-mode: screen;
+}
+.prism::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(90% 80% at 50% 50%, transparent 55%, rgba(6, 8, 9, 0.75) 100%);
+}
+
+@keyframes prism-rotate {
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+@keyframes petal-breathe {
+  from {
+    scale: 1;
+  }
+  to {
+    scale: 1.08 1.04;
+  }
+}
+
+/* Aurora: silky diagonal streaks of colour, used for panels and cards. */
+.aurora {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: linear-gradient(155deg, var(--a1) 0%, var(--a2) 48%, var(--a3) 100%);
+}
+.aurora > span {
+  position: absolute;
+  left: -25%;
+  width: 150%;
+  height: 42%;
+  filter: blur(34px);
+  animation: aurora-drift 22s ease-in-out infinite alternate;
+}
+.aurora > span:nth-child(1) {
+  top: -2%;
+  transform: rotate(-11deg);
+  background: linear-gradient(90deg, transparent 8%, var(--a4) 46%, transparent 88%);
+}
+.aurora > span:nth-child(2) {
+  top: 34%;
+  transform: rotate(-5deg);
+  background: linear-gradient(90deg, transparent 4%, var(--a5) 52%, transparent 92%);
+  animation-duration: 28s;
+  animation-direction: alternate-reverse;
+}
+.aurora > span:nth-child(3) {
+  top: 66%;
+  transform: rotate(-13deg);
+  background: linear-gradient(90deg, transparent 10%, rgba(0, 0, 0, 0.5) 50%, transparent 90%);
+  animation-duration: 34s;
+}
+
+@keyframes aurora-drift {
+  from {
+    translate: -4% 0;
+  }
+  to {
+    translate: 4% 2%;
+  }
+}
+
+/* Marquee: a seamless loop of two identical tracks. */
+.marquee {
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.marquee-track {
+  animation: marquee 60s linear infinite;
+}
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* --------------------------------------------------------------------------------- feedback */
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ink) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 12px transparent;
+  }
+}
+
+.flash {
+  animation: pulse-ring 0.9s ease-out 2;
+}
+
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.indeterminate {
+  animation: indeterminate 1.6s ease-in-out infinite;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.fade-up {
+  animation: fade-up 0.35s ease-out both;
+}
+
+/* ------------------------------------------------------------------------------ micro-motion */
+
+/*
+ * Scroll reveal.  [data-reveal] fades one element up; [data-stagger] fades its children up in turn.
+ * The motion observer sets [data-shown] once they enter the viewport.  Content is hidden only while
+ * JS runs (html.js), so it is never lost without it.  The animation fills backwards only, so once
+ * it ends the element's own transitions and transforms (hover lifts) apply again.
+ */
+.js [data-reveal]:not([data-shown]),
+.js [data-stagger]:not([data-shown]) > * {
+  opacity: 0;
+  /* Safety net: if hydration is slow and the observer has not run, show content anyway. */
+  animation: reveal-fallback 0.6s ease-out 1.5s forwards;
+}
+@keyframes reveal-fallback {
+  to {
+    opacity: 1;
+  }
+}
+[data-reveal][data-shown],
+[data-stagger][data-shown] > * {
+  animation: reveal 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+}
+[data-stagger][data-shown] > :nth-child(2) { animation-delay: 70ms; }
+[data-stagger][data-shown] > :nth-child(3) { animation-delay: 140ms; }
+[data-stagger][data-shown] > :nth-child(4) { animation-delay: 210ms; }
+[data-stagger][data-shown] > :nth-child(5) { animation-delay: 280ms; }
+[data-stagger][data-shown] > :nth-child(6) { animation-delay: 350ms; }
+[data-stagger][data-shown] > :nth-child(7) { animation-delay: 420ms; }
+[data-stagger][data-shown] > :nth-child(n + 8) { animation-delay: 490ms; }
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    translate: 0 18px;
+  }
+}
+
+/* Page-load entrance: lines rise out of a soft blur, one after another. */
+.rise {
+  animation: rise 1s cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    translate: 0 24px;
+    filter: blur(8px);
+  }
+}
+
+/*
+ * Looping motion animates only opacity and scale, on a pseudo-element overlay, so it runs on the
+ * compositor.  Animating colours or shadows here would repaint every frame, and these elements sit
+ * under backdrop-blurred chips, so each repaint also recomputes the blur.  The element's inline
+ * animation-delay staggers the loop; the overlay inherits it.
+ */
+
+/* A check square that flashes in turn, like a verifier walking V1 to V6. */
+.tick {
+  position: relative;
+}
+.tick::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #ffffff;
+  opacity: 0;
+  animation: tick 6s ease-out infinite;
+  animation-delay: inherit;
+}
+
+@keyframes tick {
+  0%,
+  14%,
+  100% {
+    opacity: 0;
+  }
+  4% {
+    opacity: 0.5;
+  }
+}
+
+/* Nodes on a flow line glow in turn, like a signal passing through the steps. */
+.flow-node::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  background: rgba(255, 255, 255, 0.35);
+  opacity: 0;
+  animation: flow-node 2.4s ease-out infinite;
+  animation-delay: inherit;
+}
+
+@keyframes flow-node {
+  0% {
+    opacity: 0;
+    scale: 0.4;
+  }
+  20% {
+    opacity: 1;
+    scale: 1;
+  }
+  60%,
+  100% {
+    opacity: 0;
+    scale: 1.5;
+  }
+}
+
+/* A quick scale-in for confirmations (copied, selected). */
+.pop {
+  animation: pop 0.28s cubic-bezier(0.3, 1.6, 0.5, 1) backwards;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    scale: 0.5;
+  }
+}
+
+/* Underline that draws in from the left on hover, and stays drawn for the current page. */
+.draw-line {
+  position: relative;
+}
+.draw-line::after {
+  content: "";
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  bottom: 0.125rem;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.draw-line:hover::after,
+.draw-line[aria-current="page"]::after {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .js [data-reveal]:not([data-shown]),
+  .js [data-stagger]:not([data-shown]) > * {
+    opacity: 1;
+  }
+  [data-reveal][data-shown],
+  [data-stagger][data-shown] > *,
+  .rise,
+  .pop,
+  .tick::before,
+  .flow-node::after {
+    animation: none;
+  }
+  .flash,
+  .indeterminate,
+  .fade-up,
+  .prism-spin,
+  .petal,
+  .aurora > span,
+  .marquee-track {
+    animation: none;
+  }
+}

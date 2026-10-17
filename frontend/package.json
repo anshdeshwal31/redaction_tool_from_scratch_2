@@ -1,0 +1,40 @@
+{
+  "name": "mlredact-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local operator UI for the mlredact engine",
+  "scripts": {
+    "predev": "node scripts/copy-pdf-worker.mjs",
+    "dev": "node scripts/next.mjs dev --hostname 127.0.0.1 --port 3100",
+    "prebuild": "node scripts/copy-pdf-worker.mjs",
+    "build": "node scripts/next.mjs build",
+    "start": "node scripts/next.mjs start --hostname 127.0.0.1 --port 3100",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "hash-password": "node scripts/hash-password.mjs"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "dependencies": {
+    "@fontsource/instrument-serif": "5.3.0",
+    "lucide-react": "1.55.0",
+    "next": "16.4.0",
+    "next-auth": "4.24.15",
+    "pdfjs-dist": "6.4.299",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "server-only": "0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "ajv": "8.20.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vitest": "5.0.4"
+  }
+}
