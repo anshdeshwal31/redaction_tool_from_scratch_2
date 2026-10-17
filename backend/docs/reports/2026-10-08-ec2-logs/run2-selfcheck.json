@@ -1,0 +1,34 @@
+{
+  "config_hash": "96d1ff0146d456f3c8caccf53ec393238576689abf7f357aca209d0f6b0d5657",
+  "libraries": {
+    "freetype2": "2.14.3",
+    "libjpeg_turbo": "3.1.4.1",
+    "numpy": "2.5.3",
+    "onnxruntime": "1.30.0",
+    "opencv": "5.0.0",
+    "pdfium": "153.0.7999.0",
+    "pikepdf": "10.16.0",
+    "pillow": "12.3.0",
+    "pypdfium2": "5.13.0",
+    "python": "3.12.15",
+    "qpdf": "12.4.2",
+    "rapidocr": "3.9.2",
+    "tesseract": "5.5.0",
+    "tokenizers": "0.22.2",
+    "zlib": "1.3.1"
+  },
+  "mlredact_version": "0.1.0",
+  "models_verified": [
+    "gliner_pii_base",
+    "pplcnet_textline_ori_server",
+    "ppocrv6_det_small",
+    "ppocrv6_rec_medium",
+    "ppocrv6_rec_small",
+    "privacy_filter_q4",
+    "tessdata_best_eng",
+    "yunet_face_2023mar"
+  ],
+  "profile": "broad",
+  "resources_verified": 17,
+  "runtime_profile": "linux-x86_64-v4"
+}

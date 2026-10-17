@@ -6,6 +6,12 @@ Every model file is identified by name + SHA-256 in
 use.  A missing or altered file stops the job (`E_MODEL_MISSING` / `E_MODEL_HASH_MISMATCH`); the
 pipeline never silently runs without a model it is configured to use.
 
+**Current scope: development and evaluation, not production.**  The aim for now is the most
+deterministic and most accurate pipeline, measured on synthetic documents.  Everything below is sized
+for that.  Production hosting (private subnet, model service, data residency) is kept at the end of
+§2 for later and is deferred.  The setup in §3 was validated end to end on 2026-10-08; see
+[docs/reports/2026-10-08-ec2-validation.md](docs/reports/2026-10-08-ec2-validation.md).
+
 ## 1. The models
 
 | id | used for | file size | RAM in use | licence | needed by default |
@@ -49,31 +55,34 @@ uv run mlredact selfcheck                         # verifies models, resources, 
 ### Development: one EC2 instance, used through VS Code Remote-SSH
 
 The whole application (code, tests, all models) runs on the instance.  The laptop is only the
-editor.  This needs no code changes and gives the same results production will give, provided the
-CPU type matches (below).
+editor.  This needs no code changes.
 
-| setting | recommendation | why |
+| setting | validated / recommended | why |
 |---|---|---|
-| Region | `ap-southeast-2` (Sydney) | Australian health and legal data should stay in Australia (Privacy Act APP 8), and production will need this anyway |
-| Instance | x86-64, 8–16 vCPU, 32–64 GiB RAM; e.g. `m7i.2xlarge` (8 vCPU, 32 GiB) or `m7i.4xlarge` (16 vCPU, 64 GiB) | NER ~2.5 GB + OCR workers ~0.4 GB each; 64 GiB matches the plan's CPU node (plan §16) |
-| CPU family | **the same family you will use in production** | outputs are byte-identical only on the same instruction-set level (AVX2 vs AVX-512 change floating-point results) |
-| OS | Ubuntu 24.04 LTS | the dev container and Dockerfile are Linux; Windows is not a determinism target |
-| Disk | 50 GB gp3, encrypted | models ~1.8 GB, Python environment, Docker images, test outputs |
+| Region | any; validated in `ap-south-1` (Mumbai) | the instance holds synthetic documents only, so residency does not apply (production would need Australia, below) |
+| Instance | **`m7i.xlarge`** (4 vCPU, 16 GiB), validated | the largest process peaked at **10.75 GiB** in the slow suite (7.4 GiB in the determinism tests): enough, with ~4 GiB spare; do not run two model-backed jobs at once |
+| Faster / larger | `m7i.2xlarge` (8 vCPU, 32 GiB) | the slow suite takes **~38 min on 4 vCPU** (only 2 physical cores); 8 vCPU should be quicker (not measured).  Use 32 GiB for `gliner_pii_large` (+~2.5 GB) |
+| CPU family | **one fixed instance type for every benchmark run** | outputs are byte-identical only on the same instruction-set level (AVX2 vs AVX-512 change floating-point results).  Validated on Intel Xeon 8488C (Sapphire Rapids) → runtime profile `linux-x86_64-v4` |
+| OS | Ubuntu 24.04 or 26.04 LTS; validated on **26.04** | the dev container and Dockerfile are Linux; Windows is not a determinism target.  The OS fixes the Tesseract version (26.04: 5.5.0, Docker image: older Debian build), which can change engine B output: **use the same OS for every run you compare** |
+| Disk | 50 GB gp3, encrypted (5.9 GiB used) | models ~1.8 GB, Python environment, test outputs |
 | GPU | none for now | only needed for the generative tiers (plan phase P5) |
 
 Security baseline for the instance:
 
-* SSH key authentication only; security-group inbound rule: port 22 **from your IP only**.  No other
-  inbound ports; never expose a model or application port publicly.
+* SSH key authentication only (password login is off by default on the Ubuntu cloud image).  Restrict
+  port 22 to your IP where practical; if your IP keeps changing and you open it wider, remove the wide
+  rule when you stop work.  No other inbound ports; never expose a model or application port.
 * IMDSv2 required; encrypted EBS; no IAM role unless needed.
 * **Synthetic documents only** on the development instance.  Real documents need the production
   controls (plan §14).
-* Stop the instance when not in use; you pay only for running hours (plus the disk).
+* Stop the instance when not in use; you pay only for running hours (plus the disk).  The public
+  address changes every time it starts: update `HostName` in your SSH config.
 
-### Production
+### Production (deferred, not needed for the evaluation)
 
-Run the application on the same instance family as development, inside a private subnet with **no
-internet egress**:
+Kept for later.  Run the application on the same instance family as development, inside a private
+subnet with **no internet egress**, in `ap-southeast-2` (Sydney; Australian health and legal data
+should stay in Australia, Privacy Act APP 8):
 
 * Bake the models into the image at build time (the Dockerfile's `models` stage) or mount them
   read-only from a volume populated by `mlredact models fetch --profile <profile>`; they are
@@ -87,7 +96,8 @@ internet egress**:
 
 ## 3. Setting up the development instance
 
-1. Launch the instance (settings above) with your key pair; note its public DNS name.
+1. Launch the instance (settings above) with your key pair; note its public DNS name.  Pick the
+   x86-64 Ubuntu image; the launch wizard's default may be newer than 24.04 (that is fine, but record it).
 2. On the laptop, add an SSH host alias to `~/.ssh/config`:
 
    ```
@@ -97,25 +107,38 @@ internet egress**:
        IdentityFile ~/.ssh/<your-key>.pem
    ```
 
-3. Copy the project to the instance.  Nothing is committed yet, so either commit and push to a
-   private repository and clone it there, or copy the working tree:
+3. Copy the project to the instance.  Either commit and push to a private repository and clone it
+   there, or copy the working tree.  On Linux or macOS:
 
    ```bash
    rsync -av --exclude .venv --exclude .models --exclude __pycache__ ./ mlredact-dev:~/mlredact/
+   ```
+
+   Windows has no `rsync` by default; use `tar` over SSH from Git Bash (run in the project folder):
+
+   ```bash
+   tar --exclude=.venv --exclude=.models --exclude=__pycache__ --exclude=.mypy_cache \
+       --exclude=.ruff_cache --exclude=.pytest_cache --exclude=.hypothesis -czf - . \
+     | ssh mlredact-dev 'mkdir -p ~/mlredact && tar -xzf - -C ~/mlredact'
    ```
 
 4. On the instance:
 
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh     # uv (installs the pinned Python 3.12 itself)
-   sudo apt-get update && sudo apt-get install -y make tesseract-ocr
+   sudo apt-get update && sudo apt-get install -y make tesseract-ocr libgl1
    cd ~/mlredact
    uv sync --locked
    uv run mlredact models fetch --profile broad        # ~1.8 GB, SHA-256 verified
    uv run mlredact selfcheck                           # note the runtime_profile it prints
-   make test                                           # fast suite
-   make test-slow                                      # end-to-end with NER (~10-20 min)
+   make test                                           # fast suite (~5 s)
+   make determinism                                    # same input -> identical output (~21 min)
+   make test-slow                                      # end-to-end with NER and Tesseract (~38 min on 4 vCPU)
    ```
+
+   `libgl1` is needed by OpenCV and `tesseract-ocr` by OCR engine B; without them `selfcheck` stops
+   with an `ImportError` (`libGL.so.1`) or `E_MODEL_MISSING`.  Run the slow suites detached
+   (`nohup … > ~/logs/x.log &`), so a dropped SSH connection does not kill them.
 
 5. In VS Code: *Remote-SSH: Connect to Host… → mlredact-dev*, open `~/mlredact`.
 

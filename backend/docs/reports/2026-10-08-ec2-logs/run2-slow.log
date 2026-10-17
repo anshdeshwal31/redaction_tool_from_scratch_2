@@ -1,0 +1,20 @@
+Thu Oct  8 07:28:35 UTC 2026
+uv run pytest -m slow
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/ubuntu/mlredact
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, hypothesis-6.168.3
+collected 252 items / 230 deselected / 22 selected
+
+tests/integration/test_faces.py .                                        [  4%]
+tests/integration/test_ner_models.py ...                                 [ 18%]
+tests/integration/test_pipeline.py .................                     [ 95%]
+tests/integration/test_tesseract.py .                                    [100%]
+
+=============== 22 passed, 230 deselected in 2260.17s (0:37:40) ================
+wall=2260.62 s  peakRSS=11275212 KB
+make exit 0
+Thu Oct  8 08:06:15 UTC 2026
+DONE

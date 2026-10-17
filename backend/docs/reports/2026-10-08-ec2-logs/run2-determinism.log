@@ -1,0 +1,25 @@
+uv run pytest tests/determinism
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/ubuntu/mlredact
+configfile: pyproject.toml
+plugins: anyio-4.15.1, hypothesis-6.168.3
+collected 1 item
+
+tests/determinism/test_hash_seed.py .                                    [100%]
+
+============================== 1 passed in 1.32s ===============================
+uv run pytest -m slow tests/integration -k "identical or independent or deterministic or consistent or windowing"
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/ubuntu/mlredact
+configfile: pyproject.toml
+plugins: anyio-4.15.1, hypothesis-6.168.3
+collected 22 items / 14 deselected / 8 selected
+
+tests/integration/test_ner_models.py .                                   [ 12%]
+tests/integration/test_pipeline.py ......                                [ 87%]
+tests/integration/test_tesseract.py .                                    [100%]
+
+================ 8 passed, 14 deselected in 1238.26s (0:20:38) =================
+wall=1240.18 s  peakRSS=7743764 KB
