@@ -33,6 +33,10 @@ class _Active:
     cancelled: bool = False
     delete_on_exit: bool = False
     timed_out: bool = False
+    # Set once the outcome is being recorded: a cancel can no longer change it, and a delete that
+    # arrives from then on is carried out after the record is written.
+    settling: bool = False
+    removed: bool = False
     started: float = field(default_factory=time.monotonic)
 
 
@@ -50,6 +54,10 @@ class Runner:
         # Values that must never be written to disk: the caller's scope id, until the job runs.
         self._scope_ids: dict[str, str] = {}
         self._uploading: set[str] = set()
+        # Deleted jobs whose directory could not be removed yet (Windows handles); the sweep retries.
+        self._pending_removal: set[str] = set()
+        # Jobs whose outcome could not be recorded at all; the sweep retries marking them failed.
+        self._unsettled: set[str] = set()
         self._stopping = False
         self._thread = threading.Thread(target=self._loop, name="mlredact-api-runner", daemon=True)
 
@@ -115,11 +123,11 @@ class Runner:
                 self._queue.remove(job_id)
                 self._scope_ids.pop(job_id, None)
                 queued = True
-            elif self._active is not None and self._active.id == job_id:
+            elif self._active is not None and self._active.id == job_id and not self._active.settling:
                 self._active.cancelled = True
                 proc = self._active.proc
                 queued = False
-            else:
+            else:  # not queued or running, or already finishing: too late to cancel
                 return False
         if queued:
             self._store.remove_inputs(job_id)
@@ -137,9 +145,11 @@ class Runner:
             if job_id in self._uploading:
                 return "busy"
             if self._active is not None and self._active.id == job_id:
+                # Removed by the worker: by _settle, or after it when the job was already settling.
                 self._active.delete_on_exit = True
-                self._active.cancelled = True
-                proc = self._active.proc
+                if not self._active.settling:
+                    self._active.cancelled = True
+                    proc = self._active.proc
                 pending = True
             else:
                 pending = False
@@ -176,11 +186,20 @@ class Runner:
                 continue
             try:
                 self._run(active, scope)
-            except Exception:  # never let one job stop the queue
-                self._settle(active, code=None, spawn_failed=False, error_code="E_API_INTERNAL")
+            except Exception as exc:  # never let one job stop the queue
+                _log.error("api.job.internal_error", job=_log_id(active.id), error_type=type(exc).__name__)
+                try:
+                    self._settle(active, code=None, spawn_failed=False, error_code="E_API_INTERNAL")
+                except Exception as again:  # the sweep retries, so the job never stays "running"
+                    _log.error("api.job.settle_failed", job=_log_id(active.id), error_type=type(again).__name__)
+                    with self._cv:
+                        self._unsettled.add(active.id)
             finally:
                 with self._cv:
                     self._active = None
+                    late_delete = active.delete_on_exit and not active.removed
+                if late_delete:  # a delete that arrived while the outcome was being recorded
+                    self._remove(active.id)
 
     def _args(self, job: JobRecord, scope_id: str | None) -> list[str]:
         o = job.options
@@ -214,16 +233,24 @@ class Runner:
         except OSError:
             self._settle(active, code=None, spawn_failed=True, error_code=None)
             return
-        if self._attach(active, proc):  # a cancel arrived between the spawn and here
-            kill_tree(proc)
-        assert proc.stderr is not None
-        error_code = watch_error_code(proc.stderr)
         try:
-            proc.wait(timeout=self._settings.job_timeout_s)
-        except subprocess.TimeoutExpired:
-            active.timed_out = True
+            if self._attach(active, proc):  # a cancel arrived between the spawn and here
+                kill_tree(proc)
+            assert proc.stderr is not None
+            error_code = watch_error_code(proc.stderr)
+            try:
+                proc.wait(timeout=self._settings.job_timeout_s)
+            except subprocess.TimeoutExpired:
+                active.timed_out = True
+                kill_tree(proc)
+                proc.wait()
+        except BaseException:
+            # Never leave an engine behind a job about to be marked failed: it would overlap the next
+            # job, and its outputs could overwrite the record.
             kill_tree(proc)
-            proc.wait()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=30)
+            raise
         self._settle(active, code=proc.returncode, spawn_failed=False, error_code=error_code())
 
     def _attach(self, active: _Active, proc: subprocess.Popen[bytes]) -> bool:
@@ -235,8 +262,12 @@ class Runner:
 
     def _settle(self, active: _Active, *, code: int | None, spawn_failed: bool, error_code: str | None) -> None:
         job_id = active.id
-        if active.delete_on_exit:
-            self._store.remove(job_id)
+        with self._cv:
+            active.settling = True
+            delete = active.delete_on_exit
+        if delete:
+            active.removed = True
+            self._remove(job_id)
             return
         # A failed delete is retried by the sweep; the state update below must not be lost.
         with contextlib.suppress(OSError):
@@ -272,18 +303,53 @@ class Runner:
             duration_ms=round((time.monotonic() - active.started) * 1000.0, 1),
         )
 
+    def _remove(self, job_id: str) -> None:
+        """Delete a job's directory; when that fails the sweep retries it, so the delete is not lost."""
+        try:
+            self._store.remove(job_id)
+        except Exception as exc:  # called from the worker's finally: must not stop the queue
+            with self._cv:
+                self._pending_removal.add(job_id)
+            _log.warning("api.job.remove_deferred", job=_log_id(job_id), error_type=type(exc).__name__)
+
+    def _fail_unsettled(self, job_id: str) -> None:
+        """Record a job whose outcome could not be written as failed, and delete its inputs."""
+        self._store.remove_inputs(job_id)
+        job = self._store.read(job_id)
+        if job is not None and job.state in ("queued", "running"):
+            update = {"state": "failed", "error_code": "E_API_INTERNAL", "finished_at": now_iso()}
+            self._store.write(job.model_copy(update=update))
+
     def _sweep(self) -> None:
         """Drop uploads that never arrived, and inputs a finished job could not delete at the time."""
         now = time.time()
         with self._cv:
             busy = set(self._uploading) | set(self._queue) | ({self._active.id} if self._active else set())
+            pending = set(self._pending_removal)
+            unsettled = set(self._unsettled)
+        for job_id in pending:
+            try:
+                self._store.remove(job_id)
+            except OSError:
+                continue
+            with self._cv:
+                self._pending_removal.discard(job_id)
+        for job_id in unsettled - pending:
+            try:
+                self._fail_unsettled(job_id)
+            except OSError:
+                continue
+            with self._cv:
+                self._unsettled.discard(job_id)
         for job in self._store.list_jobs():
-            if job.id in busy:
+            if job.id in busy or job.id in pending or job.id in unsettled:
                 continue
             try:
                 if job.state == "awaiting_upload":
                     expires = job.upload_expires_at
                     if expires is None or datetime.fromisoformat(expires).timestamp() < now:
+                        with self._cv:  # the caller's scope id goes with the job, never kept in memory
+                            self._scope_ids.pop(job.id, None)
                         self._store.remove(job.id)
                 elif job.state not in ("queued", "running") and self._store.input_dir(job.id).exists():
                     self._store.remove_inputs(job.id)

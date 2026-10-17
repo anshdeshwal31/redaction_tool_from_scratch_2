@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import itertools
 import json
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from mlredact.api import runner as runner_module
+from mlredact.api.engine import kill_tree
 from mlredact.api.links import link_key, sign
 from mlredact.api.models import JobOptions, JobRecord
+from mlredact.api.runner import Runner
 from mlredact.api.store import JobStore, iso_from_unix, new_job_id, now_iso
 
 from .conftest import AUTH, ORIGIN, TOKEN, Api, stub_input
@@ -253,6 +258,85 @@ def test_delete_running_and_finished(api: Api) -> None:
     assert api.client.delete(f"/v1/jobs/{done}", headers=AUTH).json() == {"result": "deleted"}
 
 
+def test_a_failed_settle_does_not_stop_the_queue(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    run, settle = Runner._run, Runner._settle
+    calls = itertools.count()
+
+    def failing_run(self: Runner, active: Any, scope_id: str | None) -> None:
+        if next(calls) == 0:
+            raise RuntimeError("internal")
+        run(self, active, scope_id)
+
+    def failing_settle(self: Runner, active: Any, **kw: Any) -> None:
+        if kw["error_code"] == "E_API_INTERNAL":
+            raise OSError("a handle is still open")
+        settle(self, active, **kw)
+
+    monkeypatch.setattr(Runner, "_run", failing_run)
+    monkeypatch.setattr(Runner, "_settle", failing_settle)
+    api.submit("released")
+    assert api.wait(api.submit("released"))["job"]["state"] == "released"
+
+
+def test_sweep_fails_a_job_whose_outcome_could_not_be_recorded(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_settle(self: Runner, active: Any, **kw: Any) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(Runner, "_settle", broken_settle)
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    job_id = api.submit("released")
+    deadline = time.monotonic() + 20
+    while job_id not in runner._unsettled and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert api.view(job_id)["job"]["state"] == "running"
+    runner._sweep()
+    job = api.view(job_id)["job"]
+    assert (job["state"], job["errorCode"]) == ("failed", "E_API_INTERNAL")
+    assert not (api.jobs_dir / job_id / "in").exists()
+    assert job_id not in runner._unsettled
+
+
+def test_cancel_and_delete_after_the_outcome_is_recorded(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    settle = Runner._settle
+    raced: dict[str, object] = {}
+
+    def settle_then_race(self: Runner, active: Any, **kw: Any) -> None:
+        settle(self, active, **kw)
+        # Both land after the final record is written, while the job is still the active one.
+        raced["cancel"] = self.cancel(active.id)
+        raced["delete"] = self.delete(active.id)
+
+    monkeypatch.setattr(Runner, "_settle", settle_then_race)
+    job_id = api.submit("released")
+    deadline = time.monotonic() + 20
+    while (api.jobs_dir / job_id).exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert raced == {"cancel": False, "delete": "pending"}
+    assert not (api.jobs_dir / job_id).exists()
+
+
+def test_an_internal_error_after_spawn_kills_the_engine(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    attach = Runner._attach
+    procs: list[subprocess.Popen[bytes]] = []
+
+    def recording_attach(self: Runner, active: Any, proc: subprocess.Popen[bytes]) -> bool:
+        procs.append(proc)
+        return attach(self, active, proc)
+
+    def broken_watch(stream: Any) -> Any:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(Runner, "_attach", recording_attach)
+    monkeypatch.setattr(runner_module, "watch_error_code", broken_watch)
+    job = api.wait(api.submit("hang"))["job"]
+    try:
+        assert (job["state"], job["errorCode"]) == ("failed", "E_API_INTERNAL")
+        assert procs and procs[0].poll() is not None
+    finally:
+        for proc in procs:
+            kill_tree(proc)
+
+
 def test_timeout_kills_the_job(api_factory: Callable[..., Api]) -> None:
     api = api_factory(job_timeout_s=1.0)
     job = api.wait(api.submit("hang"))["job"]
@@ -310,6 +394,18 @@ def test_sweep_drops_expired_uploads(api: Api) -> None:
     api.client.app.state.runner._sweep()  # type: ignore[attr-defined]
     assert not (api.jobs_dir / stale).exists()
     assert (api.jobs_dir / fresh).exists()
+
+
+def test_sweep_forgets_the_scope_id_of_an_expired_upload(api: Api) -> None:
+    store = JobStore(api.jobs_dir)
+    job_id = api.create(b"x", scopeId="MATTER-42")["id"]
+    job = store.read(job_id)
+    assert job is not None
+    store.write(job.model_copy(update={"upload_expires_at": iso_from_unix(time.time() - 60)}))
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    runner._sweep()
+    assert not (api.jobs_dir / job_id).exists()
+    assert job_id not in runner._scope_ids
 
 
 # ----------------------------------------------------------------------------------- system
