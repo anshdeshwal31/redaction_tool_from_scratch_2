@@ -30,7 +30,10 @@ function usePdf(source: PdfSource | null): PdfState {
         const url = typeof source === "function" ? await source() : source;
         const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) throw new Error("fetch");
-        const task = pdfjs.getDocument({ data: new Uint8Array(await res.arrayBuffer()), enableXfa: false });
+        const data = new Uint8Array(await res.arrayBuffer());
+        // Unmounted while downloading: the cleanup has already run, so never start pdf.js for it.
+        if (cancelled) return;
+        const task = pdfjs.getDocument({ data, enableXfa: false });
         destroy = () => task.destroy();
         const doc = await task.promise;
         if (!cancelled) setState({ doc, error: false });
