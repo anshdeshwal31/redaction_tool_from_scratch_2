@@ -10,6 +10,8 @@ import { randomBytes, scrypt as scryptCb, timingSafeEqual, type BinaryLike, type
 
 const PARAMS: ScryptOptions = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const KEY_BYTES = 32;
+// Whole bytes of hex only: Buffer.from(…, "hex") silently stops at the first bad character.
+const HEX = /^(?:[0-9a-f]{2})+$/i;
 
 function scrypt(password: BinaryLike, salt: BinaryLike): Promise<Buffer> {
   return new Promise((resolve, reject) =>
@@ -27,7 +29,8 @@ const DUMMY = `scrypt.${"00".repeat(16)}.${"00".repeat(KEY_BYTES)}`;
 
 export async function verifyPassword(password: string, stored: string | undefined): Promise<boolean> {
   const [scheme, saltHex, keyHex] = (stored ?? DUMMY).split(".");
-  if (scheme !== "scrypt" || !saltHex || !keyHex || keyHex.length !== KEY_BYTES * 2) return false;
+  if (scheme !== "scrypt" || !saltHex || !keyHex || !HEX.test(saltHex) || !HEX.test(keyHex)) return false;
+  if (keyHex.length !== KEY_BYTES * 2) return false;
   const actual = await scrypt(password, Buffer.from(saltHex, "hex"));
   return timingSafeEqual(actual, Buffer.from(keyHex, "hex")) && stored !== undefined;
 }

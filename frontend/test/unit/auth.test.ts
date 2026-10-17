@@ -28,6 +28,12 @@ describe("password hashes", () => {
     expect(await verifyPassword("x", "scrypt.00.11")).toBe(false);
   });
 
+  it("refuse a hash with a typo instead of throwing", async () => {
+    const [, salt, key] = (await hashPassword("pw")).split(".");
+    expect(await verifyPassword("pw", `scrypt.${salt}.${key!.slice(0, 62)}zz`)).toBe(false);
+    expect(await verifyPassword("pw", `scrypt.${salt!.slice(0, 31)}.${key}`)).toBe(false);
+  });
+
   it("parse MLREDACT_UI_USERS, ignoring malformed entries", () => {
     const users = parseUsers(` Alice@Example.com=scrypt.aa.bb , broken, bob@example.com=md5.x, =scrypt.1.2`);
     expect([...users]).toEqual([["alice@example.com", "scrypt.aa.bb"]]);
