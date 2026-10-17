@@ -264,8 +264,10 @@ const REASONS: Record<string, string> = {
   E_API_TIMEOUT: "The job exceeded the server's time limit and was stopped.",
   E_API_INTERRUPTED: "The redaction server restarted while this job was queued or running.",
   E_API_INTERNAL: "The redaction server hit an unexpected error. Details are withheld by design.",
+  E_API_NOT_ACTIVE: "The job was no longer queued or running, so there was nothing to stop.",
   // Raised by this app.
   E_UI_BACKEND_UNREACHABLE: "The redaction server could not be reached.",
+  E_UI_NETWORK: "This app's server could not be reached.",
 };
 
 export function reasonText(code: string): string {

@@ -16,7 +16,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { downloadUrl, freshFileUrl, send, useNow, usePolling } from "@/lib/api";
+import { ApiError, downloadUrl, freshFileUrl, send, useNow, usePolling } from "@/lib/api";
 import { formatBytes, formatClock, formatDate, formatDuration, shortHash, shortId } from "@/lib/format";
 import { ACTIVE_STATES, type JobView, type OutputFile } from "@/lib/jobs";
 import type { Manifest } from "@/lib/manifest";
@@ -182,6 +182,7 @@ export function JobDetail({ id }: { id: string }) {
   const { data, error, refresh } = usePolling<JobView>(`/api/jobs/${id}`, 1500, (d) => ACTIVE_STATES.has(d.job.state));
   const [tab, setTab] = useState<Tab | null>(null);
   const [busy, setBusy] = useState<"cancel" | "delete" | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const files = data?.files ?? [];
   const { manifest, loading: manifestLoading } = useManifest(id, files.includes("manifest.json"));
   // A fresh signed link each time the viewer opens, so a page left open never shows an expired one.
@@ -229,8 +230,11 @@ export function JobDetail({ id }: { id: string }) {
 
   async function cancel() {
     setBusy("cancel");
+    setCancelError(null);
     try {
       await send(`/api/jobs/${id}/cancel`, "POST");
+    } catch (err) {
+      setCancelError(err instanceof ApiError ? err.code : "E_UI_NETWORK");
     } finally {
       setBusy(null);
       refresh();
@@ -316,6 +320,12 @@ export function JobDetail({ id }: { id: string }) {
       </header>
 
       {active ? <Progress view={data} onCancel={cancel} cancelling={busy === "cancel"} /> : null}
+
+      {cancelError ? (
+        <Notice tone="warn" icon={<AlertOctagon className="size-4" />} title="The job could not be stopped">
+          <Mono className="font-medium text-ink">{cancelError}</Mono> — {reasonText(cancelError)}
+        </Notice>
+      ) : null}
 
       {job.state === "quarantined" ? (
         <Notice tone="warn" icon={<ShieldAlert className="size-4" />} title="Quarantined: no PDF was released">
