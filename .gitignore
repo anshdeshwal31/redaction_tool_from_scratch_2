@@ -15,6 +15,6 @@ build/
 
 # Never commit documents or job outputs
 *.pdf
-!tests/fixtures/**/*.pdf
+!backend/tests/fixtures/**/*.pdf
 out/
 workspace/

@@ -1,4 +1,4 @@
-# Pull requests: lint, types, licence gate, fast tests (unit, property, security, verifier mutations,
+# Backend (backend/).  Pull requests: lint, types, licence gate, fast tests (unit, property, security, verifier mutations,
 # hash-seed determinism).  Nightly / on demand: model-backed end-to-end suite.
 # Model downloads happen only in the `models` step (build time); processing itself never needs network.
 name: ci
@@ -22,11 +22,15 @@ jobs:
   checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          cache-dependency-glob: backend/uv.lock
       - name: Install locked environment
         run: uv sync --locked
       - name: Lint and type-check
@@ -41,11 +45,15 @@ jobs:
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          cache-dependency-glob: backend/uv.lock
       - name: Install locked environment
         run: uv sync --locked
       - name: Install OCR engine B (Tesseract)
@@ -53,8 +61,8 @@ jobs:
       - name: Cache pinned models
         uses: actions/cache@v4
         with:
-          path: .models
-          key: models-${{ hashFiles('src/mlredact/registry/models.yaml') }}
+          path: backend/.models
+          key: models-${{ hashFiles('backend/src/mlredact/registry/models.yaml') }}
       - name: Fetch and verify models
         run: make models
       - name: Self-check
