@@ -12,13 +12,15 @@ export function formatBytes(n: number): string {
 
 export function formatDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return "–";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 999.5) return `${Math.round(ms)} ms`;
   const s = ms / 1000;
-  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)} s`;
-  const m = Math.floor(s / 60);
-  const rest = Math.round(s % 60);
-  if (m < 60) return `${m} min ${rest.toString().padStart(2, "0")} s`;
-  return `${Math.floor(m / 60)} h ${(m % 60).toString().padStart(2, "0")} min`;
+  if (s < 9.95) return `${s.toFixed(1)} s`;
+  // Round once to the smallest unit shown, then split, so no part ever reads 60 (or 1000 ms).
+  const total = Math.round(s);
+  if (total < 60) return `${total} s`;
+  if (total < 3600) return `${Math.floor(total / 60)} min ${(total % 60).toString().padStart(2, "0")} s`;
+  const minutes = Math.round(total / 60);
+  return `${Math.floor(minutes / 60)} h ${(minutes % 60).toString().padStart(2, "0")} min`;
 }
 
 /** m:ss / h:mm:ss for a live elapsed counter. */
