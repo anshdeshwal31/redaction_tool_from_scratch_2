@@ -267,6 +267,8 @@ const REASONS: Record<string, string> = {
   E_API_NOT_ACTIVE: "The job was no longer queued or running, so there was nothing to stop.",
   // Raised by this app.
   E_UI_BACKEND_UNREACHABLE: "The redaction server could not be reached.",
+  E_UI_BACKEND_TIMEOUT:
+    "The redaction server did not answer in time. It may still be working: a self-check on a cold disk can take several minutes, so try again shortly.",
   E_UI_NETWORK: "This app's server could not be reached.",
 };
 

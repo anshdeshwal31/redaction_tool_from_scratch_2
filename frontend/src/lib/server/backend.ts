@@ -19,6 +19,8 @@ export const isJobId = (id: string) => JOB_ID.test(id);
 export const isOutputFile = (name: string): name is OutputFile => (OUTPUT_FILES as readonly string[]).includes(name);
 
 export class BackendUnavailable extends Error {}
+/** The backend did not answer within the call's time limit; it may still be working on the request. */
+export class BackendTimeout extends BackendUnavailable {}
 
 export async function backend(
   path: string,
@@ -37,7 +39,9 @@ export async function backend(
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch {
+  } catch (err) {
+    // AbortSignal.timeout rejects with a TimeoutError: the backend was reached but is still busy.
+    if (err instanceof Error && err.name === "TimeoutError") throw new BackendTimeout("backend did not answer in time");
     throw new BackendUnavailable("backend unreachable");
   }
 }
@@ -57,11 +61,12 @@ export function unavailable(): NextResponse {
   return NextResponse.json({ error: "E_UI_BACKEND_UNREACHABLE" }, { status: 502 });
 }
 
-/** Run a backend call, mapping an unreachable backend to a 502 with a code. */
+/** Run a backend call, mapping a timeout to a 504 and an unreachable backend to a 502, each with a code. */
 export async function withBackend(fn: () => Promise<NextResponse | Response>): Promise<NextResponse | Response> {
   try {
     return await fn();
   } catch (err) {
+    if (err instanceof BackendTimeout) return NextResponse.json({ error: "E_UI_BACKEND_TIMEOUT" }, { status: 504 });
     if (err instanceof BackendUnavailable) return unavailable();
     throw err;
   }

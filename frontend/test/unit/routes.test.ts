@@ -75,6 +75,14 @@ describe("every route", () => {
     const res = await jobs.GET(get("/api/jobs"));
     expect([res.status, await res.json()]).toEqual([502, { error: "E_UI_BACKEND_UNREACHABLE" }]);
   });
+
+  it("reports a backend that is still busy as a timeout, not as unreachable", async () => {
+    reply = () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    };
+    const res = await jobs.GET(get("/api/jobs"));
+    expect([res.status, await res.json()]).toEqual([504, { error: "E_UI_BACKEND_TIMEOUT" }]);
+  });
 });
 
 describe("GET /api/jobs", () => {
