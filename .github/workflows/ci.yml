@@ -1,5 +1,6 @@
 # Backend (backend/).  Pull requests: lint, types, licence gate, fast tests (unit, property, security, verifier mutations,
 # hash-seed determinism).  Nightly / on demand: model-backed end-to-end suite.
+# Frontend (frontend/).  Pull requests: type-check and Vitest (stubbed backend, no network).
 # Model downloads happen only in the `models` step (build time); processing itself never needs network.
 name: ci
 
@@ -39,6 +40,26 @@ jobs:
         run: make licences
       - name: Fast tests
         run: make test
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Type-check
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
 
   end-to-end:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
