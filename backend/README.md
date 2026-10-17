@@ -56,6 +56,66 @@ Outputs (fixed names — input filenames are never reused because they often con
 
 Exit codes: `0` released, `2` quarantined, `1` usage/environment error.
 
+### HTTP API (for the frontend)
+
+`mlredact serve` runs a small FastAPI service that the web frontend ([../frontend](../frontend))
+calls. It runs the CLI above once per job, one job at a time, and keeps the same rules: no document
+text, no input filenames and no scope ids are stored, and inputs are deleted as soon as a job ends.
+
+```bash
+export MLREDACT_API_TOKEN=<32+ random characters, shared with the frontend's server>
+export MLREDACT_API_CORS_ORIGINS=http://127.0.0.1:3100,https://<your-vercel-app>.vercel.app
+export MLREDACT_SURROGATE_KEY=<64+ hex chars>     # or MLREDACT_API_ALLOW_DEV_KEY=1 for synthetic tests
+uv run mlredact serve                              # http://127.0.0.1:8100
+```
+
+Two kinds of caller:
+
+- **The frontend's server**, with `Authorization: Bearer <MLREDACT_API_TOKEN>`. It creates jobs, reads
+  status, cancels, deletes and runs the self-check.
+- **A signed-in user's browser**, with a signed link from a job response. It uploads the document and
+  downloads artefacts directly, so files never pass through the frontend's host. Each link is tied to
+  one job and one file, and expires after minutes. CORS is allowed only for `MLREDACT_API_CORS_ORIGINS`.
+
+| Route | Who | What |
+|---|---|---|
+| `GET /v1/health` | anyone | liveness |
+| `POST /v1/jobs` | token | create a job from its options; returns a signed upload path |
+| `PUT /v1/jobs/{id}/input?token=` | signed link | the document's bytes |
+| `GET /v1/jobs`, `GET /v1/jobs/{id}` | token | list; status, summary, run record and signed artefact links |
+| `GET /v1/jobs/{id}/files/{name}?token=` | signed link | an artefact (`&download=true` for an attachment) |
+| `POST /v1/jobs/{id}/cancel`, `DELETE /v1/jobs/{id}` | token | stop, or remove with its artefacts |
+| `GET /v1/system`, `POST /v1/system/selfcheck` | token | configuration; `mlredact selfcheck` |
+
+Errors are `{"error": "<CODE>"}` only. Request validation errors never echo the request back, because
+it may hold seed values.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `MLREDACT_API_TOKEN` | required | shared secret, at least 32 characters; also keys the signed links |
+| `MLREDACT_API_CORS_ORIGINS` | none | browser origins allowed to use signed links (the frontend's addresses) |
+| `MLREDACT_API_CONFIG` | none | deployment YAMLs passed to every run as `--config` (path-separator separated) |
+| `MLREDACT_API_JOBS_DIR` | `.jobs` | job records and artefacts |
+| `MLREDACT_API_WORKERS` | `2` | default worker processes per job |
+| `MLREDACT_API_ALLOW_DEV_KEY` | off | `1` lets jobs use the public development surrogate key |
+| `MLREDACT_API_MAX_UPLOAD_MB` | `200` | upload limit |
+| `MLREDACT_API_JOB_TIMEOUT_S` | `10800` | wall-clock limit per job |
+| `MLREDACT_API_UPLOAD_TTL_S`, `MLREDACT_API_LINK_TTL_S` | `900` | lifetime of upload and download links |
+| `MLREDACT_API_ENGINE` | this Python's CLI | engine command as a JSON array (tests point it at a stub) |
+
+**Exposing it from EC2.** `serve` binds `127.0.0.1` by default. Pick one of these:
+
+- **Frontend on your laptop:** use an SSH tunnel, `ssh -L 8100:127.0.0.1:8100 ubuntu@<ec2>`. The
+  frontend then uses `http://127.0.0.1:8100`. Traffic is encrypted inside SSH and no new ports open.
+- **Frontend on Vercel:** the API needs an `https://` address. With a domain, put a TLS proxy (for
+  example Caddy) in front and open ports 443 and 80 (80 only for the certificate). Without one, for
+  testing only, run `cloudflared tunnel --url http://127.0.0.1:8100`; it prints a temporary https
+  address, and documents pass through Cloudflare.
+
+The API is tested in `tests/api/` against a stub engine (`tests/api/stub_engine.py`). The stub takes
+the same arguments and exit codes as the CLI, loads no models, and the first line of its input picks
+the outcome.
+
 ### Interface for the external evaluator
 
 `manifest.json` follows the JSON Schema in [schemas/manifest.v1.json](schemas/manifest.v1.json)
@@ -113,7 +173,8 @@ src/mlredact/
   verify/      V1 structure, V2 text leak, V3 pixels, V4 residual re-OCR, V5 surrogates, V6 integrity
   manifest/    non-sensitive manifest; sealed sensitive manifest
   pipeline/    worker pool (spawned processes), shared-memory blobs, job runner
-  cli/         Typer CLI
+  api/         HTTP API for the frontend: jobs, queue, signed links (FastAPI)
+  cli/         Typer CLI (run, serve, selfcheck, ...)
 tools/synthdocs/  synthetic test documents
 docs/adr/         architecture decision records
 ```

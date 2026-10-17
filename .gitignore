@@ -18,3 +18,5 @@ build/
 !backend/tests/fixtures/**/*.pdf
 out/
 workspace/
+# API job store (MLREDACT_API_JOBS_DIR default)
+.jobs/

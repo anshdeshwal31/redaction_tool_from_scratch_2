@@ -171,6 +171,32 @@ def selfcheck(
 
 
 @app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Interface to bind (keep 127.0.0.1 behind a TLS proxy or tunnel)")] = (
+        "127.0.0.1"
+    ),
+    port: Annotated[int, typer.Option(help="Port")] = 8100,
+    log_level: Annotated[str, typer.Option(help="Log level")] = "WARNING",
+) -> None:
+    """Run the HTTP API for the web frontend (settings: MLREDACT_API_* environment variables)."""
+    install_excepthook()
+    configure_logging(log_level)
+    try:
+        import uvicorn
+
+        from mlredact.api.app import create_app
+        from mlredact.api.settings import ApiSettings
+
+        api = create_app(ApiSettings.from_env())
+    except MlredactError as exc:
+        _fail(exc)
+        return
+    # No access log: request paths carry signed link tokens.  Uvicorn's own records go through the
+    # PII-safe logging configured above.
+    uvicorn.run(api, host=host, port=port, access_log=False, log_config=None, server_header=False)
+
+
+@app.command()
 def profiles() -> None:
     """List built-in policy profiles."""
     for p in builtin_profiles():

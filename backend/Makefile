@@ -4,7 +4,7 @@ UV ?= uv
 PYTEST := $(UV) run pytest
 LICENCE_DENY := GPL;SSPL;BUSL;Non-Commercial;NonCommercial;BY-NC;Commons Clause
 
-.PHONY: help sync models selfcheck lint test test-slow test-all determinism leaktest verify-mutations licences ci
+.PHONY: help sync models selfcheck lint test test-slow test-all determinism leaktest verify-mutations licences ci serve
 
 help:  ## list targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
@@ -46,3 +46,6 @@ licences:  ## licence gate: no copyleft (GPL family), source-available or non-co
 	$(UV) run --with pip-licenses pip-licenses --partial-match --fail-on="$(LICENCE_DENY)" --ignore-packages mlredact
 
 ci: lint licences test  ## what every pull request runs
+
+serve:  ## run the HTTP API for the frontend (needs MLREDACT_API_TOKEN; see README)
+	$(UV) run mlredact serve
