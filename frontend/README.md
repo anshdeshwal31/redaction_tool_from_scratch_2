@@ -81,6 +81,8 @@ survives `.env` files and dashboards.
 ```bash
 npm test              # Vitest, a few seconds, no backend needed
 npm run typecheck
+npm run test:e2e      # Playwright: real frontend and backend in Chromium, stub engine (see e2e/README.md)
+npm run test:e2e:real # the same against the real engine and its models
 ```
 
 - **Contract:** the UI's enumerations and its fixture manifests are validated against

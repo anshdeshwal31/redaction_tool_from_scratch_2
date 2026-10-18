@@ -11,3 +11,6 @@ next-env.d.ts
 
 # Copied from pdfjs-dist by scripts/copy-pdf-worker.mjs
 public/pdf.worker.min.mjs
+
+# End-to-end runs: signed-in state, generated documents, jobs, traces and the report
+e2e/.generated/
