@@ -385,6 +385,11 @@ class Runner:
                         with self._cv:
                             if job.id in self._uploading:  # began after the snapshot above
                                 continue
+                            # An upload that committed after list_jobs has already left this state
+                            # (its record is written before the claim is released).
+                            fresh = self._store.read(job.id)
+                            if fresh is None or fresh.state != "awaiting_upload":
+                                continue
                             self._removing.add(job.id)
                             # The caller's scope id goes with the job, never kept in memory.
                             self._scope_ids.pop(job.id, None)
