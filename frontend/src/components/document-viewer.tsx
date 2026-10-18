@@ -396,9 +396,17 @@ export function DocumentViewer({ manifest, pdfUrl }: { manifest: Manifest; pdfUr
     () => (item: OverlayItem) => !hidden.has(item.category) && (showKept || !item.kept),
     [hidden, showKept],
   );
-  const visibleItems = model.items.filter(isVisibleItem);
-  const byPage = new Map<number, OverlayItem[]>();
-  for (const item of visibleItems) byPage.set(item.page, [...(byPage.get(item.page) ?? []), item]);
+  // Memoised: hover state re-renders the viewer on every pointer move.
+  const { visibleItems, byPage } = useMemo(() => {
+    const visibleItems = model.items.filter(isVisibleItem);
+    const byPage = new Map<number, OverlayItem[]>();
+    for (const item of visibleItems) {
+      const list = byPage.get(item.page);
+      if (list) list.push(item);
+      else byPage.set(item.page, [item]);
+    }
+    return { visibleItems, byPage };
+  }, [model, isVisibleItem]);
 
   // The box under the pointer highlights its list rows; a hovered row highlights its boxes.
   const hoverBoxItems = useMemo(
