@@ -31,6 +31,9 @@ flowchart LR
 Documents travel only between the browser and the backend. They never pass through the frontend's
 host, which matters on Vercel: its functions cap requests and responses at 4.5 MB.
 
+> **Known issue:** jobs are not yet separated per user. Every signed-in user sees every job, so
+> configure a single user for now. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
 ## Quick start (both on one machine)
 
 ```bash
