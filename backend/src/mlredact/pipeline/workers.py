@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -37,8 +38,9 @@ def init_worker(config_json: str, log_level: str, strict_logging: bool) -> None:
     config = AppConfig.model_validate_json(config_json)
     apply_process_settings(config.runtime.threads)
     configure_logging(log_level, strict=strict_logging)
-    with contextlib.suppress(AttributeError, OSError):
-        os.nice(5)  # type: ignore[attr-defined]  # be a good neighbour on shared hosts (POSIX only)
+    if sys.platform != "win32":  # os.nice is POSIX only
+        with contextlib.suppress(OSError):
+            os.nice(5)  # be a good neighbour on shared hosts
     _STATE.clear()
     _STATE["config"] = config
 
