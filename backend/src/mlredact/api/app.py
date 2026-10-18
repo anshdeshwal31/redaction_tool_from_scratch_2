@@ -18,8 +18,10 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
@@ -31,7 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from mlredact import __version__
-from mlredact.api.engine import run_short
+from mlredact.api.engine import EngineResult, run_short
 from mlredact.api.links import link_key, sign, verify
 from mlredact.api.models import (
     ACTIVE_STATES,
@@ -89,6 +91,10 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     runner = Runner(settings, store)
     key = link_key(settings.token)
     profiles = builtin_profiles()
+    # One self-check at a time: it reads every model, and the frontend gives up on a slow one long
+    # before it ends, so a retry joins the run in progress instead of starting another.
+    checks_lock = threading.Lock()
+    checks: dict[str, Future[tuple[EngineResult, int]]] = {}
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -184,12 +190,30 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     def selfcheck(body: SelfcheckRequest, _: Authorised) -> dict[str, Any]:
         if body.profile not in profiles:
             raise ApiError(400, "E_API_BAD_PROFILE")
-        args = ["selfcheck", "--profile", body.profile]
-        for path in settings.config_files:
-            args += ["--config", str(path)]
-        t0 = time.monotonic()
-        result = run_short(settings, args, timeout_s=600)
-        duration = int((time.monotonic() - t0) * 1000)
+        with checks_lock:
+            running = checks.get(body.profile)
+            if running is None and checks:
+                raise ApiError(409, "E_API_SELFCHECK_BUSY")  # another profile's check is running
+            if running is None:
+                running = checks[body.profile] = Future()
+                owner = True
+            else:
+                owner = False
+        if owner:
+            try:
+                args = ["selfcheck", "--profile", body.profile]
+                for path in settings.config_files:
+                    args += ["--config", str(path)]
+                t0 = time.monotonic()
+                outcome = run_short(settings, args, timeout_s=600)
+                running.set_result((outcome, int((time.monotonic() - t0) * 1000)))
+            except BaseException as exc:
+                running.set_exception(exc)
+                raise
+            finally:
+                with checks_lock:
+                    del checks[body.profile]
+        result, duration = running.result()
         if result.code == 0:
             try:
                 return SelfcheckReport(ok=True, report=json.loads(result.stdout), duration_ms=duration).dump()

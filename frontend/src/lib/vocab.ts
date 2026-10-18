@@ -265,6 +265,7 @@ const REASONS: Record<string, string> = {
   E_API_INTERRUPTED: "The redaction server restarted while this job was queued or running.",
   E_API_INTERNAL: "The redaction server hit an unexpected error. Details are withheld by design.",
   E_API_NOT_ACTIVE: "The job was no longer queued or running, so there was nothing to stop.",
+  E_API_SELFCHECK_BUSY: "A self-check for another profile is already running. Try again when it finishes.",
   // Raised by this app.
   E_UI_BACKEND_UNREACHABLE: "The redaction server could not be reached.",
   E_UI_BACKEND_TIMEOUT:

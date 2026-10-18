@@ -13,8 +13,9 @@ from typing import Any
 
 import pytest
 
+from mlredact.api import app as app_module
 from mlredact.api import runner as runner_module
-from mlredact.api.engine import kill_tree
+from mlredact.api.engine import EngineResult, kill_tree
 from mlredact.api.links import link_key, sign
 from mlredact.api.models import JobOptions, JobRecord
 from mlredact.api.runner import Runner
@@ -497,3 +498,33 @@ def test_selfcheck(api: Api) -> None:
     assert report["report"]["runtime_profile"] == "stub-x86_64"
     bad = api.client.post("/v1/system/selfcheck", json={"profile": "nope"}, headers=AUTH)
     assert bad.json() == {"error": "E_API_BAD_PROFILE"}
+
+
+def test_a_selfcheck_retry_joins_the_run_in_progress(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    calls = itertools.count()
+
+    def slow_selfcheck(*_args: Any, **_kw: Any) -> EngineResult:
+        next(calls)
+        started.set()
+        release.wait(timeout=10)
+        return EngineResult(0, json.dumps({"runtime_profile": "stub"}), None, spawn_failed=False, timed_out=False)
+
+    def post(profile: str) -> Any:
+        return api.client.post("/v1/system/selfcheck", json={"profile": profile}, headers=AUTH)
+
+    monkeypatch.setattr(app_module, "run_short", slow_selfcheck)
+    replies: list[Any] = []
+    first = threading.Thread(target=lambda: replies.append(post("maximal").json()))
+    first.start()
+    assert started.wait(timeout=10)
+    retry = threading.Thread(target=lambda: replies.append(post("maximal").json()))
+    retry.start()
+    assert post("broad").json() == {"error": "E_API_SELFCHECK_BUSY"}
+    time.sleep(0.2)  # let the retry reach the run in progress
+    release.set()
+    first.join(timeout=10)
+    retry.join(timeout=10)
+    assert [r["ok"] for r in replies] == [True, True]
+    assert next(calls) == 1  # one engine run served both requests
