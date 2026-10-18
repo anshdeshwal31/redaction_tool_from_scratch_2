@@ -243,7 +243,9 @@ class Runner:
         if job is None or job.state != "queued":
             return
         self._store.write(job.model_copy(update={"state": "running", "started_at": now_iso()}))
-        if active.cancelled:
+        with self._cv:
+            stop_now = active.cancelled or self._stopping
+        if stop_now:  # cancelled, or the server is shutting down: never start the engine
             self._settle(active, code=None, spawn_failed=False, error_code=None)
             return
         self._store.output_dir(active.id).mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -254,7 +256,7 @@ class Runner:
             self._settle(active, code=None, spawn_failed=True, error_code=None)
             return
         try:
-            if self._attach(active, proc):  # a cancel arrived between the spawn and here
+            if self._attach(active, proc):  # a cancel or a shutdown arrived before the engine was attached
                 kill_tree(proc)
             assert proc.stderr is not None
             error_code = watch_error_code(proc.stderr)
@@ -274,11 +276,12 @@ class Runner:
         self._settle(active, code=proc.returncode, spawn_failed=False, error_code=error_code())
 
     def _attach(self, active: _Active, proc: subprocess.Popen[bytes]) -> bool:
-        """Record the running process; True when the job was cancelled meanwhile (another thread
-        sets the flag, so it is re-read under the lock)."""
+        """Record the running process; True when the job was cancelled or the server began stopping
+        meanwhile (other threads set those flags, so they are re-read under the lock).  stop() kills
+        only an engine it can see, so one attached after it looked must be killed here."""
         with self._cv:
             active.proc = proc
-            return active.cancelled
+            return active.cancelled or self._stopping
 
     def _settle(self, active: _Active, *, code: int | None, spawn_failed: bool, error_code: str | None) -> None:
         job_id = active.id

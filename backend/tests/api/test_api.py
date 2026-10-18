@@ -436,6 +436,70 @@ def test_shutdown_interrupts_the_running_job(api: Api) -> None:
     assert not (api.jobs_dir / job_id / "in").exists()
 
 
+def _stop_meanwhile(runner: Runner) -> threading.Thread:
+    """Start a server shutdown on another thread, and return once it has begun."""
+    stopper = threading.Thread(target=runner.stop)
+    stopper.start()
+    deadline = time.monotonic() + 5
+    while not runner._stopping and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return stopper
+
+
+def test_a_shutdown_before_the_engine_starts_never_starts_it(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    write = JobStore.write
+    stoppers: list[threading.Thread] = []
+    spawned: list[object] = []
+
+    def stop_after_running(self: JobStore, job: JobRecord) -> None:
+        write(self, job)
+        if job.state == "running":  # the job is marked running, and no engine exists yet
+            stoppers.append(_stop_meanwhile(runner))
+
+    monkeypatch.setattr(JobStore, "write", stop_after_running)
+    monkeypatch.setattr(runner_module, "spawn", lambda *a, **k: spawned.append(a))
+    job_id = api.submit("hang")
+    deadline = time.monotonic() + 10
+    while not stoppers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    stoppers[0].join(timeout=10)
+    assert not stoppers[0].is_alive()
+    assert spawned == []
+    job = JobStore(api.jobs_dir).read(job_id)
+    assert job is not None
+    assert (job.state, job.error_code) == ("interrupted", "E_API_INTERRUPTED")
+
+
+def test_a_shutdown_while_the_engine_starts_kills_it(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    spawn = runner_module.spawn
+    stoppers: list[threading.Thread] = []
+    procs: list[subprocess.Popen[bytes]] = []
+
+    def stop_before_attach(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        proc = spawn(*args, **kwargs)
+        procs.append(proc)
+        stoppers.append(_stop_meanwhile(runner))  # stop() looks before the engine is attached
+        return proc
+
+    monkeypatch.setattr(runner_module, "spawn", stop_before_attach)
+    job_id = api.submit("hang")
+    deadline = time.monotonic() + 10
+    while not stoppers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        stoppers[0].join(timeout=20)
+        assert not stoppers[0].is_alive()  # it did not sit out its 30 s join
+        assert procs[0].poll() is not None
+        job = JobStore(api.jobs_dir).read(job_id)
+        assert job is not None
+        assert (job.state, job.error_code) == ("interrupted", "E_API_INTERRUPTED")
+    finally:
+        for proc in procs:
+            kill_tree(proc)
+
+
 def test_timeout_kills_the_job(api_factory: Callable[..., Api]) -> None:
     api = api_factory(job_timeout_s=1.0)
     job = api.wait(api.submit("hang"))["job"]
