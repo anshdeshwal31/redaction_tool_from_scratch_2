@@ -202,6 +202,19 @@ def test_upload_size_limits(api_factory: Callable[..., Api]) -> None:
     assert api.client.put(empty["uploadPath"], content=b"").json() == {"error": "E_API_EMPTY_UPLOAD"}
 
 
+def test_upload_must_match_the_declared_size(api: Api) -> None:
+    created = api.create(b"x" * 10)
+    short = api.client.put(created["uploadPath"], content=b"x" * 5)
+    assert (short.status_code, short.json()) == (400, {"error": "E_API_UPLOAD_SIZE_MISMATCH"})
+    # Streamed without a length header: checked while the bytes arrive, and again at the end.
+    longer = api.client.put(created["uploadPath"], content=iter([b"x" * 8, b"x" * 8]))
+    assert longer.json() == {"error": "E_API_UPLOAD_SIZE_MISMATCH"}
+    truncated = api.client.put(created["uploadPath"], content=iter([b"x" * 4]))
+    assert truncated.json() == {"error": "E_API_UPLOAD_SIZE_MISMATCH"}
+    assert not (api.jobs_dir / created["id"] / "in" / "input").exists()
+    assert api.client.put(created["uploadPath"], content=b"x" * 10).status_code == 202
+
+
 def test_download_links_are_bound_to_one_file_and_expire(api: Api) -> None:
     job_id = api.submit("released")
     view = api.wait(job_id)

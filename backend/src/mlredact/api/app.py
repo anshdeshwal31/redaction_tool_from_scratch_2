@@ -256,6 +256,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             id=job_id,
             created_at=now_iso(),
             state="awaiting_upload",
+            expected_bytes=body.input_bytes,
             upload_expires_at=iso_from_unix(expires),
             options=JobOptions(
                 profile=body.profile,
@@ -299,6 +300,8 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             job = await anyio.to_thread.run_sync(job_or_404, job_id)
             if job.state != "awaiting_upload":
                 raise ApiError(409, "E_API_UPLOAD_STATE")
+            expected = job.expected_bytes  # None for a job created before sizes were recorded
+            limit = expected or settings.max_upload_bytes
             digest = hashlib.sha256()
             size = 0
             # Straight to the job's input directory: no other copy of the document is made.
@@ -308,6 +311,8 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
                     size += len(chunk)
                     if size > settings.max_upload_bytes:
                         raise ApiError(413, "E_API_UPLOAD_TOO_LARGE")
+                    if size > limit:  # more than was declared
+                        raise ApiError(400, "E_API_UPLOAD_SIZE_MISMATCH")
                     digest.update(chunk)
                     buffer += chunk
                     if len(buffer) >= _CHUNK_WRITE:
@@ -317,9 +322,12 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
                     await anyio.to_thread.run_sync(f.write, bytes(buffer))
             if size == 0:
                 raise ApiError(400, "E_API_EMPTY_UPLOAD")
+            if expected and size != expected:  # a truncated upload
+                raise ApiError(400, "E_API_UPLOAD_SIZE_MISMATCH")
             queued = job.model_copy(
                 update={
                     "state": "queued",
+                    "expected_bytes": None,
                     "upload_expires_at": None,
                     "input": InputInfo(bytes=size, sha256=digest.hexdigest()),
                 }

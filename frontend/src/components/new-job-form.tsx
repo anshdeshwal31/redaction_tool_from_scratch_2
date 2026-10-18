@@ -20,6 +20,7 @@ const FALLBACK_PROFILES = ["broad", "claimant_focused", "maximal"];
 const SUBMIT_ERRORS: Record<string, string> = {
   E_API_UPLOAD_TOO_LARGE: "The document is larger than the server's upload limit.",
   E_API_EMPTY_UPLOAD: "That file is empty.",
+  E_API_UPLOAD_SIZE_MISMATCH: "The upload did not match the file's size. The file may have changed; try again.",
   E_API_BAD_PROFILE: "The engine does not know that profile.",
   E_API_BAD_REQUEST:
     "The server refused these options. Check the known identifiers (type and value, up to 500 characters), the scope ID and the evaluator key.",

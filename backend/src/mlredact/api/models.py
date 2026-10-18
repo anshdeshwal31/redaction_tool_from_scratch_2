@@ -77,6 +77,9 @@ class JobRecord(ApiModel):
     state: JobState
     options: JobOptions
     input: InputInfo | None = None
+    # The size declared when the job was created, while it waits for its upload: the upload must
+    # match it exactly.
+    expected_bytes: int | None = None
     upload_expires_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
@@ -114,7 +117,7 @@ class CreateJob(ApiModel):
     seeds: list[Seed] = Field(default_factory=list, max_length=500)
     evaluator_key: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     dev_key: bool = False
-    # Declared document size, checked again while the upload streams in.
+    # Declared document size: the upload must match it exactly.
     input_bytes: int = Field(gt=0)
 
     @field_validator("scope_id")
