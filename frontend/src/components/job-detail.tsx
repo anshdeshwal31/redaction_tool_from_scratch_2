@@ -170,7 +170,7 @@ function Progress({ view, onCancel, cancelling }: { view: JobView; onCancel: () 
           className="inline-flex h-12 items-center gap-2 border border-white/15 bg-black/35 px-5 text-sm font-medium text-white backdrop-blur-md transition-colors hover:bg-black/55 disabled:opacity-50"
         >
           {cancelling ? <Spinner /> : <Square className="size-3.5" aria-hidden />}
-          {running ? "Stop job" : "Cancel"}
+          {running ? "Stop job" : job.state === "awaiting_upload" ? "Discard" : "Cancel"}
         </button>
       </div>
     </section>
@@ -182,7 +182,9 @@ export function JobDetail({ id }: { id: string }) {
   const { data, error, refresh } = usePolling<JobView>(`/api/jobs/${id}`, 1500, (d) => ACTIVE_STATES.has(d.job.state));
   const [tab, setTab] = useState<Tab | null>(null);
   const [busy, setBusy] = useState<"cancel" | "delete" | null>(null);
-  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<{ action: "cancel" | "delete"; code: string } | null>(null);
+  // The viewer stays mounted once opened, so switching tabs never downloads the PDF again.
+  const [documentOpened, setDocumentOpened] = useState(false);
   const files = data?.files ?? [];
   const { manifest, loading: manifestLoading } = useManifest(id, files.includes("manifest.json"));
   // A fresh signed link each time the viewer opens, so a page left open never shows an expired one.
@@ -225,16 +227,17 @@ export function JobDetail({ id }: { id: string }) {
   const active = ACTIVE_STATES.has(job.state);
   const released = job.state === "released";
   const activeTab: Tab = tab ?? (released ? "document" : "overview");
+  if (activeTab === "document" && !documentOpened) setDocumentOpened(true);
   const has = (name: OutputFile) => files.includes(name);
   const o = job.options;
 
   async function cancel() {
     setBusy("cancel");
-    setCancelError(null);
+    setActionError(null);
     try {
       await send(`/api/jobs/${id}/cancel`, "POST");
     } catch (err) {
-      setCancelError(err instanceof ApiError ? err.code : "E_UI_NETWORK");
+      setActionError({ action: "cancel", code: err instanceof ApiError ? err.code : "E_UI_NETWORK" });
     } finally {
       setBusy(null);
       refresh();
@@ -244,11 +247,14 @@ export function JobDetail({ id }: { id: string }) {
   async function remove() {
     if (!window.confirm("Delete this job and all of its artefacts? This cannot be undone.")) return;
     setBusy("delete");
+    setActionError(null);
     try {
       await send(`/api/jobs/${id}`, "DELETE");
       router.push("/jobs");
-    } catch {
+    } catch (err) {
+      setActionError({ action: "delete", code: err instanceof ApiError ? err.code : "E_UI_NETWORK" });
       setBusy(null);
+      refresh();
     }
   }
 
@@ -319,11 +325,22 @@ export function JobDetail({ id }: { id: string }) {
         </div>
       </header>
 
-      {active ? <Progress view={data} onCancel={cancel} cancelling={busy === "cancel"} /> : null}
+      {active ? (
+        // A job still waiting for its upload has nothing to stop: it can only be discarded.
+        <Progress
+          view={data}
+          onCancel={job.state === "awaiting_upload" ? remove : cancel}
+          cancelling={busy !== null}
+        />
+      ) : null}
 
-      {cancelError ? (
-        <Notice tone="warn" icon={<AlertOctagon className="size-4" />} title="The job could not be stopped">
-          <Mono className="font-medium text-ink">{cancelError}</Mono> — {reasonText(cancelError)}
+      {actionError ? (
+        <Notice
+          tone="warn"
+          icon={<AlertOctagon className="size-4" />}
+          title={actionError.action === "delete" ? "The job could not be deleted" : "The job could not be stopped"}
+        >
+          <Mono className="font-medium text-ink">{actionError.code}</Mono> — {reasonText(actionError.code)}
         </Notice>
       ) : null}
 
@@ -402,21 +419,31 @@ export function JobDetail({ id }: { id: string }) {
 
           <div>
             <Tabs tab={activeTab} onChange={changeTab} />
-            <div
-              key={activeTab}
-              role="tabpanel"
-              id={`panel-${activeTab}`}
-              aria-labelledby={`tab-${activeTab}`}
-              className="fade-up pt-2"
-            >
-              {activeTab === "overview" ? <OverviewPanel manifest={manifest} run={run} onOpenTab={changeTab} /> : null}
-              {activeTab === "document" ? (
+            {documentOpened ? (
+              <div
+                role="tabpanel"
+                id="panel-document"
+                aria-labelledby="tab-document"
+                hidden={activeTab !== "document"}
+                className="fade-up pt-2"
+              >
                 <DocumentViewer manifest={manifest} pdfUrl={has("redacted.pdf") ? pdfSource : null} />
-              ) : null}
-              {activeTab === "verification" ? <VerificationPanel manifest={manifest} /> : null}
-              {activeTab === "pages" ? <PagesPanel manifest={manifest} /> : null}
-              {activeTab === "provenance" ? <ProvenancePanel manifest={manifest} run={run} /> : null}
-            </div>
+              </div>
+            ) : null}
+            {activeTab !== "document" ? (
+              <div
+                key={activeTab}
+                role="tabpanel"
+                id={`panel-${activeTab}`}
+                aria-labelledby={`tab-${activeTab}`}
+                className="fade-up pt-2"
+              >
+                {activeTab === "overview" ? <OverviewPanel manifest={manifest} run={run} onOpenTab={changeTab} /> : null}
+                {activeTab === "verification" ? <VerificationPanel manifest={manifest} /> : null}
+                {activeTab === "pages" ? <PagesPanel manifest={manifest} /> : null}
+                {activeTab === "provenance" ? <ProvenancePanel manifest={manifest} run={run} /> : null}
+              </div>
+            ) : null}
           </div>
         </>
       ) : manifestLoading ? (
