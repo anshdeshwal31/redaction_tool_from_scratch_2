@@ -16,6 +16,8 @@ build/
 # Never commit documents or job outputs
 *.pdf
 !backend/tests/fixtures/**/*.pdf
+# The client's filled-in policy decisions stay local
+backend/docs/client_policy_decisions_filled_by_joel.docx
 out/
 workspace/
 # API job store (MLREDACT_API_JOBS_DIR default)
