@@ -57,8 +57,12 @@ const TH = "px-5 py-3.5 text-[0.6875rem] font-medium tracking-wider uppercase";
 
 export function JobsTable() {
   const router = useRouter();
-  const { data, error } = usePolling<{ jobs: Row[] }>("/api/jobs", 2000, (d) =>
-    d.jobs.some((j) => ACTIVE_STATES.has(j.state)),
+  // Idle polling too: jobs started from another tab or by a colleague must still appear.
+  const { data, error } = usePolling<{ jobs: Row[] }>(
+    "/api/jobs",
+    2000,
+    (d) => d.jobs.some((j) => ACTIVE_STATES.has(j.state)),
+    15000,
   );
   const jobs = data?.jobs ?? [];
   const now = useNow(jobs.some((j) => j.state === "running"));

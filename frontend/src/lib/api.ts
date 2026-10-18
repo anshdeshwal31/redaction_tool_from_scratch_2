@@ -81,10 +81,11 @@ export function uploadFile(url: string, file: Blob, onProgress: (fraction: numbe
 }
 
 /**
- * Fetch `url`, then refetch every `intervalMs` while `shouldPoll(data)` holds.  The previous data
- * stays on screen during refetches (no flash), and polling pauses while the tab is hidden.
+ * Fetch `url`, then refetch every `intervalMs` while `shouldPoll(data)` holds; otherwise every
+ * `idleMs` if given, or not at all.  The previous data stays on screen during refetches (no flash),
+ * and polling slows while the tab is hidden.
  */
-export function usePolling<T>(url: string, intervalMs: number, shouldPoll: (data: T) => boolean) {
+export function usePolling<T>(url: string, intervalMs: number, shouldPoll: (data: T) => boolean, idleMs?: number) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [tick, setTick] = useState(0);
@@ -103,7 +104,8 @@ export function usePolling<T>(url: string, intervalMs: number, shouldPoll: (data
         const next = await getJson<T>(url, ctrl.signal);
         setData(next);
         setError(null);
-        if (shouldPollRef.current(next)) timer = setTimeout(load, document.hidden ? intervalMs * 5 : intervalMs);
+        const delay = shouldPollRef.current(next) ? intervalMs : idleMs;
+        if (delay !== undefined) timer = setTimeout(load, document.hidden ? delay * 5 : delay);
       } catch (err) {
         if (ctrl.signal.aborted) return;
         setError(err instanceof ApiError ? err : new ApiError(0, "E_UI_NETWORK"));
@@ -115,7 +117,7 @@ export function usePolling<T>(url: string, intervalMs: number, shouldPoll: (data
       ctrl.abort();
       clearTimeout(timer);
     };
-  }, [url, intervalMs, tick]);
+  }, [url, intervalMs, idleMs, tick]);
 
   return { data, error, refresh };
 }

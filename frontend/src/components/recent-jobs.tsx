@@ -91,7 +91,13 @@ function JobCard({ job, now }: { job: JobRecord; now: number }) {
 }
 
 export function RecentJobs() {
-  const { data } = usePolling<{ jobs: JobRecord[] }>("/api/jobs", 3000, (d) => d.jobs.some((j) => ACTIVE_STATES.has(j.state)));
+  // Idle polling too: jobs started from another tab or by a colleague must still appear.
+  const { data } = usePolling<{ jobs: JobRecord[] }>(
+    "/api/jobs",
+    3000,
+    (d) => d.jobs.some((j) => ACTIVE_STATES.has(j.state)),
+    15000,
+  );
   const now = useNow(false);
   const jobs = data?.jobs.slice(0, 2) ?? [];
 
