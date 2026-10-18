@@ -15,7 +15,14 @@ export class ApiError extends Error {
 }
 
 async function parse<T>(res: Response): Promise<T> {
-  const body = (await res.json().catch(() => ({}))) as T & { error?: string };
+  let body: T & { error?: string };
+  try {
+    body = (await res.json()) as T & { error?: string };
+  } catch {
+    // A success must carry its JSON body: never hand callers an object of the wrong shape.
+    if (res.ok) throw new ApiError(res.status, "E_UI_BAD_RESPONSE");
+    body = {} as T & { error?: string };
+  }
   if (res.status === 401 && typeof window !== "undefined") {
     // Session expired: sign in again and come back here.
     const back = window.location.pathname + window.location.search + window.location.hash;
