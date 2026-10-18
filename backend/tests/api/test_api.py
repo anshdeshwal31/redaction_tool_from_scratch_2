@@ -456,6 +456,32 @@ def test_list_jobs_newest_first(api: Api) -> None:
     assert stamps == sorted(stamps, reverse=True)
 
 
+def test_list_jobs_reports_queue_positions(api: Api) -> None:
+    blocking = api.submit("hang")
+    api.wait(blocking, until=lambda v: v["job"]["state"] == "running")
+    waiting = [api.submit("released") for _ in range(2)]
+    jobs = {j["id"]: j for j in api.client.get("/v1/jobs", headers=AUTH).json()["jobs"]}
+    assert [jobs[w].get("queuePosition") for w in waiting] == [0, 1]
+    assert "queuePosition" not in jobs[blocking]
+    api.client.post(f"/v1/jobs/{blocking}/cancel", headers=AUTH)
+
+
+def test_job_records_are_parsed_again_only_when_they_change(tmp_path: Path) -> None:
+    store = JobStore(tmp_path)
+    job_id = new_job_id()
+    store.write(_record(job_id, "queued"))
+    first = store.read(job_id)
+    assert first is not None and store.read(job_id) is first  # unchanged: served from memory
+    JobStore(tmp_path).write(_record(job_id, "running"))  # changed by someone else
+    changed = store.read(job_id)
+    assert changed is not None and changed.state == "running"
+    store.write(_record(job_id, "released"))
+    released = store.read(job_id)
+    assert released is not None and released.state == "released"
+    store.remove(job_id)
+    assert store.read(job_id) is None and store.list_jobs() == []
+
+
 # ----------------------------------------------------------------------------------- recovery and sweep
 
 

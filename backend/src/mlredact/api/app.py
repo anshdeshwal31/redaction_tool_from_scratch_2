@@ -230,9 +230,8 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     @app.get("/v1/jobs")
     def list_jobs(_: Authorised) -> dict[str, Any]:
-        items = [
-            JobListItem(**job.model_dump(), queue_position=runner.queue_position(job.id)) for job in store.list_jobs()
-        ]
+        positions = runner.queue_positions()
+        items = [JobListItem(**job.model_dump(), queue_position=positions.get(job.id)) for job in store.list_jobs()]
         return JobList(jobs=items).dump()
 
     @app.post("/v1/jobs", status_code=201)

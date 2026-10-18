@@ -126,6 +126,11 @@ class Runner:
         with self._cv:
             return self._queue.index(job_id) if job_id in self._queue else None
 
+    def queue_positions(self) -> dict[str, int]:
+        """Every queued job's position, in one pass (a job list asks for all of them)."""
+        with self._cv:
+            return {job_id: i for i, job_id in enumerate(self._queue)}
+
     def status(self) -> tuple[str | None, int]:
         with self._cv:
             return (self._active.id if self._active else None), len(self._queue)

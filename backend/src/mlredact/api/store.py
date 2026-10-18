@@ -13,6 +13,7 @@ import contextlib
 import json
 import re
 import shutil
+import threading
 import time
 import uuid
 from datetime import UTC, datetime
@@ -47,6 +48,11 @@ class JobStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Parsed records, keyed by job id, with the stat of the job.json they were read from.
+        self._cache: dict[str, tuple[tuple[int, int, int], JobRecord]] = {}
+        # Counts this store's writes and removals: a read that overlapped one does not cache.
+        self._changes = 0
+        self._lock = threading.Lock()
 
     def job_dir(self, job_id: str) -> Path:
         if not is_job_id(job_id):
@@ -77,6 +83,7 @@ class JobStore:
         for attempt in range(41):
             try:
                 tmp.replace(target)
+                self._forget(job.id)
                 return
             except _RETRYABLE:
                 if attempt == 40:
@@ -90,7 +97,20 @@ class JobStore:
         path = self.root / job_id / "job.json"
         for attempt in range(41):
             try:
-                return JobRecord.model_validate_json(path.read_text("utf-8"))
+                # A job list reads every record on each poll; an unchanged file is not parsed again.
+                # Every write replaces the file, so a new record always has a new stat.
+                with self._lock:
+                    changes = self._changes
+                    hit = self._cache.get(job_id)
+                st = path.stat()
+                stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+                if hit is not None and hit[0] == stamp:
+                    return hit[1]
+                job = JobRecord.model_validate_json(path.read_text("utf-8"))
+                with self._lock:
+                    if self._changes == changes:
+                        self._cache[job_id] = (stamp, job)
+                return job
             except _RETRYABLE:
                 # Windows: the file is being replaced by a concurrent write this very moment.
                 if attempt == 40:
@@ -101,7 +121,11 @@ class JobStore:
         return None
 
     def list_jobs(self) -> list[JobRecord]:
-        jobs = [j for p in self.root.iterdir() if is_job_id(p.name) and (j := self.read(p.name)) is not None]
+        ids = [p.name for p in self.root.iterdir() if is_job_id(p.name)]
+        jobs = [j for job_id in ids if (j := self.read(job_id)) is not None]
+        with self._lock:  # forget jobs whose directory is gone
+            for gone in self._cache.keys() - set(ids):
+                del self._cache[gone]
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
     # ---------------------------------------------------------------------------------- files
@@ -109,7 +133,17 @@ class JobStore:
         _rmtree(self.input_dir(job_id))
 
     def remove(self, job_id: str) -> None:
-        _rmtree(self.job_dir(job_id))
+        try:
+            _rmtree(self.job_dir(job_id))
+        finally:
+            self._forget(job_id)
+
+    def _forget(self, job_id: str) -> None:
+        # Never trust the stat alone for this store's own changes: inode numbers are reused, and
+        # some filesystems keep coarse timestamps.
+        with self._lock:
+            self._changes += 1
+            self._cache.pop(job_id, None)
 
     def outputs(self, job_id: str) -> list[str]:
         return [n for n in OUTPUT_FILES if (self.output_dir(job_id) / n).is_file()]
