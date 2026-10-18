@@ -287,6 +287,25 @@ def test_delete_running_and_finished(api: Api) -> None:
     assert api.client.delete(f"/v1/jobs/{done}", headers=AUTH).json() == {"result": "deleted"}
 
 
+def test_an_upload_never_starts_into_a_job_being_deleted(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    created = api.create(b"x")
+    remove = JobStore.remove
+    claims: list[str] = []
+
+    def upload_meanwhile(self: JobStore, job_id: str) -> None:
+        claims.append(runner.begin_upload(job_id))
+        remove(self, job_id)
+
+    monkeypatch.setattr(JobStore, "remove", upload_meanwhile)
+    assert runner.delete(created["id"]) == "deleted"
+    assert claims == ["gone"]
+    # Claimed after the delete finished: the job is re-read under the claim, and is gone.
+    res = api.client.put(created["uploadPath"], content=b"x")
+    assert (res.status_code, res.json()) == (404, {"error": "E_API_NOT_FOUND"})
+    assert not (api.jobs_dir / created["id"]).exists()
+
+
 def test_a_failed_settle_does_not_stop_the_queue(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
     run, settle = Runner._run, Runner._settle
     calls = itertools.count()
@@ -473,6 +492,31 @@ def test_sweep_forgets_the_scope_id_of_an_expired_upload(api: Api) -> None:
     runner._sweep()
     assert not (api.jobs_dir / job_id).exists()
     assert job_id not in runner._scope_ids
+
+
+def test_the_sweep_spares_an_upload_that_began_meanwhile(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    store = JobStore(api.jobs_dir)
+    job_id = api.create(b"x")["id"]
+    job = store.read(job_id)
+    assert job is not None
+    store.write(job.model_copy(update={"upload_expires_at": iso_from_unix(time.time() - 60)}))
+    list_jobs = JobStore.list_jobs
+    claims: list[str] = []
+
+    def upload_meanwhile(self: JobStore) -> list[JobRecord]:
+        jobs = list_jobs(self)
+        if not claims:  # an upload with a link signed just before it expired
+            claims.append(runner.begin_upload(job_id))
+        return jobs
+
+    monkeypatch.setattr(JobStore, "list_jobs", upload_meanwhile)
+    runner._sweep()
+    assert claims == ["ok"]
+    assert (api.jobs_dir / job_id).exists()
+    runner.end_upload(job_id)
+    runner._sweep()
+    assert not (api.jobs_dir / job_id).exists()
 
 
 def test_sweep_runs_while_a_job_is_running(api_factory: Callable[..., Api], monkeypatch: pytest.MonkeyPatch) -> None:

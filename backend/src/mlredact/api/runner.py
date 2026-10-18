@@ -54,6 +54,8 @@ class Runner:
         # Values that must never be written to disk: the caller's scope id, until the job runs.
         self._scope_ids: dict[str, str] = {}
         self._uploading: set[str] = set()
+        # Jobs a delete or the sweep is removing right now: an upload may not start into them.
+        self._removing: set[str] = set()
         # Deleted jobs whose directory could not be removed yet (Windows handles); the sweep retries.
         self._pending_removal: set[str] = set()
         # Jobs whose outcome could not be recorded at all; the sweep retries marking them failed.
@@ -99,12 +101,16 @@ class Runner:
         with self._cv:
             self._scope_ids[job_id] = scope_id
 
-    def begin_upload(self, job_id: str) -> bool:
+    def begin_upload(self, job_id: str) -> Literal["ok", "busy", "gone"]:
+        """Claim a job for its upload.  The caller re-reads the job afterwards: a delete that finished
+        just before the claim leaves nothing to upload into."""
         with self._cv:
+            if job_id in self._removing:
+                return "gone"
             if job_id in self._uploading:
-                return False
+                return "busy"
             self._uploading.add(job_id)
-            return True
+            return "ok"
 
     def end_upload(self, job_id: str) -> None:
         with self._cv:
@@ -167,12 +173,17 @@ class Runner:
                 if job_id in self._queue:
                     self._queue.remove(job_id)
                 self._scope_ids.pop(job_id, None)
+                self._removing.add(job_id)
         if pending:
             if proc is not None:
                 kill_tree(proc)
             return "pending"
-        with self._records:
-            self._store.remove(job_id)
+        try:
+            with self._records:
+                self._store.remove(job_id)
+        finally:
+            with self._cv:
+                self._removing.discard(job_id)
         return "deleted"
 
     # ------------------------------------------------------------------------------- worker
@@ -363,9 +374,17 @@ class Runner:
                 if job.state == "awaiting_upload":
                     expires = job.upload_expires_at
                     if expires is None or datetime.fromisoformat(expires).timestamp() < now:
-                        with self._cv:  # the caller's scope id goes with the job, never kept in memory
+                        with self._cv:
+                            if job.id in self._uploading:  # began after the snapshot above
+                                continue
+                            self._removing.add(job.id)
+                            # The caller's scope id goes with the job, never kept in memory.
                             self._scope_ids.pop(job.id, None)
-                        self._store.remove(job.id)
+                        try:
+                            self._store.remove(job.id)
+                        finally:
+                            with self._cv:
+                                self._removing.discard(job.id)
                 elif job.state not in ("queued", "running") and self._store.input_dir(job.id).exists():
                     self._store.remove_inputs(job.id)
             except OSError:

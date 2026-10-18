@@ -284,16 +284,21 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             raise ApiError(404, "E_API_NOT_FOUND")
         if problem := verify(key, token, "upload", job_id, "input"):
             raise ApiError(403, problem)
-        job = job_or_404(job_id)
-        if job.state != "awaiting_upload":
-            raise ApiError(409, "E_API_UPLOAD_STATE")
         declared = request.headers.get("content-length", "")
         if declared.isdigit() and int(declared) > settings.max_upload_bytes:
             raise ApiError(413, "E_API_UPLOAD_TOO_LARGE")
-        if not runner.begin_upload(job_id):
+        claim = runner.begin_upload(job_id)
+        if claim == "gone":
+            raise ApiError(404, "E_API_NOT_FOUND")
+        if claim == "busy":
             raise ApiError(409, "E_API_UPLOAD_IN_PROGRESS")
         part = store.input_dir(job_id) / "input.part"
         try:
+            # Read under the claim, so a delete or the sweep cannot remove the job while it uploads.
+            # Store calls run on a thread: they retry with sleeps, which must not hold up the loop.
+            job = await anyio.to_thread.run_sync(job_or_404, job_id)
+            if job.state != "awaiting_upload":
+                raise ApiError(409, "E_API_UPLOAD_STATE")
             digest = hashlib.sha256()
             size = 0
             # Straight to the job's input directory: no other copy of the document is made.
@@ -312,17 +317,20 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
                     await anyio.to_thread.run_sync(f.write, bytes(buffer))
             if size == 0:
                 raise ApiError(400, "E_API_EMPTY_UPLOAD")
-            part.replace(store.input_dir(job_id) / "input")
-            store.write(
-                job.model_copy(
-                    update={
-                        "state": "queued",
-                        "upload_expires_at": None,
-                        "input": InputInfo(bytes=size, sha256=digest.hexdigest()),
-                    }
-                )
+            queued = job.model_copy(
+                update={
+                    "state": "queued",
+                    "upload_expires_at": None,
+                    "input": InputInfo(bytes=size, sha256=digest.hexdigest()),
+                }
             )
-            runner.enqueue(job_id)
+
+            def commit() -> None:
+                part.replace(store.input_dir(job_id) / "input")
+                store.write(queued)
+                runner.enqueue(job_id)
+
+            await anyio.to_thread.run_sync(commit)
         except BaseException:
             part.unlink(missing_ok=True)
             raise
