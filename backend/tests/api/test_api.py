@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -14,6 +16,7 @@ from typing import Any
 import pytest
 
 from mlredact.api import app as app_module
+from mlredact.api import engine as engine_module
 from mlredact.api import runner as runner_module
 from mlredact.api.engine import EngineResult, kill_tree
 from mlredact.api.links import link_key, sign
@@ -361,6 +364,34 @@ def test_an_internal_error_after_spawn_kills_the_engine(api: Api, monkeypatch: p
     finally:
         for proc in procs:
             kill_tree(proc)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+def test_kill_tree_reaches_workers_that_outlive_the_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engine_module, "KILL_GRACE_S", 0.1)
+    pid_file = tmp_path / "worker.pid"
+    worker = (
+        "import pathlib, signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(__import__('os').getpid())); time.sleep(60)"
+    )
+    leader = (
+        "import pathlib, subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {worker!r}]); "
+        f"[time.sleep(0.02) for _ in range(500) if not pathlib.Path({str(pid_file)!r}).exists()]"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", leader], start_new_session=True)
+    proc.wait(timeout=20)  # the CLI has exited; its worker ignores SIGINT and lives on
+    worker_pid = int(pid_file.read_text())
+    kill_tree(proc)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(worker_pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.kill(worker_pid, 9)
+    raise AssertionError("the worker outlived kill_tree")
 
 
 def test_shutdown_interrupts_the_running_job(api: Api) -> None:

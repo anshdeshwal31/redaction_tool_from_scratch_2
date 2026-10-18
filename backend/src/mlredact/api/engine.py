@@ -21,6 +21,8 @@ from mlredact.api.settings import ApiSettings
 _ERROR_LINE = re.compile(r"^error: ((?:E|V\d)_[A-Z0-9_]+)\b")
 _MAX_LINE = 16_384
 _IS_WINDOWS = os.name == "nt"
+# How long a SIGINT gets before the whole group is sent SIGKILL.
+KILL_GRACE_S = 10.0
 
 
 def spawn(settings: ApiSettings, args: Sequence[str], *, capture_stdout: bool = False) -> subprocess.Popen[bytes]:
@@ -67,9 +69,9 @@ def watch_error_code(stream: IO[bytes]) -> Callable[[], str | None]:
 def kill_tree(proc: subprocess.Popen[bytes]) -> None:
     """Stop a child and everything it started.  POSIX gets SIGINT first so Python releases its shared
     memory, then SIGKILL after a grace period."""
-    if proc.poll() is not None:
-        return
     if _IS_WINDOWS:
+        if proc.poll() is not None:
+            return
         subprocess.run(  # noqa: S603 - fixed system binary
             ["taskkill", "/pid", str(proc.pid), "/T", "/F"],  # noqa: S607
             stdout=subprocess.DEVNULL,
@@ -78,17 +80,18 @@ def kill_tree(proc: subprocess.Popen[bytes]) -> None:
         )
         return
     killpg = getattr(os, "killpg")  # noqa: B009 - POSIX only; keeps mypy quiet on Windows
+    # The group, not the leader: page workers can outlive a CLI that has already exited, and the
+    # group id stays theirs (it is not reused) for as long as any of them is alive.
     try:
         killpg(proc.pid, signal.SIGINT)
     except ProcessLookupError:
-        return
+        return  # nobody left in the group
 
     def force() -> None:
-        if proc.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                killpg(proc.pid, getattr(signal, "SIGKILL"))  # noqa: B009
+        with contextlib.suppress(ProcessLookupError):
+            killpg(proc.pid, getattr(signal, "SIGKILL"))  # noqa: B009
 
-    timer = threading.Timer(10.0, force)
+    timer = threading.Timer(KILL_GRACE_S, force)
     timer.daemon = True
     timer.start()
 
