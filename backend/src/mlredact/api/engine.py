@@ -20,6 +20,7 @@ from mlredact.api.settings import ApiSettings
 # unread, so nothing document-derived reaches a job record or a response.
 _ERROR_LINE = re.compile(r"^error: ((?:E|V\d)_[A-Z0-9_]+)\b")
 _MAX_LINE = 16_384
+_MAX_STDOUT = 1_000_000
 _IS_WINDOWS = os.name == "nt"
 # How long a SIGINT gets before the whole group is sent SIGKILL.
 KILL_GRACE_S = 10.0
@@ -114,7 +115,16 @@ def run_short(settings: ApiSettings, args: Sequence[str], timeout_s: float) -> E
     assert proc.stderr is not None and proc.stdout is not None
     error_code = watch_error_code(proc.stderr)
     out: list[bytes] = []
-    reader = threading.Thread(target=lambda: out.append(proc.stdout.read(1_000_000) if proc.stdout else b""))
+
+    def drain(stream: IO[bytes]) -> None:
+        # Keep the first _MAX_STDOUT bytes but read to EOF: a child blocked on a full pipe never exits.
+        kept = 0
+        while chunk := stream.read(65_536):
+            if kept < _MAX_STDOUT:
+                out.append(chunk[: _MAX_STDOUT - kept])
+                kept += len(out[-1])
+
+    reader = threading.Thread(target=drain, args=(proc.stdout,), daemon=True)
     reader.start()
     timed_out = False
     try:
