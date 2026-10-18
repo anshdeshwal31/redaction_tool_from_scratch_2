@@ -134,9 +134,10 @@ export function NewJobForm() {
     if (!file || !canSubmit) return;
     setSubmitting(true);
     setError(null);
+    let created: CreatedJob | null = null;
     try {
       // 1. Create the job (small JSON through this app's server, which holds the API token).
-      const created = await send<CreatedJob>("/api/jobs", "POST", {
+      created = await send<CreatedJob>("/api/jobs", "POST", {
         profile,
         style,
         ...(workers ? { workers: Number(workers) } : {}),
@@ -152,6 +153,9 @@ export function NewJobForm() {
       await uploadFile(created.uploadUrl, file, setProgress);
       router.push(`/jobs/${created.id}`);
     } catch (err) {
+      // A job whose upload failed would only wait for its link to expire: discard it now. Best
+      // effort, as the server sweeps it away later anyway.
+      if (created) send(`/api/jobs/${created.id}`, "DELETE").catch(() => {});
       const code = err instanceof ApiError ? err.code : "E_UI_NETWORK";
       setError(SUBMIT_ERRORS[code] ?? `The server refused the job (${code}).`);
       setSubmitting(false);
