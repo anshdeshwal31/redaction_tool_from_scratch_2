@@ -11,7 +11,16 @@ type Props = { searchParams: Promise<{ callbackUrl?: string; error?: string }> }
 
 /** Only same-site paths: a callback URL must never send a signed-in user to another site. */
 function safeCallback(raw: string | undefined): string {
-  return raw && raw.startsWith("/") && !raw.startsWith("//") && !raw.startsWith("/\\") ? raw : "/";
+  if (!raw?.startsWith("/")) return "/";
+  // Parse it the way the browser will: URL parsing strips tabs and newlines and reads '\' as '/', so
+  // prefix checks alone let '/\t/evil.com' through as '//evil.com'.
+  const base = "http://same.invalid";
+  try {
+    const url = new URL(raw, base);
+    return url.origin === base ? url.pathname + url.search + url.hash : "/";
+  } catch {
+    return "/";
+  }
 }
 
 export default async function LoginPage({ searchParams }: Props) {
