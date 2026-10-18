@@ -243,13 +243,6 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         if body.input_bytes > settings.max_upload_bytes:
             raise ApiError(413, "E_API_UPLOAD_TOO_LARGE")
         job_id = new_job_id()
-        in_dir = store.input_dir(job_id)
-        in_dir.mkdir(parents=True, mode=0o700)
-        if body.seeds:
-            seeds = [{"type": s.type, "value": s.value} for s in body.seeds]
-            (in_dir / "seeds.json").write_text(json.dumps(seeds), encoding="utf-8")
-        if body.evaluator_key:
-            (in_dir / "evaluator.pub").write_text(body.evaluator_key + "\n", encoding="ascii")
         token, expires = sign(key, "upload", job_id, "input", settings.upload_ttl_s)
         job = JobRecord(
             id=job_id,
@@ -267,7 +260,21 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
                 dev_key=body.dev_key,
             ),
         )
+        # The record first: once it exists the sweep deletes an expired job, so seeds written after it
+        # can never be stranded in a directory nothing tracks.
+        store.job_dir(job_id).mkdir(mode=0o700)
         store.write(job)
+        try:
+            in_dir = store.input_dir(job_id)
+            in_dir.mkdir(mode=0o700)
+            if body.seeds:
+                seeds = [{"type": s.type, "value": s.value} for s in body.seeds]
+                (in_dir / "seeds.json").write_text(json.dumps(seeds), encoding="utf-8")
+            if body.evaluator_key:
+                (in_dir / "evaluator.pub").write_text(body.evaluator_key + "\n", encoding="ascii")
+        except BaseException:
+            store.remove(job_id)
+            raise
         if body.scope_id:
             runner.remember_scope(job_id, body.scope_id)
         return CreatedJob(
