@@ -58,22 +58,32 @@ class Runner:
         self._pending_removal: set[str] = set()
         # Jobs whose outcome could not be recorded at all; the sweep retries marking them failed.
         self._unsettled: set[str] = set()
+        # Serialises a queued job's cancel with a delete of the same job, so the cancel's record
+        # write can never recreate a directory the delete has just removed.
+        self._records = threading.Lock()
         self._stopping = False
+        self._stopped = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="mlredact-api-runner", daemon=True)
+        # Its own thread: a long job must not hold back expiring uploads and their seeds.
+        self._sweeper = threading.Thread(target=self._sweep_loop, name="mlredact-api-sweeper", daemon=True)
 
     # ------------------------------------------------------------------------------- lifecycle
     def start(self) -> None:
         self._recover()
         self._thread.start()
+        self._sweeper.start()
 
     def stop(self) -> None:
+        """Stop the worker and the sweep.  A job cut off here is recorded as interrupted."""
         with self._cv:
             self._stopping = True
             active = self._active
             self._cv.notify_all()
+        self._stopped.set()
         if active is not None and active.proc is not None:
             kill_tree(active.proc)
         self._thread.join(timeout=30)
+        self._sweeper.join(timeout=30)
 
     def _recover(self) -> None:
         for job in self._store.list_jobs():
@@ -130,10 +140,11 @@ class Runner:
             else:  # not queued or running, or already finishing: too late to cancel
                 return False
         if queued:
-            self._store.remove_inputs(job_id)
-            job = self._store.read(job_id)
-            if job is not None:
-                self._store.write(job.model_copy(update={"state": "cancelled", "finished_at": now_iso()}))
+            with self._records:
+                self._store.remove_inputs(job_id)
+                job = self._store.read(job_id)
+                if job is not None:
+                    self._store.write(job.model_copy(update={"state": "cancelled", "finished_at": now_iso()}))
         elif proc is not None:
             kill_tree(proc)
         return True
@@ -160,30 +171,23 @@ class Runner:
             if proc is not None:
                 kill_tree(proc)
             return "pending"
-        self._store.remove(job_id)
+        with self._records:
+            self._store.remove(job_id)
         return "deleted"
 
     # ------------------------------------------------------------------------------- worker
     def _loop(self) -> None:
-        last_sweep = 0.0
         while True:
             with self._cv:
                 if self._stopping:
                     return
                 if not self._queue:
-                    self._cv.wait(timeout=SWEEP_EVERY_S)
-                    active = None
-                    scope = None
-                else:
-                    job_id = self._queue.popleft()
-                    active = _Active(job_id)
-                    self._active = active
-                    scope = self._scope_ids.pop(job_id, None)
-            if active is None:
-                if time.monotonic() - last_sweep >= SWEEP_EVERY_S:
-                    last_sweep = time.monotonic()
-                    self._sweep()
-                continue
+                    self._cv.wait()
+                    continue
+                job_id = self._queue.popleft()
+                active = _Active(job_id)
+                self._active = active
+                scope = self._scope_ids.pop(job_id, None)
             try:
                 self._run(active, scope)
             except Exception as exc:  # never let one job stop the queue
@@ -265,6 +269,7 @@ class Runner:
         with self._cv:
             active.settling = True
             delete = active.delete_on_exit
+            stopping = self._stopping
         if delete:
             active.removed = True
             self._remove(job_id)
@@ -284,6 +289,9 @@ class Runner:
             update["state"] = "quarantined"
         elif active.cancelled:
             update["state"] = "cancelled"
+        elif stopping:  # killed by a server shutdown, not by anything wrong with the document
+            update["state"] = "interrupted"
+            update["error_code"] = "E_API_INTERRUPTED"
         else:
             update["state"] = "failed"
             update["error_code"] = (
@@ -320,6 +328,13 @@ class Runner:
             update = {"state": "failed", "error_code": "E_API_INTERNAL", "finished_at": now_iso()}
             self._store.write(job.model_copy(update=update))
 
+    def _sweep_loop(self) -> None:
+        while not self._stopped.wait(SWEEP_EVERY_S):
+            try:
+                self._sweep()
+            except Exception as exc:  # the next sweep tries again
+                _log.error("api.sweep_failed", error_type=type(exc).__name__)
+
     def _sweep(self) -> None:
         """Drop uploads that never arrived, and inputs a finished job could not delete at the time."""
         now = time.time()
@@ -334,7 +349,7 @@ class Runner:
                 continue
             with self._cv:
                 self._pending_removal.discard(job_id)
-        for job_id in unsettled - pending:
+        for job_id in unsettled - pending - busy:
             try:
                 self._fail_unsettled(job_id)
             except OSError:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -244,6 +245,30 @@ def test_cancel_queued_and_running(api: Api) -> None:
     assert api.client.post(f"/v1/jobs/{blocking}/cancel", headers=AUTH).json() == {"error": "E_API_NOT_ACTIVE"}
 
 
+def test_a_cancel_never_brings_back_a_deleted_job(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    blocking = api.submit("hang")
+    api.wait(blocking, until=lambda v: v["job"]["state"] == "running")
+    waiting = api.submit("released")
+    write = JobStore.write
+    deleted: list[str] = []
+    racer = threading.Thread(target=lambda: deleted.append(runner.delete(waiting)))
+
+    def delete_meanwhile(self: JobStore, job: JobRecord) -> None:
+        if job.id == waiting and job.state == "cancelled":
+            # A delete arriving between the cancel's read and its write: it must wait for the write.
+            racer.start()
+            racer.join(timeout=0.5)
+        write(self, job)
+
+    monkeypatch.setattr(JobStore, "write", delete_meanwhile)
+    assert runner.cancel(waiting) is True
+    racer.join(timeout=10)
+    assert deleted == ["deleted"]
+    assert not (api.jobs_dir / waiting).exists()
+    runner.cancel(blocking)
+
+
 def test_delete_running_and_finished(api: Api) -> None:
     running = api.submit("hang")
     api.wait(running, until=lambda v: v["job"]["state"] == "running")
@@ -337,6 +362,16 @@ def test_an_internal_error_after_spawn_kills_the_engine(api: Api, monkeypatch: p
             kill_tree(proc)
 
 
+def test_shutdown_interrupts_the_running_job(api: Api) -> None:
+    job_id = api.submit("hang")
+    api.wait(job_id, until=lambda v: v["job"]["state"] == "running")
+    api.client.app.state.runner.stop()  # type: ignore[attr-defined]
+    job = JobStore(api.jobs_dir).read(job_id)
+    assert job is not None
+    assert (job.state, job.error_code) == ("interrupted", "E_API_INTERRUPTED")
+    assert not (api.jobs_dir / job_id / "in").exists()
+
+
 def test_timeout_kills_the_job(api_factory: Callable[..., Api]) -> None:
     api = api_factory(job_timeout_s=1.0)
     job = api.wait(api.submit("hang"))["job"]
@@ -406,6 +441,42 @@ def test_sweep_forgets_the_scope_id_of_an_expired_upload(api: Api) -> None:
     runner._sweep()
     assert not (api.jobs_dir / job_id).exists()
     assert job_id not in runner._scope_ids
+
+
+def test_sweep_runs_while_a_job_is_running(api_factory: Callable[..., Api], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "SWEEP_EVERY_S", 0.1)
+    api = api_factory()
+    running = api.submit("hang")
+    api.wait(running, until=lambda v: v["job"]["state"] == "running")
+    stale = new_job_id()
+    JobStore(api.jobs_dir).write(_record(stale, "awaiting_upload", upload_expires_at=iso_from_unix(time.time() - 60)))
+    deadline = time.monotonic() + 10
+    while (api.jobs_dir / stale).exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not (api.jobs_dir / stale).exists()
+    assert api.view(running)["job"]["state"] == "running"
+    api.client.post(f"/v1/jobs/{running}/cancel", headers=AUTH)
+
+
+def test_a_failing_sweep_keeps_sweeping(api_factory: Callable[..., Api], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "SWEEP_EVERY_S", 0.05)
+    sweep = Runner._sweep
+    calls = itertools.count()
+
+    def flaky_sweep(self: Runner) -> None:
+        if next(calls) == 0:
+            raise ValueError("bad timestamp")
+        sweep(self)
+
+    monkeypatch.setattr(Runner, "_sweep", flaky_sweep)
+    api = api_factory()
+    stale = new_job_id()
+    JobStore(api.jobs_dir).write(_record(stale, "awaiting_upload", upload_expires_at=iso_from_unix(time.time() - 60)))
+    deadline = time.monotonic() + 10
+    while (api.jobs_dir / stale).exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not (api.jobs_dir / stale).exists()
+    assert api.wait(api.submit("released"))["job"]["state"] == "released"
 
 
 # ----------------------------------------------------------------------------------- system
