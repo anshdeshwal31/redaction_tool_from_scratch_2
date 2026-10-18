@@ -292,7 +292,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         if problem := verify(key, token, "upload", job_id, "input"):
             raise ApiError(403, problem)
         declared = request.headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > settings.max_upload_bytes:
+        if declared.isascii() and declared.isdigit() and int(declared) > settings.max_upload_bytes:
             raise ApiError(413, "E_API_UPLOAD_TOO_LARGE")
         claim = runner.begin_upload(job_id)
         if claim == "gone":

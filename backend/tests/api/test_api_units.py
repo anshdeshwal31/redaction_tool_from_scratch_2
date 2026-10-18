@@ -23,7 +23,10 @@ def test_links_verify_only_for_their_purpose_job_and_name() -> None:
     assert verify(link_key("x" * 40), token, "file", "a" * 32, "manifest.json") == "E_API_LINK_INVALID"
 
 
-@pytest.mark.parametrize("token", ["", "abc", "123.", ".deadbeef", "9" * 12 + "." + "z" * 64])
+@pytest.mark.parametrize(
+    "token",
+    ["", "abc", "123.", ".deadbeef", "9" * 12 + "." + "z" * 64, "²." + "a" * 64, "9" * 12 + "." + "é" * 64],
+)
 def test_malformed_links_are_invalid(token: str) -> None:
     assert verify(KEY, token, "file", "a" * 32, "run.json") == "E_API_LINK_INVALID"
 

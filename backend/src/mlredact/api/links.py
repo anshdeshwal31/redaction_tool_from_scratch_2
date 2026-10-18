@@ -34,7 +34,9 @@ def sign(key: bytes, purpose: Purpose, job: str, name: str, ttl_s: int, now: flo
 def verify(key: bytes, token: str, purpose: Purpose, job: str, name: str, now: float | None = None) -> str | None:
     """None when the token is valid, otherwise a reason code."""
     expires_s, _, mac = token.partition(".")
-    if not expires_s.isdigit() or len(mac) != 64:
+    # isascii first: isdigit accepts digits such as '²' that int() rejects, and compare_digest raises
+    # on a non-ASCII str.
+    if not (expires_s.isascii() and expires_s.isdigit()) or len(mac) != 64 or not mac.isascii():
         return "E_API_LINK_INVALID"
     expected = _mac(key, purpose, job, name, int(expires_s))
     if not hmac.compare_digest(mac, expected):
