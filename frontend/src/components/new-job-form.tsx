@@ -6,6 +6,7 @@ import { useState } from "react";
 
 import { ApiError, send, uploadFile, usePolling } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { useHydrated } from "@/lib/hydrated";
 import type { CreatedJob, SystemInfo } from "@/lib/jobs";
 import { ENTITY_TYPES, type EntityType, RENDER_STYLES, type RenderStyle } from "@/lib/manifest";
 import { ENTITY_LABELS, PROFILE_INFO, STYLE_INFO } from "@/lib/vocab";
@@ -119,6 +120,7 @@ export function NewJobForm() {
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hydrated = useHydrated();
 
   const profiles = system?.profiles ?? FALLBACK_PROFILES;
   const maxBytes = (system?.defaults.maxUploadMb ?? 200) * 1024 * 1024;
@@ -162,7 +164,13 @@ export function NewJobForm() {
   const docLabel = file ? `${/\.pdf$/i.test(file.name) ? "PDF" : "Scan"} · ${formatBytes(file.size)}` : "Document";
 
   return (
-    <form onSubmit={submit} noValidate className="grid items-start gap-2 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+    // data-hydrated: the end-to-end tests wait for it before choosing a file.
+    <form
+      onSubmit={submit}
+      noValidate
+      className="grid items-start gap-2 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]"
+      data-hydrated={hydrated ? "" : undefined}
+    >
       <div data-stagger className="space-y-2">
         <Step n={1} title="Document" hint="A medico-legal PDF, or a scanned page as TIFF, PNG or JPEG.">
           <FileDrop

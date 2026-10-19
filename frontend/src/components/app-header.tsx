@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
 
+import { useHydrated } from "@/lib/hydrated";
+
 import { Wordmark } from "./brand";
 import { ButtonLink, cx } from "./ui";
 
@@ -27,6 +29,7 @@ export function AppHeader({ user }: { user: string | null }) {
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+  const hydrated = useHydrated();
 
   return (
     <header
@@ -79,6 +82,8 @@ export function AppHeader({ user }: { user: string | null }) {
               onClick={() => void signOut({ callbackUrl: "/login" })}
               className="inline-flex items-center gap-1.5 text-sm text-ink-2 transition-colors hover:text-ink"
               title={`Signed in as ${user}`}
+              // The end-to-end tests wait for it before clicking.
+              data-hydrated={hydrated ? "" : undefined}
             >
               <LogOut className="size-4" aria-hidden />
               <span className="hidden xl:inline">Sign out</span>

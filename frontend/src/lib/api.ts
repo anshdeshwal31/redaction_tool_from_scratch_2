@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Must match UI_HEADER in lib/server/http.ts: another site cannot send it without a CORS preflight. */
-const MUTATION_HEADERS = { "x-mlredact-ui": "1" };
+import { MUTATION_HEADERS } from "./ui-header";
 
 export class ApiError extends Error {
   constructor(

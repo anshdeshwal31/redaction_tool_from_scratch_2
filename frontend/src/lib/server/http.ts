@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 
 import { authOptions } from "@/lib/auth";
+import { MUTATION_HEADERS, UI_HEADER } from "@/lib/ui-header";
 
 /*
  * Every API route needs a signed-in user (next-auth session).  Mutations also need a custom
@@ -11,15 +12,13 @@ import { authOptions } from "@/lib/auth";
  * another site cannot post to these routes with the user's cookie.
  */
 
-export const UI_HEADER = "x-mlredact-ui";
-
 export function fail(status: number, code: string): NextResponse {
   return NextResponse.json({ error: code }, { status });
 }
 
 /** Header and Origin rules for mutations; null when the request may proceed. */
 export function checkMutation(req: Request): NextResponse | null {
-  if (req.headers.get(UI_HEADER) !== "1") return fail(403, "E_UI_MISSING_HEADER");
+  if (req.headers.get(UI_HEADER) !== MUTATION_HEADERS[UI_HEADER]) return fail(403, "E_UI_MISSING_HEADER");
   const origin = req.headers.get("origin");
   if (origin) {
     let originHost = "";
