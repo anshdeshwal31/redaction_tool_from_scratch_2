@@ -1,10 +1,12 @@
 import { expect, type Page, test } from "@playwright/test";
 
 import { USER } from "./support/env";
+import { formHydrated, hydrated } from "./support/hydration";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
 async function signIn(page: Page, password: string) {
+  await formHydrated(page);
   await page.getByLabel("Email").fill(USER.email);
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -43,7 +45,10 @@ test("signing out ends the session", async ({ page }) => {
   await signIn(page, USER.password);
   await page.waitForURL((url) => url.pathname === "/");
 
-  await page.getByRole("button", { name: /Sign out/ }).click();
+  // Signing in ends with a full page load: wait for the button's handler before clicking.
+  const signOut = page.getByRole("button", { name: /Sign out/ });
+  await hydrated(signOut);
+  await signOut.click();
   await expect(page).toHaveURL(/\/login/);
 
   await page.goto("/jobs");

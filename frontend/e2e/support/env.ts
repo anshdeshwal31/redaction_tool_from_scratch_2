@@ -31,9 +31,18 @@ if (EXTERNAL_BACKEND && (process.env.E2E_BACKEND_TOKEN ?? "").trim().length < 32
   throw new Error("E2E_BACKEND_URL needs E2E_BACKEND_TOKEN: that backend's MLREDACT_API_TOKEN");
 }
 
+/** A port from the environment; unset or empty means the default. */
+function port(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error(`${name} must be a port from 1 to 65535, not "${raw}"`);
+  return n;
+}
+
 // Ports of their own, so a dev server already running on 3100/8100 is left alone.
-export const FRONTEND_PORT = Number(process.env.E2E_FRONTEND_PORT ?? 3199);
-export const BACKEND_PORT = Number(process.env.E2E_BACKEND_PORT ?? 8199);
+export const FRONTEND_PORT = port("E2E_FRONTEND_PORT", 3199);
+export const BACKEND_PORT = port("E2E_BACKEND_PORT", 8199);
 export const FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
 export const BACKEND_URL = EXTERNAL_BACKEND ?? `http://127.0.0.1:${BACKEND_PORT}`;
 
@@ -54,7 +63,13 @@ export function usersEnv(): string {
 // A real job loads its models first (about 35 s with NER), then takes roughly 20–40 s a page on CPU.
 export const TIMEOUTS = REAL
   ? { test: 20 * 60_000, job: 15 * 60_000, selfcheck: 5 * 60_000 }
-  : { test: 90_000, job: 30_000, selfcheck: 30_000 };
+  : { test: 180_000, job: 120_000, selfcheck: 30_000 };
+
+/**
+ * The stub backend's job time limit, in seconds: half a test's wait for a job, so a `%STUB hang` job a
+ * failed test left behind is stopped while the next test's job still has time to finish.
+ */
+export const STUB_JOB_LIMIT_S = TIMEOUTS.job / 2 / 1000;
 
 export const FRONTEND_DIR = path.resolve(__dirname, "../..");
 export const BACKEND_DIR = path.resolve(FRONTEND_DIR, "../backend");

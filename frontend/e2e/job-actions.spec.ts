@@ -1,7 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
 
 import { documents } from "./support/documents";
-import { expectJobState, submitJob } from "./support/jobs";
+import { cancelSubmittedJobs, expectJobState, submitJob } from "./support/jobs";
+
+// A job a failed test never stopped keeps running (the stub's forever): stop it here.
+test.afterEach(async ({ page }) => cancelSubmittedJobs(page.request));
 
 /** Submits a job that is still going when the test acts, then stops it from the job page. */
 async function submitAndStop(page: Page): Promise<string> {

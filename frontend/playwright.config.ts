@@ -15,6 +15,7 @@ import {
   JOBS_DIR,
   NEXTAUTH_SECRET,
   STORAGE_STATE,
+  STUB_JOB_LIMIT_S,
   TIMEOUTS,
   usersEnv,
 } from "./e2e/support/env";
@@ -38,9 +39,11 @@ const backendServer = {
     MLREDACT_API_TOKEN: API_TOKEN,
     MLREDACT_API_JOBS_DIR: JOBS_DIR,
     MLREDACT_API_CORS_ORIGINS: FRONTEND_URL,
-    MLREDACT_API_ALLOW_DEV_KEY: "1",
     ...(ENGINE === "stub"
-      ? { MLREDACT_API_ENGINE: JSON.stringify([python, path.join(BACKEND_DIR, "tests/api/stub_engine.py")]) }
+      ? {
+          MLREDACT_API_ENGINE: JSON.stringify([python, path.join(BACKEND_DIR, "tests/api/stub_engine.py")]),
+          MLREDACT_API_JOB_TIMEOUT_S: String(STUB_JOB_LIMIT_S),
+        }
       : {}),
   },
 };
@@ -51,6 +54,8 @@ const frontendServer = {
   timeout: 180_000,
   reuseExistingServer: false,
   env: {
+    // Its own build directory, so it starts beside `npm run dev` (see next.config.ts).
+    MLREDACT_UI_DIST_DIR: ".next-e2e",
     // These win over .env.local: Next.js never overrides variables already set.
     MLREDACT_API_URL: BACKEND_URL,
     MLREDACT_API_PUBLIC_URL: BACKEND_URL,

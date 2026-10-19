@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 import { documents } from "./support/documents";
-import { expectJobState, submitJob } from "./support/jobs";
+import { cancelSubmittedJobs, expectJobState, submitJob } from "./support/jobs";
+
+test.afterEach(async ({ page }) => cancelSubmittedJobs(page.request));
 
 test("a finished job is listed with its result and opens from the list", async ({ page }) => {
   const id = await submitJob(page, documents.released(), { style: "label" });

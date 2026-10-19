@@ -18,8 +18,11 @@ flowchart LR
   E -- real --> R["Real engine + models"]
 ```
 
-Playwright starts both servers on ports of their own (frontend 3199, backend 8199), so a dev server on
-3100/8100 is left alone, and `.env.local` is overridden. Each run starts with an empty jobs directory.
+Playwright starts both servers on ports of their own (frontend 3199, backend 8199), and the frontend
+builds into `.next-e2e/` rather than `.next/`, so a dev server on 3100/8100 is left alone. `.env.local`
+is overridden. Each run starts with an empty jobs directory, and a job a failed test leaves running is
+cancelled after that test. Only jobs the run submitted are cancelled, so a shared backend's other jobs
+are left alone.
 
 ## Setup, once
 
@@ -47,7 +50,7 @@ What each scenario submits:
 |---|---|---|
 | Released | `%STUB released` | a synthetic IME letter (`backend/tools/synthdocs`) |
 | Quarantined | `%STUB quarantined` (V4 fails) | the same letter, encrypted: rejected at intake (`E_INPUT_ENCRYPTED`) |
-| Engine failure | `%STUB error` | a surrogate job with no key (`E_CONFIG_INVALID`). Skipped if the backend has `MLREDACT_SURROGATE_KEY` |
+| Engine failure | `%STUB error` | a surrogate job with no key (`E_CONFIG_INVALID`). Skipped if the backend has a key, from `MLREDACT_SURROGATE_KEY` or from its config (`surrogate.key_file`) |
 | Stop / delete | `%STUB hang` | the letter, stopped while it runs |
 
 ## Against a backend that is already running (e.g. EC2)
