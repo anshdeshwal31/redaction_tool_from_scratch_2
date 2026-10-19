@@ -60,6 +60,7 @@ export const ACTION_LABELS: Record<Action, string> = {
   surrogate: "Surrogate",
   retypeset_region: "Line re-typeset",
   remove: "Removed",
+  synthesise: "Synthetic stand-in",
   blackout: "Blacked out",
   label: "Label",
   suppress_ink: "Ink suppressed",

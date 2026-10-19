@@ -92,6 +92,7 @@ class ActionKind(StrEnum):
     SURROGATE = "surrogate"
     RETYPESET_REGION = "retypeset_region"
     REMOVE = "remove"  # opaque neutral fill (optionally labelled)
+    SYNTHESISE = "synthesise"  # region replaced by a synthetic stand-in (pen strokes, a silhouette)
     BLACKOUT = "blackout"
     LABEL = "label"
     SUPPRESS_INK = "suppress_ink"

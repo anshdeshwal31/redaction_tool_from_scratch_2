@@ -63,6 +63,7 @@ export const ACTIONS = [
   "surrogate",
   "retypeset_region",
   "remove",
+  "synthesise",
   "blackout",
   "label",
   "suppress_ink",

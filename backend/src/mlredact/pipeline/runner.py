@@ -319,7 +319,9 @@ class Redactor:
     def _with_region_ops(
         self, ops: Mapping[int, tuple[RenderOp, ...]], pages: Sequence[PageAnalysis]
     ) -> dict[int, tuple[RenderOp, ...]]:
-        """Non-text regions (signatures, barcodes, faces, stamps, handwriting, faint ink) -> raster ops."""
+        """Non-text regions (signatures, barcodes, faces, stamps, handwriting, faint ink) -> raster ops.
+
+        Synthetic stand-ins belong with realistic surrogates; the label and blackout styles remove."""
         actions = self.config.policy.region_actions
         merged: dict[int, list[RenderOp]] = {p: list(v) for p, v in ops.items()}
         for page in pages:
@@ -327,7 +329,10 @@ class Redactor:
                 action = actions.get(region.kind, ActionKind.REMOVE)
                 if action is ActionKind.KEEP:
                     continue
-                kind = ActionKind.SUPPRESS_INK if action is ActionKind.SUPPRESS_INK else ActionKind.REMOVE
+                drawn = action is ActionKind.SUPPRESS_INK or (
+                    action is ActionKind.SYNTHESISE and self.config.redaction.style == "surrogate"
+                )
+                kind = action if drawn else ActionKind.REMOVE
                 merged.setdefault(region.page, []).append(
                     RenderOp(region.page, kind, region.bbox, region.kind.value, region.region_id)
                 )

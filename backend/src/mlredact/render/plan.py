@@ -26,6 +26,7 @@ SUPPORTED_KINDS = frozenset(
     {
         ActionKind.BLACKOUT,
         ActionKind.REMOVE,
+        ActionKind.SYNTHESISE,
         ActionKind.SURROGATE,
         ActionKind.LABEL,
         ActionKind.SUPPRESS_INK,
@@ -37,7 +38,13 @@ _DESCENDERS = frozenset("gjpqy,;()[]{}_")
 
 
 def effective_kind(action: ActionKind, style: str) -> ActionKind:
-    if action in (ActionKind.KEEP, ActionKind.SUPPRESS_INK, ActionKind.REMOVE, ActionKind.RETYPESET_REGION):
+    if action in (
+        ActionKind.KEEP,
+        ActionKind.SUPPRESS_INK,
+        ActionKind.REMOVE,
+        ActionKind.SYNTHESISE,
+        ActionKind.RETYPESET_REGION,
+    ):
         return action
     return {"blackout": ActionKind.BLACKOUT, "label": ActionKind.LABEL, "surrogate": ActionKind.SURROGATE}[style]
 

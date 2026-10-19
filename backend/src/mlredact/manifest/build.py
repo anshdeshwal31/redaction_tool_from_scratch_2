@@ -106,7 +106,9 @@ def build_manifest(
             entry[replacement_field] = " ".join(s for s in sur.tokens if s)
         mentions.append(entry)
     mention_ids = {d.mention.mention_id for d in decisions}
-    region_actions = config.policy.region_actions
+    region_actions = dict(config.policy.region_actions)
+    if config.redaction.style != "surrogate":  # stand-ins are drawn only with realistic surrogates
+        region_actions = {k: ActionKind.REMOVE if a is ActionKind.SYNTHESISE else a for k, a in region_actions.items()}
     regions = []
     for p in pages:
         for r in p.regions:

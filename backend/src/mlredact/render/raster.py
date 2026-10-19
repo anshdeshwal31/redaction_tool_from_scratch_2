@@ -1,4 +1,5 @@
-"""Raster editing.  Ops are applied in canonical order; each is verified right after it is drawn.
+"""Raster editing.  Ops are applied in canonical order (synthetic stand-ins last); each is verified
+right after it is drawn.
 
 Later ops can only overwrite earlier ones with *new* content (fill or paper + glyphs), never bring
 original pixels back, so a per-op check at draw time is sufficient for V3.
@@ -17,6 +18,7 @@ from mlredact.core.geometry import BBox
 from mlredact.core.model import RenderOp
 from mlredact.core.types import ActionKind
 from mlredact.render.label import draw_label, place_notice
+from mlredact.render.synth import draw_stand_in
 from mlredact.render.typeset import TypesetResult, erased_cleanly, typeset
 
 
@@ -79,6 +81,11 @@ def apply_ops(
     ok = True
     applied: list[Applied] = []
     ordered = sorted(ops, key=lambda o: o.sort_key)
+    # Stand-ins come last and never paint over what the other operations erased: text typeset next
+    # to a signature is sized and coloured from its own original glyphs, and stays readable.
+    ordered = [o for o in ordered if o.kind is not ActionKind.SYNTHESISE] + [
+        o for o in ordered if o.kind is ActionKind.SYNTHESISE
+    ]
     for i, op in enumerate(ordered):
         b = op.box
         if op.kind in (ActionKind.BLACKOUT, ActionKind.REMOVE):
@@ -93,6 +100,9 @@ def apply_ops(
             ok = ok and erased_cleanly(out, result)
             _mark(drawn, result)
             applied.append(Applied(op.ref_id, b, result.box))
+        elif op.kind is ActionKind.SYNTHESISE:
+            ok = draw_stand_in(out, b, op.reason, op.ref_id, [a.erased for a in applied]) and ok
+            applied.append(Applied(op.ref_id, b, b))
         elif op.kind is ActionKind.SUPPRESS_INK:
             ok = _suppress_ink(out, b, cfg.suppress_ink_darkness) and ok
             applied.append(Applied(op.ref_id, b, b))
