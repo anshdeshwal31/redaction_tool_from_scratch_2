@@ -40,6 +40,7 @@ export const ENTITY_LABELS: Record<EntityType, string> = {
   vin: "VIN",
   organisation: "Organisation",
   other_id: "Other identifier",
+  file_path: "File path or name",
 };
 
 export const REGION_LABELS: Record<RegionKind, string> = {
@@ -119,6 +120,7 @@ const CATEGORY_OF: Record<EntityType, CategoryId> = {
   vin: "other_id",
   organisation: "organisation",
   other_id: "other_id",
+  file_path: "other_id",
 };
 
 export function categoryOf(type: EntityType): CategoryId {

@@ -41,6 +41,7 @@ export const ENTITY_TYPES = [
   "vin",
   "organisation",
   "other_id",
+  "file_path",
 ] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
 

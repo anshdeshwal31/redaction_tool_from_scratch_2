@@ -44,6 +44,7 @@ TYPE_PRIORITY: tuple[EntityType, ...] = (
     T.REFERENCE,
     T.EMAIL,
     T.URL,
+    T.FILE_PATH,
     T.PHONE,
     T.IP_ADDRESS,
     T.DATE_OF_BIRTH,

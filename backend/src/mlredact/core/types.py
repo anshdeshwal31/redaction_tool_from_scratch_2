@@ -70,6 +70,7 @@ class EntityType(StrEnum):
     VIN = "vin"
     ORGANISATION = "organisation"
     OTHER_ID = "other_id"
+    FILE_PATH = "file_path"  # file paths and file names (often carry a person's or a matter's name)
 
 
 class RegionKind(StrEnum):

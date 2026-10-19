@@ -110,6 +110,8 @@ class SurrogateAssigner:
             return _aligned(self._f.email(m.value, self._email_hint(m.value)), originals)
         if t is EntityType.URL:
             return _aligned(self._f.url(m.value), originals)
+        if t is EntityType.FILE_PATH:
+            return _aligned(self._f.file_path(m.value), originals)
         if t is EntityType.STREET_ADDRESS:
             return self._address(m, originals)
         if t is EntityType.LOCALITY:

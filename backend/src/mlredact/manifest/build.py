@@ -23,7 +23,7 @@ from mlredact.runtime.profile import RuntimeProfile
 from mlredact.surrogate.assign import MentionSurrogate
 from mlredact.verify.checks import CheckResult
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 
 def _evidence(ev: Sequence[Evidence]) -> list[dict[str, Any]]:

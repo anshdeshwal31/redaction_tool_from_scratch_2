@@ -653,7 +653,8 @@
         "vehicle_reg",
         "vin",
         "organisation",
-        "other_id"
+        "other_id",
+        "file_path"
       ]
     },
     "action": {
