@@ -665,9 +665,34 @@ def test_system_reports_key_presence_only(api: Api, monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("MLREDACT_SURROGATE_KEY", "f" * 64)
     res = api.client.get("/v1/system", headers=AUTH)
     info = res.json()
-    assert info["surrogateKey"] == {"fromEnv": True, "devKeyAllowed": True}
+    assert info["surrogateKey"] == {"fromEnv": True, "fromConfig": False, "devKeyAllowed": True}
     assert info["profiles"] == ["broad", "claimant_focused", "maximal"]
     assert "f" * 64 not in res.text
+
+
+@pytest.mark.parametrize(
+    ("surrogate", "runtime", "expected"),
+    [
+        ({"key_file": "surrogate.hex"}, {}, True),
+        # A named key file that is missing fails the job, even with the development key allowed.
+        ({"key_file": "missing.hex", "allow_development_key": True}, {}, False),
+        ({"allow_development_key": True}, {}, True),
+        # A pinned production deployment refuses the development key.
+        ({"allow_development_key": True}, {"expected_profile": "cpu"}, False),
+        ({"font_family": "Serif"}, {}, False),
+    ],
+)
+def test_system_reports_a_key_from_a_deployment_config(
+    api_factory: Callable[..., Api], tmp_path: Path, surrogate: dict[str, Any], runtime: dict[str, Any], expected: bool
+) -> None:
+    (tmp_path / "surrogate.hex").write_text("f" * 64)
+    config = tmp_path / "deploy.yaml"
+    config.write_text(json.dumps({"surrogate": surrogate, **({"runtime": runtime} if runtime else {})}))
+    # A relative key_file resolves in the engine's working directory.
+    api = api_factory(config_files=(config,), engine_cwd=tmp_path)
+    res = api.client.get("/v1/system", headers=AUTH)
+    assert res.json()["surrogateKey"]["fromConfig"] is expected
+    assert "surrogate.hex" not in res.text
 
 
 def test_selfcheck(api: Api) -> None:

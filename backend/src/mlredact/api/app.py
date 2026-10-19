@@ -23,6 +23,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any
 
 import anyio
@@ -57,9 +58,27 @@ from mlredact.api.models import (
 from mlredact.api.runner import Runner
 from mlredact.api.settings import ApiSettings
 from mlredact.api.store import JobStore, is_job_id, iso_from_unix, new_job_id, now_iso
-from mlredact.config.loader import builtin_profiles
+from mlredact.config.loader import builtin_profiles, load_config
+from mlredact.core.errors import EnvironmentErrorMl
 
 _CHUNK_WRITE = 1 << 20
+
+
+def _config_key_source(settings: ApiSettings) -> tuple[Path | None, bool]:
+    """Where the deployment configs send the engine for a surrogate key: (key file, development key).
+
+    Read once at startup.  The built-in profiles set neither field, so the default one stands in.
+    """
+    if not settings.config_files:
+        return None, False
+    try:
+        config = load_config(files=settings.config_files)
+    except (EnvironmentErrorMl, OSError):
+        return None, False  # the engine refuses such a config, so no job gets a key from it
+    # The engine runs in engine_cwd, so a relative key_file resolves there.
+    key_file = settings.engine_cwd / config.surrogate.key_file if config.surrogate.key_file else None
+    dev_key = config.surrogate.allow_development_key and config.runtime.expected_profile is None
+    return key_file, dev_key
 
 
 class ApiError(Exception):
@@ -91,6 +110,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     runner = Runner(settings, store)
     key = link_key(settings.token)
     profiles = builtin_profiles()
+    config_key_file, config_dev_key = _config_key_source(settings)
     # One self-check at a time: it reads every model, and the frontend gives up on a slow one long
     # before it ends, so a retry joins the run in progress instead of starting another.
     checks_lock = threading.Lock()
@@ -181,6 +201,9 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             # Presence only: the key itself never leaves the engine's environment.
             surrogate_key=KeyInfo(
                 from_env=bool(os.environ.get("MLREDACT_SURROGATE_KEY", "").strip()),
+                # As load_master_key: a named key file that is missing fails the job, dev key or not.
+                # Checked on each call: a secret may be mounted after startup.
+                from_config=config_key_file.is_file() if config_key_file else config_dev_key,
                 dev_key_allowed=settings.allow_dev_key,
             ),
             queue=QueueInfo(running=running, queued=queued),

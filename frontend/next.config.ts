@@ -9,6 +9,9 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // The end-to-end run builds into a directory of its own: `next dev` locks its directory, so a second
+  // server sharing `.next` would refuse to start next to `npm run dev`.
+  distDir: process.env.MLREDACT_UI_DIST_DIR || ".next",
   poweredByHeader: false,
   reactStrictMode: true,
   // No next/image optimisation: it would load sharp (libvips, LGPL-3.0), which this UI never needs.

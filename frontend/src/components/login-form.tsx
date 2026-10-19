@@ -4,6 +4,8 @@ import { AlertTriangle } from "lucide-react";
 import { signIn } from "next-auth/react";
 import { useState } from "react";
 
+import { useHydrated } from "@/lib/hydrated";
+
 import { Button, Spinner } from "./ui";
 import { Aurora, GlassChip } from "./visuals";
 
@@ -42,6 +44,7 @@ export function LoginForm({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState<"password" | "google" | null>(null);
+  const hydrated = useHydrated();
   const [error, setError] = useState<string | null>(
     initialError ? (ERRORS[initialError] ?? "Sign-in failed. Try again.") : null,
   );
@@ -72,7 +75,13 @@ export function LoginForm({
           Sign in to redact documents and review their results.
         </p>
 
-        <form onSubmit={submit} className="mt-10 max-w-sm space-y-3" noValidate>
+        {/* data-hydrated: the end-to-end tests wait for it before typing. */}
+        <form
+          onSubmit={submit}
+          className="mt-10 max-w-sm space-y-3"
+          noValidate
+          data-hydrated={hydrated ? "" : undefined}
+        >
           <label className="block">
             <span className="mb-1.5 block text-sm font-medium text-ink">Email</span>
             <input

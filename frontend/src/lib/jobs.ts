@@ -95,7 +95,8 @@ export interface SystemInfo {
   jobsDir: string;
   profiles: string[];
   defaults: { workers: number; maxUploadMb: number; jobTimeoutMin: number };
-  surrogateKey: { fromEnv: boolean; devKeyAllowed: boolean };
+  /** fromConfig: a deployment config names surrogate.key_file or turns on the development key. */
+  surrogateKey: { fromEnv: boolean; fromConfig: boolean; devKeyAllowed: boolean };
   queue: { running?: string; queued: number };
 }
 
