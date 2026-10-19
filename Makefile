@@ -1,48 +1,26 @@
-# Developer and CI entry points (plan Appendix B).  Run inside the dev container or any shell with uv.
+# Entry points for both halves.  Each half also has its own tooling: backend/Makefile (uv),
+# frontend/package.json (npm).
 .DEFAULT_GOAL := help
-UV ?= uv
-PYTEST := $(UV) run pytest
-LICENCE_DENY := GPL;SSPL;BUSL;Non-Commercial;NonCommercial;BY-NC;Commons Clause
 
-.PHONY: help sync models selfcheck lint test test-slow test-all determinism leaktest verify-mutations licences ci
+.PHONY: help backend frontend test backend-test frontend-test
 
 help:  ## list targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
 
-sync:  ## install the locked environment
-	$(UV) sync --locked
+backend:  ## run the backend API on http://127.0.0.1:8100 (see backend/README.md)
+	$(MAKE) -C backend serve
 
-models:  ## download and SHA-256-verify every pinned model into .models/
-	$(UV) run mlredact models fetch --profile broad
+frontend: frontend/node_modules  ## run the frontend on http://127.0.0.1:3100 (see frontend/README.md)
+	cd frontend && npm run dev
 
-selfcheck:  ## validate config, runtime profile, resources and models
-	$(UV) run mlredact selfcheck
+frontend/node_modules: frontend/package-lock.json
+	cd frontend && npm ci
+	@touch frontend/node_modules
 
-lint:  ## ruff (lint + format check) and mypy --strict
-	$(UV) run ruff check src tests tools
-	$(UV) run ruff format --check src tests tools
-	$(UV) run mypy src
+backend-test:  ## backend fast suite (engine and API; no models)
+	$(MAKE) -C backend test
 
-test:  ## fast suite: unit, property, security, determinism (no models)
-	$(PYTEST) -m "not slow"
+frontend-test: frontend/node_modules  ## frontend type-check and Vitest
+	cd frontend && npm run typecheck && npm test
 
-test-slow:  ## end-to-end and model-backed tests (needs `make models`)
-	$(PYTEST) -m slow
-
-test-all: test test-slow  ## everything
-
-determinism:  ## same input -> byte-identical output (hash seeds, reruns, worker counts)
-	$(PYTEST) tests/determinism
-	$(PYTEST) -m slow tests/integration -k "identical or independent or deterministic or consistent or windowing"
-
-leaktest:  ## no document text in logs, exceptions, manifests or run records
-	$(PYTEST) tests/security/test_logging_safety.py
-	$(PYTEST) -m slow tests/integration -k "manifest_contains_no_document_text or non_pdf"
-
-verify-mutations:  ## deliberately broken outputs must fail V1-V6
-	$(PYTEST) tests/security/test_verifier_mutations.py
-
-licences:  ## licence gate: no copyleft (GPL family), source-available or non-commercial dependencies
-	$(UV) run --with pip-licenses pip-licenses --partial-match --fail-on="$(LICENCE_DENY)" --ignore-packages mlredact
-
-ci: lint licences test  ## what every pull request runs
+test: backend-test frontend-test  ## both

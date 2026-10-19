@@ -1,0 +1,320 @@
+{
+  "detection": {
+    "propagation_rounds": 1
+  },
+  "input": {
+    "annotations_flattened_or_dropped": 0,
+    "attachments_dropped": 0,
+    "encrypted": false,
+    "has_acroform": false,
+    "has_javascript": false,
+    "has_optional_content": false,
+    "has_xfa": false,
+    "page_count": 1,
+    "user_unit_pages": 0
+  },
+  "job": {
+    "input_sha256": "14f6fbc1bc19d8bbc069c5346a4fba53fd69abe3adbd2984c574c20a7428192e",
+    "page_count": 1,
+    "profile": "broad",
+    "render_style": "label",
+    "source_format": "pdf"
+  },
+  "low_evidence": [
+    {
+      "evidence": [
+        {
+          "detector": "ner.gliner",
+          "rule": "ner.span",
+          "score": 1,
+          "strength": "weak",
+          "version": "1"
+        }
+      ],
+      "token_ids": [
+        "p0000.l0009.w003"
+      ],
+      "type": "organisation"
+    }
+  ],
+  "mentions": [
+    {
+      "action": "surrogate",
+      "boxes": [
+        {
+          "page": 0,
+          "px": [
+            300,
+            500,
+            700,
+            560
+          ],
+          "pt": [
+            72.0,
+            707.52,
+            168.0,
+            721.92
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "detector": "rules.persons",
+          "rule": "person.title",
+          "score": 1,
+          "strength": "strong",
+          "version": "1"
+        }
+      ],
+      "mention_id": "M-000000000000000000000001",
+      "render": [
+        "label"
+      ],
+      "token_ids": [
+        "p0000.l0004.w001",
+        "p0000.l0004.w002"
+      ],
+      "type": "person",
+      "label": "[PERSON 1]"
+    },
+    {
+      "action": "surrogate",
+      "boxes": [
+        {
+          "page": 0,
+          "px": [
+            237,
+            296,
+            1240,
+            367
+          ],
+          "pt": [
+            56.88,
+            753.84,
+            297.6,
+            770.88
+          ],
+          "erased_px": [
+            227,
+            296,
+            1252,
+            367
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "detector": "rules.address",
+          "rule": "address.street",
+          "score": 1,
+          "strength": "strong",
+          "version": "1"
+        }
+      ],
+      "mention_id": "M-000000000000000000000002",
+      "render": [
+        "retypeset_region"
+      ],
+      "token_ids": [
+        "p0000.l0001.w000",
+        "p0000.l0001.w001"
+      ],
+      "type": "street_address",
+      "label": "[ADDRESS 1]"
+    },
+    {
+      "action": "surrogate",
+      "boxes": [
+        {
+          "page": 0,
+          "px": [
+            237,
+            296,
+            1240,
+            367
+          ],
+          "pt": [
+            56.88,
+            753.84,
+            297.6,
+            770.88
+          ],
+          "erased_px": [
+            227,
+            296,
+            1252,
+            367
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "detector": "rules.address",
+          "rule": "address.postcode",
+          "score": 1,
+          "strength": "strong",
+          "version": "1"
+        }
+      ],
+      "mention_id": "M-000000000000000000000003",
+      "render": [
+        "retypeset_region"
+      ],
+      "token_ids": [
+        "p0000.l0001.w004"
+      ],
+      "type": "postcode",
+      "label": "[POSTCODE 1]"
+    },
+    {
+      "action": "keep",
+      "boxes": [
+        {
+          "page": 0,
+          "px": [
+            300,
+            700,
+            600,
+            760
+          ],
+          "pt": [
+            72.0,
+            659.52,
+            144.0,
+            673.92
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "detector": "rules.dates",
+          "rule": "date.numeric",
+          "score": 1,
+          "strength": "strong",
+          "version": "1"
+        }
+      ],
+      "mention_id": "M-000000000000000000000004",
+      "render": [],
+      "token_ids": [
+        "p0000.l0006.w000"
+      ],
+      "type": "date"
+    }
+  ],
+  "pages": [
+    {
+      "dpi": 300,
+      "height_pt": 841.89,
+      "height_px": 3508,
+      "index": 0,
+      "kind": "image_only",
+      "lines": 12,
+      "mean_ocr_confidence": 0.98,
+      "notice": true,
+      "tokens": 60,
+      "unexplained_ink": 0.02,
+      "width_pt": 595.276,
+      "width_px": 2481
+    }
+  ],
+  "provenance": {
+    "config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "detectors": [
+      {
+        "id": "rules.address",
+        "version": "1"
+      }
+    ],
+    "mlredact_version": "0.0.0-stub",
+    "models": [],
+    "runtime_profile": {
+      "id": "stub-x86_64",
+      "libraries": {}
+    },
+    "surrogate": null
+  },
+  "reasons": [],
+  "regions": [
+    {
+      "action": "remove",
+      "box": {
+        "page": 0,
+        "px": [
+          1957,
+          114,
+          2184,
+          341
+        ],
+        "pt": [
+          469.68,
+          760.08,
+          524.16,
+          814.56
+        ]
+      },
+      "detector": "zxing",
+      "kind": "barcode",
+      "region_id": "G-000000000000000000000001",
+      "rule": "barcode.decoded",
+      "score": 1
+    }
+  ],
+  "residual_boxes": [],
+  "schema_version": "1.1.0",
+  "status": "released",
+  "verification": {
+    "checks": [
+      {
+        "check": "V1_structure",
+        "metrics": {
+          "pages": 1,
+          "problems": 0
+        },
+        "passed": true
+      },
+      {
+        "check": "V2_text",
+        "metrics": {
+          "hits": 0,
+          "needles": 3
+        },
+        "passed": true
+      },
+      {
+        "check": "V3_pixels",
+        "metrics": {
+          "pages_checked": 1,
+          "pages_failed": 0
+        },
+        "passed": true
+      },
+      {
+        "check": "V4_residual",
+        "metrics": {
+          "replans": 0,
+          "residual_tokens": 0
+        },
+        "passed": true
+      },
+      {
+        "check": "V5_surrogate",
+        "metrics": {
+          "collision": 0,
+          "surrogates": 3
+        },
+        "passed": true
+      },
+      {
+        "check": "V6_integrity",
+        "metrics": {
+          "applied_ops": 3,
+          "planned_ops": 3,
+          "problems": 0
+        },
+        "passed": true
+      }
+    ],
+    "passed": true
+  }
+}

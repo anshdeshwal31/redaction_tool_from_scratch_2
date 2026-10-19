@@ -1,0 +1,39 @@
+uv run pytest -m "not slow"
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/ubuntu/mlredact
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, hypothesis-6.168.3
+collected 252 items / 22 deselected / 230 selected
+
+tests/determinism/test_hash_seed.py .                                    [  0%]
+tests/security/test_logging_safety.py .......                            [  3%]
+tests/security/test_sensitive_manifest.py ...                            [  4%]
+tests/security/test_verifier_mutations.py ................               [ 11%]
+tests/unit/test_detection.py ........................................... [ 30%]
+.....                                                                    [ 32%]
+tests/unit/test_foundations.py ......................                    [ 42%]
+tests/unit/test_fusion.py ........                                       [ 45%]
+tests/unit/test_images.py ....                                           [ 47%]
+tests/unit/test_manifest_schema.py ..                                    [ 48%]
+tests/unit/test_maximal.py ....................                          [ 56%]
+tests/unit/test_ner.py ..........................                        [ 68%]
+tests/unit/test_pool.py ....                                             [ 70%]
+tests/unit/test_regions.py ........                                      [ 73%]
+tests/unit/test_render.py ...............                                [ 80%]
+tests/unit/test_resolve.py ...........                                   [ 84%]
+tests/unit/test_surrogates.py ...................................        [100%]
+
+=============================== warnings summary ===============================
+tests/security/test_logging_safety.py::test_third_party_messages_are_never_written
+  /home/ubuntu/mlredact/tests/security/test_logging_safety.py:62: UserWarning: bad value Zelphinia Quarrington
+    warnings.warn(f"bad value {CANARY}", stacklevel=1)
+
+tests/unit/test_images.py::test_oversized_and_corrupt_images_are_rejected
+  /home/ubuntu/mlredact/.venv/lib/python3.12/site-packages/PIL/Image.py:3578: DecompressionBombWarning: Image size (1200000 pixels) exceeds limit of 1000000 pixels, could be decompression bomb DOS attack.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================ 230 passed, 22 deselected, 2 warnings in 5.04s ================
+wall=5.36 s  peakRSS=533728 KB

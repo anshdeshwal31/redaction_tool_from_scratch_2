@@ -1,0 +1,44 @@
+Mon Oct  5 14:06:50 UTC 2026
+uv run pytest -m slow
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/ubuntu/mlredact
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, hypothesis-6.168.3
+collected 252 items / 230 deselected / 22 selected
+
+tests/integration/test_faces.py .                                        [  4%]
+tests/integration/test_ner_models.py ...                                 [ 18%]
+tests/integration/test_pipeline.py .................                     [ 95%]
+tests/integration/test_tesseract.py F                                    [100%]
+
+=================================== FAILURES ===================================
+__________ test_tesseract_reads_the_scanned_letter_deterministically ___________
+
+    def test_tesseract_reads_the_scanned_letter_deterministically() -> None:
+        cfg = load_config("broad")
+        engine = TesseractEngine(cfg.ocr.engine_b, models_dir(cfg.runtime.models_dir))
+        page = render_page(
+            open_document(make_ime_letter(scanned=True, degrade=True, seed=7).pdf, cfg.render), 0, cfg.render, cfg.limits
+        )
+        words = engine.words(page.rgb, page.geometry.dpi)
+        texts = {w.text.strip(",.") for w in words}
+>       assert {"SMITH", "Medicare", "Phalen's"} <= texts
+E       assert {'Medicare', ...n's", 'SMITH'} <= set()
+E         
+E         Extra items in the left set:
+E         'SMITH'
+E         "Phalen's"
+E         'Medicare'
+
+tests/integration/test_tesseract.py:30: AssertionError
+=========================== short test summary info ============================
+FAILED tests/integration/test_tesseract.py::test_tesseract_reads_the_scanned_letter_deterministically
+========== 1 failed, 21 passed, 230 deselected in 2608.34s (0:43:28) ===========
+make: *** [Makefile:30: test-slow] Error 1
+
+real	43m28.819s
+user	47m35.544s
+sys	1m43.951s
+Mon Oct  5 14:50:19 UTC 2026
