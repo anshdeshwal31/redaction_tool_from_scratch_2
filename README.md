@@ -39,7 +39,7 @@ host, which matters on Vercel: its functions cap requests and responses at 4.5 M
 ```bash
 # Backend: http://127.0.0.1:8100
 cd backend
-uv sync && uv run mlredact models fetch --profile broad
+uv sync && uv run mlredact models fetch --profile client
 export MLREDACT_API_TOKEN=<32+ random characters>
 export MLREDACT_API_CORS_ORIGINS=http://127.0.0.1:3100,http://localhost:3100
 export MLREDACT_API_ALLOW_DEV_KEY=1          # synthetic documents only

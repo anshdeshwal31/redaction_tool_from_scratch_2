@@ -24,7 +24,8 @@ The default render style is `surrogate` (realistic replacements derived from a k
 
 | profile | what is replaced |
 |---|---|
-| `broad` (default) | every person, identifier, contact detail, DOB/DoD, street/suburb/postcode, linked organisation; clinical content and other dates kept |
+| `client` (default) | the client's policy decisions: every person (professionals included), organisation, contact detail, identifier, file path or file name and street line; every date (DOB/DoD included), age, suburb/town/place of birth and postcode kept; signatures, faces and photos replaced by synthetic stand-ins (pen strokes, a silhouette); figures and body charts kept |
+| `broad` | every person, identifier, contact detail, file path, DOB/DoD, street/suburb/postcode, linked organisation; clinical content and other dates kept |
 | `claimant_focused` | as broad, but people resolved as professionals (explicit title/post-nominal/role, no subject cue, surname not shared with the claimant's family) and their provider identifiers stay visible |
 | `maximal` | as broad, plus every date shifted by one keyed offset per scope (intervals preserved, layout kept) and ages of 90+ top-coded to "90+" |
 
@@ -155,7 +156,7 @@ All fixtures are synthetic (`tools/synthdocs`).  Real documents never enter the 
 src/mlredact/
   core/        types, geometry, canonical JSON + content IDs, errors (reason codes only)
   security/    Sensitive[T], allowlisted structured logging, exception sanitising
-  config/      pydantic schema, layered loader, built-in profiles (broad, claimant_focused, maximal)
+  config/      pydantic schema, layered loader, built-in profiles (client, broad, claimant_focused, maximal)
   runtime/     determinism settings, runtime-profile detection
   registry/    pinned model registry (SHA-256), fetch/resolve
   resources/   pinned fonts (Liberation, OFL), surrogate pools, allowlists + SHA256SUMS

@@ -1,0 +1,60 @@
+# Client profile (default) - the client's policy decisions of 2026-10-18.
+# Every person (claimant, family, witnesses, staff, clinicians, examining experts, lawyers, insurer
+# and administrative staff), every organisation and its contact details, every identifier (claim,
+# court, provider, ABN, file paths and names) and street lines are replaced with surrogates.
+# Kept as they are: every date (including dates of birth and death), ages, suburbs, towns and places of birth,
+# postcodes, and clinical content.  Role words ("the claimant") and other personal details
+# (nationality, occupation, ...) are not detected and so stay.
+# Signatures and photos are replaced with synthetic stand-ins rather than grey boxes; figures and
+# body charts stay (losing clinical content fails a document).
+policy:
+  profile_id: client
+  entity_actions:
+    person: surrogate
+    date_of_birth: keep
+    date_of_death: keep
+    date: keep
+    age: keep
+    street_address: surrogate
+    locality: keep
+    postcode: keep
+    phone: surrogate
+    email: surrogate
+    url: surrogate
+    ip_address: surrogate
+    medicare: surrogate
+    ihi: surrogate
+    hpi: surrogate
+    dva_file: surrogate
+    crn: surrogate
+    tfn: surrogate
+    ndis: surrogate
+    driver_licence: surrogate
+    passport: surrogate
+    clinical_id: surrogate
+    provider_number: surrogate
+    ahpra: surrogate
+    reference: surrogate
+    court_file: surrogate
+    bank_account: surrogate
+    card_number: surrogate
+    abn: surrogate
+    acn: surrogate
+    employee_id: surrogate
+    vehicle_reg: surrogate
+    vin: surrogate
+    organisation: surrogate
+    other_id: surrogate
+    file_path: surrogate
+  region_actions:
+    signature: synthesise
+    face: synthesise
+    photo: synthesise
+    # A synthetic stand-in for handwritten text would have to be written without reading it first.
+    handwriting: remove
+    barcode: remove
+    logo: remove
+    stamp: remove
+    illegible: remove
+    faint_ink: suppress_ink
+    graphic: keep

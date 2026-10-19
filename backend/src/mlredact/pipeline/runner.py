@@ -34,7 +34,7 @@ from mlredact.pipeline.pool import WorkerPool
 from mlredact.pipeline.requirements import required_model_ids
 from mlredact.pipeline.shared import SharedBlob
 from mlredact.pipeline.workers import RedactedPage, task_analyse, task_convert_image, task_inspect, task_redact
-from mlredact.policy.engine import Decision, decide
+from mlredact.policy.engine import Decision, decide, split_kept_places
 from mlredact.registry.models import load_registry, models_dir, resolve
 from mlredact.render.label import NOTICE_REMOVED, NOTICE_SURROGATE
 from mlredact.render.plan import check_supported, pad_box, plan_ops, rotated_token_ids
@@ -161,9 +161,10 @@ class Redactor:
                     if cfg.policy.keep_professionals
                     else frozenset()
                 )
-                decisions = decide(detection.mentions, cfg.policy, professionals)
-                removed = [d.mention for d in decisions if d.action is not ActionKind.KEEP]
                 tokens = {t.token_id: t for p in pages for t in p.tokens()}
+                mentions = split_kept_places(detection.mentions, tokens, cfg.policy)
+                decisions = decide(mentions, cfg.policy, professionals)
+                removed = [d.mention for d in decisions if d.action is not ActionKind.KEEP]
                 geoms = {p.geometry.index: p.geometry for p in pages}
                 originals = forbidden_keys(removed, detection.persons)
                 if self._key is not None:

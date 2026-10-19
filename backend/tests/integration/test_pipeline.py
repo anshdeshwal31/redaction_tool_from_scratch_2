@@ -23,7 +23,7 @@ from mlredact.registry.models import models_dir
 from mlredact.surrogate.generators import canonical_date
 from mlredact.text.normalize import match_key
 from mlredact.verify.checks import extract_all_text
-from support import make_config
+from support import make_config, ner_enabled
 
 pytestmark = [pytest.mark.slow, pytest.mark.models]
 
@@ -257,6 +257,22 @@ def test_claimant_focused_profile_keeps_the_treating_professional(reader: PPOCRE
         and match_key(p.text) in match_key(text)
     ]
     assert leaked == []
+
+
+def test_client_profile_keeps_dates_and_places_and_draws_stand_ins(reader: PPOCREngine) -> None:
+    cfg = make_config("client", overrides={"surrogate": {"allow_development_key": True}, "runtime": {"workers": 2}})
+    doc = make_ime_letter(scanned=True, degrade=True, seed=7, artefacts=True)
+    with Redactor(cfg) as r:
+        res = r.run(doc.pdf)
+    text = match_key(_ocr_text(_assert_released(res), reader))
+    kept = {"date_of_birth", "locality", "postcode"}
+    assert [p.text for p in doc.planted if p.kind in kept and match_key(p.text) not in text] == []
+    phase = CURRENT_PHASE if ner_enabled() else 2  # organisations need the NER models
+    leaked = [p.kind for p in doc.planted if p.phase <= phase and p.kind not in kept and match_key(p.text) in text]
+    assert leaked == []
+    regions = {g["kind"]: g["action"] for g in res.manifest["regions"]}
+    assert regions["signature"] == "synthesise" and regions["barcode"] == "remove"
+    assert res.manifest["job"]["profile"] == "client"
 
 
 # ------------------------------------------------------------------- regions and ink accounting

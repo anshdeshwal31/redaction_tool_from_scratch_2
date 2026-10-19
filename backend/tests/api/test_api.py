@@ -666,7 +666,7 @@ def test_system_reports_key_presence_only(api: Api, monkeypatch: pytest.MonkeyPa
     res = api.client.get("/v1/system", headers=AUTH)
     info = res.json()
     assert info["surrogateKey"] == {"fromEnv": True, "fromConfig": False, "devKeyAllowed": True}
-    assert info["profiles"] == ["broad", "claimant_focused", "maximal"]
+    assert info["profiles"] == ["broad", "claimant_focused", "client", "maximal"]
     assert "f" * 64 not in res.text
 
 

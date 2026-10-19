@@ -13,7 +13,7 @@ sync:  ## install the locked environment
 	$(UV) sync --locked
 
 models:  ## download and SHA-256-verify every pinned model into .models/
-	$(UV) run mlredact models fetch --profile broad
+	$(UV) run mlredact models fetch --profile client
 
 selfcheck:  ## validate config, runtime profile, resources and models
 	$(UV) run mlredact selfcheck

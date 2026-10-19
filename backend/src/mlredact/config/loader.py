@@ -41,7 +41,7 @@ def builtin_profiles() -> list[str]:
 
 
 def load_config(
-    profile: str = "broad",
+    profile: str = "client",
     files: Sequence[Path] = (),
     overrides: Mapping[str, Any] | None = None,
 ) -> AppConfig:

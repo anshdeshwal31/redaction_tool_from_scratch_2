@@ -43,7 +43,7 @@ the binary is missing.
 Download and verify exactly the models a profile needs:
 
 ```bash
-uv run mlredact models fetch --profile broad      # into .models/ (or $MLREDACT_MODELS_DIR)
+uv run mlredact models fetch --profile client     # into .models/ (or $MLREDACT_MODELS_DIR)
 uv run mlredact selfcheck                         # verifies models, resources, runtime profile
 ```
 
@@ -129,7 +129,7 @@ should stay in Australia, Privacy Act APP 8):
    sudo apt-get update && sudo apt-get install -y make tesseract-ocr libgl1
    cd ~/mlredact
    uv sync --locked
-   uv run mlredact models fetch --profile broad        # ~1.8 GB, SHA-256 verified
+   uv run mlredact models fetch --profile client       # ~1.8 GB, SHA-256 verified
    uv run mlredact selfcheck                           # note the runtime_profile it prints
    make test                                           # fast suite (~5 s)
    make determinism                                    # same input -> identical output (~21 min)
@@ -182,5 +182,5 @@ On the laptop the NER models and OCR engine B (Tesseract, not installed there) a
 * To restore NER on the laptop, move the two folders back (or re-download them, hash-verified):
 
   ```bash
-  mv ~/.mlredact/parked-models/* .models/          # or: uv run mlredact models fetch --profile broad
+  mv ~/.mlredact/parked-models/* .models/          # or: uv run mlredact models fetch --profile client
   ```

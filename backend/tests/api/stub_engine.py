@@ -238,7 +238,7 @@ def minimal_pdf() -> bytes:
 def main(argv: list[str]) -> None:
     command = argv[0] if argv else ""
     if command == "profiles":
-        sys.stdout.write("broad\nclaimant_focused\nmaximal\n")
+        sys.stdout.write("broad\nclaimant_focused\nclient\nmaximal\n")
         sys.exit(0)
     if command == "selfcheck":
         report = {

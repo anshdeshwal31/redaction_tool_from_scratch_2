@@ -146,6 +146,11 @@ export function typeLabel(type: string): string {
 }
 
 export const PROFILE_INFO: Record<string, { title: string; summary: string }> = {
+  client: {
+    title: "Client policy",
+    summary:
+      "Replaces every person, organisation, contact detail, identifier, file name and street line. Dates (including dates of birth), ages, suburbs and postcodes stay. Signatures and photos get synthetic stand-ins; figures stay.",
+  },
   broad: {
     title: "Broad",
     summary:
