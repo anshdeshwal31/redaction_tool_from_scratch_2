@@ -173,6 +173,8 @@ class Defaults(ApiModel):
 
 class KeyInfo(ApiModel):
     from_env: bool
+    # A deployment config gives the engine a key: surrogate.key_file, or the development key.
+    from_config: bool
     dev_key_allowed: bool
 
 
