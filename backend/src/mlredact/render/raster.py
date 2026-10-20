@@ -101,7 +101,11 @@ def apply_ops(
             _mark(drawn, result)
             applied.append(Applied(op.ref_id, b, result.box))
         elif op.kind is ActionKind.SYNTHESISE:
-            ok = draw_stand_in(out, b, op.reason, op.ref_id, [a.erased for a in applied]) and ok
+            # Faint-ink suppression leaves strong ink in place, so its boxes are painted over too.
+            keep_out = [
+                a.erased for a, o in zip(applied, ordered[:i], strict=True) if o.kind is not ActionKind.SUPPRESS_INK
+            ]
+            ok = draw_stand_in(out, b, op.reason, op.ref_id, keep_out) and ok
             applied.append(Applied(op.ref_id, b, b))
         elif op.kind is ActionKind.SUPPRESS_INK:
             ok = _suppress_ink(out, b, cfg.suppress_ink_darkness) and ok

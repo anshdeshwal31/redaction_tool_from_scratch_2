@@ -64,3 +64,15 @@ class TestStandIns:
         assert np.all(edit.raster[120:150, 70:400] == 0)  # the blackout survives
         assert np.any(np.all(edit.raster[50:120, 70:530] == PEN_INK, axis=-1))  # strokes above it
         assert not np.any(np.all(edit.raster[120:150, 70:530] == PEN_INK, axis=-1))
+
+    def test_faint_ink_overlap_is_painted_over(self) -> None:
+        """Faint-ink suppression leaves strong ink alone, so the stand-in must still cover it."""
+        faint = BBox(70, 50, 300, 150)
+        ops = [
+            RenderOp(0, A.SYNTHESISE, self.BOX, RegionKind.SIGNATURE.value, "G-1"),
+            RenderOp(0, A.SUPPRESS_INK, faint, RegionKind.FAINT_INK.value, "G-2"),
+        ]
+        edit = apply_ops(_noisy(), ops, RENDER)
+        assert edit.verified
+        region = edit.raster[50:150, 70:530].reshape(-1, 3)
+        assert len(np.unique(region, axis=0)) == 2  # paper + pen only: no original stroke survives
