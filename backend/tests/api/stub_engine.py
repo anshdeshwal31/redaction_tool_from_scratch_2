@@ -4,7 +4,8 @@ loads no models and finishes in milliseconds.
 
     MLREDACT_API_ENGINE='["python", "tests/api/stub_engine.py"]'
 
-The input's first line picks the scenario, so each job can ask for its own outcome:
+A marker near the start of the input picks the scenario, so each job can ask for its own outcome
+(it may follow a ``%PDF-`` header):
 
     %STUB released [delay=<ms>]   default (also for any input without a marker)
     %STUB quarantined             V4 fails after one re-plan: exit 2, manifest + quarantine.json
@@ -260,7 +261,7 @@ def main(argv: list[str]) -> None:
         fail("E_CONFIG_INVALID")
     out = Path(out_s or "")
     data = source.read_bytes()
-    marker = re.match(rb"^%STUB (\w+)(?: delay=(\d+))?", data[:200])
+    marker = re.search(rb"^%STUB (\w+)(?: delay=(\d+))?", data[:200], re.MULTILINE)
     scenario = marker.group(1).decode() if marker else "released"
     delay_ms = int(marker.group(2)) if marker and marker.group(2) else 0
     style = option(argv, "--style") or "surrogate"

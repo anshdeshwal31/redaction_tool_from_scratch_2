@@ -38,7 +38,7 @@ from mlredact.api.engine import EngineResult, run_short
 from mlredact.api.links import link_key, sign, verify
 from mlredact.api.models import (
     ACTIVE_STATES,
-    OUTPUT_FILES,
+    JOB_FILES,
     CreatedJob,
     CreateJob,
     Defaults,
@@ -197,6 +197,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
                 workers=settings.default_workers,
                 max_upload_mb=settings.max_upload_bytes // (1024 * 1024),
                 job_timeout_min=round(settings.job_timeout_s / 60),
+                original_retention_days=settings.original_retention_days,
             ),
             # Presence only: the key itself never leaves the engine's environment.
             surrogate_key=KeyInfo(
@@ -263,6 +264,8 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             raise ApiError(400, "E_API_BAD_PROFILE")
         if body.dev_key and not settings.allow_dev_key:
             raise ApiError(403, "E_API_DEV_KEY_DISABLED")
+        if body.keep_original and settings.original_retention_days <= 0:
+            raise ApiError(403, "E_API_KEEP_ORIGINAL_DISABLED")
         if body.input_bytes > settings.max_upload_bytes:
             raise ApiError(413, "E_API_UPLOAD_TOO_LARGE")
         job_id = new_job_id()
@@ -281,6 +284,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
                 seed_count=len(body.seeds),
                 sealed=body.evaluator_key is not None,
                 dev_key=body.dev_key,
+                keep_original=body.keep_original,
             ),
         )
         # The record first: once it exists the sweep deletes an expired job, so seeds written after it
@@ -379,7 +383,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     def get_job(job_id: str, _: Authorised) -> dict[str, Any]:
         job = job_or_404(job_id)
         done = job.state not in ACTIVE_STATES and job.state != "awaiting_upload"
-        files = store.outputs(job_id) if done else []
+        files = store.files(job_id) if done else []
         links: dict[str, str] = {}
         expires: int | None = None
         for name in files:
@@ -396,12 +400,13 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     @app.get("/v1/jobs/{job_id}/files/{name}")
     def get_file(job_id: str, name: str, token: Annotated[str, Query()], download: bool = False) -> FileResponse:
-        """Browser download of an artefact, with a signed link from ``GET /v1/jobs/{id}``."""
-        if not is_job_id(job_id) or name not in OUTPUT_FILES:
+        """Browser download of an artefact or the kept original, with a signed link from
+        ``GET /v1/jobs/{id}``."""
+        if not is_job_id(job_id) or name not in JOB_FILES:
             raise ApiError(404, "E_API_NOT_FOUND")
         if problem := verify(key, token, "file", job_id, name):
             raise ApiError(403, problem)
-        path = store.output_path(job_id, name)
+        path = store.file_path(job_id, name)
         if not path.is_file():
             raise ApiError(404, "E_API_NOT_FOUND")
         return FileResponse(

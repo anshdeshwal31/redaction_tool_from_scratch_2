@@ -26,6 +26,8 @@ export interface JobOptions {
   seedCount: number;
   sealed: boolean;
   devKey: boolean;
+  /** The job asked to keep its original for side-by-side review. */
+  keepOriginal: boolean;
 }
 
 /** Counts derived from the manifest when a job ends, so the job list never reads manifests. */
@@ -57,6 +59,8 @@ export interface JobRecord {
   /** A content-free reason code when the job failed outside the engine's own quarantine path. */
   errorCode?: string;
   summary?: JobSummary;
+  /** Set when the original was kept: the server deletes it then. */
+  originalExpiresAt?: string;
 }
 
 export const OUTPUT_FILES = [
@@ -67,6 +71,9 @@ export const OUTPUT_FILES = [
   "sensitive-manifest.sealed.json",
 ] as const;
 export type OutputFile = (typeof OUTPUT_FILES)[number];
+/** The artefacts, and the uploaded document when a job kept it (always a PDF, scans included). */
+export const JOB_FILES = [...OUTPUT_FILES, "original.pdf"] as const;
+export type JobFile = (typeof JOB_FILES)[number];
 
 export interface JobListItem extends JobRecord {
   queuePosition?: number;
@@ -75,9 +82,9 @@ export interface JobListItem extends JobRecord {
 export interface JobView {
   job: JobRecord;
   queuePosition?: number;
-  files: OutputFile[];
-  /** Absolute, signed, expiring URLs on the backend, one per artefact. */
-  links: Partial<Record<OutputFile, string>>;
+  files: JobFile[];
+  /** Absolute, signed, expiring URLs on the backend, one per file. */
+  links: Partial<Record<JobFile, string>>;
   linksExpireAt?: string;
   run?: RunRecord;
 }
@@ -94,7 +101,8 @@ export interface SystemInfo {
   engine: { command: string; cwd: string; configFiles: string[] };
   jobsDir: string;
   profiles: string[];
-  defaults: { workers: number; maxUploadMb: number; jobTimeoutMin: number };
+  /** originalRetentionDays: 0 when this server never keeps originals. */
+  defaults: { workers: number; maxUploadMb: number; jobTimeoutMin: number; originalRetentionDays: number };
   /** fromConfig: a deployment config names surrogate.key_file or turns on the development key. */
   surrogateKey: { fromEnv: boolean; fromConfig: boolean; devKeyAllowed: boolean };
   queue: { running?: string; queued: number };

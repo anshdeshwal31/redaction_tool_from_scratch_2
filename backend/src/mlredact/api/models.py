@@ -30,6 +30,9 @@ OUTPUT_FILES: tuple[str, ...] = (
     "quarantine.json",
     "sensitive-manifest.sealed.json",
 )
+# The uploaded document, kept for side-by-side review only when the job asked for it.
+ORIGINAL_FILE = "original.pdf"
+JOB_FILES: tuple[str, ...] = (*OUTPUT_FILES, ORIGINAL_FILE)
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -51,6 +54,7 @@ class JobOptions(ApiModel):
     seed_count: int
     sealed: bool
     dev_key: bool
+    keep_original: bool = False
 
 
 class InputInfo(ApiModel):
@@ -87,6 +91,8 @@ class JobRecord(ApiModel):
     # A content-free reason code when the job failed outside the engine's quarantine path.
     error_code: str | None = None
     summary: JobSummary | None = None
+    # Set when the original was kept: the sweep deletes it then.
+    original_expires_at: str | None = None
 
 
 # ------------------------------------------------------------------------------------- requests
@@ -117,6 +123,8 @@ class CreateJob(ApiModel):
     seeds: list[Seed] = Field(default_factory=list, max_length=500)
     evaluator_key: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     dev_key: bool = False
+    # Keep the document after the job, for side-by-side review (released and quarantined jobs).
+    keep_original: bool = False
     # Declared document size: the upload must match it exactly.
     input_bytes: int = Field(gt=0)
 
@@ -172,6 +180,8 @@ class Defaults(ApiModel):
     workers: int
     max_upload_mb: int
     job_timeout_min: int
+    # 0: originals are never kept.
+    original_retention_days: int
 
 
 class KeyInfo(ApiModel):

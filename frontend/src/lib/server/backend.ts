@@ -2,7 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 
-import { OUTPUT_FILES, type OutputFile } from "@/lib/jobs";
+import { JOB_FILES, type JobFile } from "@/lib/jobs";
 
 import { serverConfig } from "./config";
 
@@ -16,7 +16,7 @@ const JOB_ID = /^[0-9a-f]{32}$/;
 
 /** Path segments are validated before they are put in a backend URL. */
 export const isJobId = (id: string) => JOB_ID.test(id);
-export const isOutputFile = (name: string): name is OutputFile => (OUTPUT_FILES as readonly string[]).includes(name);
+export const isJobFile = (name: string): name is JobFile => (JOB_FILES as readonly string[]).includes(name);
 
 export class BackendUnavailable extends Error {}
 /** The backend did not answer within the call's time limit; it may still be working on the request. */

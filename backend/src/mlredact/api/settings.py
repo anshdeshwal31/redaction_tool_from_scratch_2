@@ -42,6 +42,8 @@ class ApiSettings:
     link_ttl_s: int
     # Browser origins allowed to use signed links (the frontend's address).
     cors_origins: tuple[str, ...]
+    # How long a job's original is kept when the job asks for it; 0 turns keeping off.
+    original_retention_days: int
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ApiSettings:
@@ -76,4 +78,5 @@ class ApiSettings:
             upload_ttl_s=_int(env, "MLREDACT_API_UPLOAD_TTL_S", 15 * 60, 30, 24 * 3600),
             link_ttl_s=_int(env, "MLREDACT_API_LINK_TTL_S", 15 * 60, 30, 24 * 3600),
             cors_origins=origins,
+            original_retention_days=_int(env, "MLREDACT_API_ORIGINAL_RETENTION_DAYS", 7, 0, 365),
         )

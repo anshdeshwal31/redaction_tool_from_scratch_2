@@ -63,6 +63,13 @@ Exit codes: `0` released, `2` quarantined, `1` usage/environment error.
 calls. It runs the CLI above once per job, one job at a time, and keeps the same rules: no document
 text, no input filenames and no scope ids are stored, and inputs are deleted as soon as a job ends.
 
+The one exception is a job created with `keepOriginal: true`, for the frontend's side-by-side view.
+When such a job is released or quarantined after its pages were analysed, its document moves to
+`<jobs>/<id>/original/original.pdf` instead of being deleted. A scan is stored as the same image-only
+PDF the engine builds from it, converted in a separate process. The original is served like an
+artefact and deleted when the job is deleted or when `MLREDACT_API_ORIGINAL_RETENTION_DAYS` have
+passed. Every signed-in user can open it.
+
 ```bash
 export MLREDACT_API_TOKEN=<32+ random characters, shared with the frontend's server>
 export MLREDACT_API_CORS_ORIGINS=http://127.0.0.1:3100,https://<your-vercel-app>.vercel.app
@@ -84,7 +91,7 @@ Two kinds of caller:
 | `POST /v1/jobs` | token | create a job from its options; returns a signed upload path |
 | `PUT /v1/jobs/{id}/input?token=` | signed link | the document's bytes |
 | `GET /v1/jobs`, `GET /v1/jobs/{id}` | token | list; status, summary, run record and signed artefact links |
-| `GET /v1/jobs/{id}/files/{name}?token=` | signed link | an artefact (`&download=true` for an attachment) |
+| `GET /v1/jobs/{id}/files/{name}?token=` | signed link | an artefact or the kept `original.pdf` (`&download=true` for an attachment) |
 | `POST /v1/jobs/{id}/cancel`, `DELETE /v1/jobs/{id}` | token | stop, or remove with its artefacts |
 | `GET /v1/system`, `POST /v1/system/selfcheck` | token | configuration; `mlredact selfcheck` |
 
@@ -102,6 +109,7 @@ it may hold seed values.
 | `MLREDACT_API_MAX_UPLOAD_MB` | `200` | upload limit |
 | `MLREDACT_API_JOB_TIMEOUT_S` | `10800` | wall-clock limit per job |
 | `MLREDACT_API_UPLOAD_TTL_S`, `MLREDACT_API_LINK_TTL_S` | `900` | lifetime of upload and download links |
+| `MLREDACT_API_ORIGINAL_RETENTION_DAYS` | `7` | how long a kept original stays (0 to 365); `0` refuses `keepOriginal` |
 | `MLREDACT_API_ENGINE` | this Python's CLI | engine command as a JSON array (tests point it at a stub) |
 
 **Exposing it from EC2.** `serve` binds `127.0.0.1` by default. Pick one of these:

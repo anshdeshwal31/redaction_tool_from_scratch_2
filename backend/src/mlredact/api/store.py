@@ -5,6 +5,7 @@ One directory per job::
     <jobs>/<id>/job.json   the record (no document text, no filename, no scope id, no seed values)
     <jobs>/<id>/in/        input, seeds, evaluator key: deleted as soon as the job ends
     <jobs>/<id>/out/       the CLI's fixed-name artefacts
+    <jobs>/<id>/original/  original.pdf, only for a job that asked to keep it: deleted when it expires
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from mlredact.api.models import OUTPUT_FILES, JobRecord, JobSummary
+from mlredact.api.models import JOB_FILES, ORIGINAL_FILE, OUTPUT_FILES, JobRecord, JobSummary
 
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 _RETRYABLE = (PermissionError,)  # Windows refuses to replace a file another handle has open
@@ -69,6 +70,15 @@ class JobStore:
         if name not in OUTPUT_FILES:
             raise ValueError("unknown artefact")
         return self.output_dir(job_id) / name
+
+    def original_dir(self, job_id: str) -> Path:
+        return self.job_dir(job_id) / "original"
+
+    def file_path(self, job_id: str, name: str) -> Path:
+        """An artefact, or the kept original."""
+        if name == ORIGINAL_FILE:
+            return self.original_dir(job_id) / name
+        return self.output_path(job_id, name)
 
     # ---------------------------------------------------------------------------------- records
     def write(self, job: JobRecord) -> None:
@@ -132,6 +142,9 @@ class JobStore:
     def remove_inputs(self, job_id: str) -> None:
         _rmtree(self.input_dir(job_id))
 
+    def remove_original(self, job_id: str) -> None:
+        _rmtree(self.original_dir(job_id))
+
     def remove(self, job_id: str) -> None:
         try:
             _rmtree(self.job_dir(job_id))
@@ -145,8 +158,8 @@ class JobStore:
             self._changes += 1
             self._cache.pop(job_id, None)
 
-    def outputs(self, job_id: str) -> list[str]:
-        return [n for n in OUTPUT_FILES if (self.output_dir(job_id) / n).is_file()]
+    def files(self, job_id: str) -> list[str]:
+        return [n for n in JOB_FILES if self.file_path(job_id, n).is_file()]
 
     def read_output_json(self, job_id: str, name: str) -> dict[str, Any] | None:
         try:

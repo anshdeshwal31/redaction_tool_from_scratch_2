@@ -12,7 +12,11 @@ import { formHydrated } from "./hydration";
 const submitted = new Set<string>();
 
 /** Fills the New redaction form, submits it and returns the new job's ID from the job page's URL. */
-export async function submitJob(page: Page, doc: Doc, options: { style?: RenderStyle } = {}): Promise<string> {
+export async function submitJob(
+  page: Page,
+  doc: Doc,
+  options: { style?: RenderStyle; keepOriginal?: boolean } = {},
+): Promise<string> {
   await page.goto("/redact");
   await formHydrated(page);
   // The document input, not the one Next.js's dev overlay adds.
@@ -22,6 +26,7 @@ export async function submitJob(page: Page, doc: Doc, options: { style?: RenderS
     // The radios are visually hidden; their rows are the labels.
     await page.locator("label.choice", { has: page.locator(`input[name="style"][value="${options.style}"]`) }).click();
   }
+  if (options.keepOriginal) await page.getByRole("checkbox", { name: /Keep original for comparison/ }).check();
   // The job exists, and starts once uploaded, before the page moves to it: record it from the
   // create answer, so it is cancelled even if the navigation never comes.
   const create = page.waitForResponse(

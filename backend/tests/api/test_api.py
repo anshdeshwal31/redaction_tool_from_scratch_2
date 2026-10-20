@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import itertools
 import json
 import os
@@ -10,6 +11,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,7 @@ from mlredact.api.models import JobOptions, JobRecord
 from mlredact.api.runner import Runner
 from mlredact.api.store import JobStore, iso_from_unix, new_job_id, now_iso
 
-from .conftest import AUTH, ORIGIN, TOKEN, Api, stub_input
+from .conftest import AUTH, ORIGIN, TOKEN, Api, stub_input, stub_pdf
 
 # ----------------------------------------------------------------------------------- auth
 
@@ -124,6 +126,91 @@ def test_engine_crash_gets_an_api_code(api: Api) -> None:
     job = api.wait(job_id)["job"]
     assert (job["state"], job["exitCode"], job["errorCode"]) == ("failed", 3, "E_API_ENGINE_FAILED")
     assert "Citizen" not in api.job_file(job_id)
+
+
+# ----------------------------------------------------------------------------------- originals
+
+
+def test_a_kept_original_is_served_until_the_job_is_deleted(api: Api) -> None:
+    body = stub_pdf("released")
+    job_id = api.submit(body=body, keepOriginal=True)
+    view = api.wait(job_id)
+    job = view["job"]
+    assert job["options"]["keepOriginal"] is True
+    assert view["files"] == ["redacted.pdf", "manifest.json", "run.json", "original.pdf"]
+    kept_for = datetime.fromisoformat(job["originalExpiresAt"]).timestamp() - time.time()
+    assert 7 * 86_400 - 60 < kept_for <= 7 * 86_400
+    assert not (api.jobs_dir / job_id / "in").exists()
+
+    original = api.client.get(view["links"]["original.pdf"])
+    assert original.content == body  # the upload itself, never a second copy
+    assert original.headers["content-type"] == "application/pdf"
+    assert f"mlredact-{job_id[:8]}-original.pdf" in original.headers["content-disposition"]
+    token = view["links"]["redacted.pdf"].split("token=")[1]
+    assert api.client.get(f"/v1/jobs/{job_id}/files/original.pdf?token={token}").status_code == 403
+
+    assert api.client.delete(f"/v1/jobs/{job_id}", headers=AUTH).json() == {"result": "deleted"}
+    assert not (api.jobs_dir / job_id).exists()
+
+
+def test_a_quarantined_job_keeps_its_original(api: Api) -> None:
+    view = api.wait(api.submit(body=stub_pdf("quarantined"), keepOriginal=True))
+    assert view["job"]["state"] == "quarantined"
+    assert "original.pdf" in view["files"]
+
+
+@pytest.mark.parametrize(
+    ("body", "options"),
+    [
+        (stub_pdf("released"), {}),  # not asked for
+        (stub_pdf("intake"), {"keepOriginal": True}),  # rejected before any page was analysed
+        (stub_pdf("error"), {"keepOriginal": True}),  # failed
+        (stub_input("released"), {"keepOriginal": True}),  # neither a PDF nor a scan
+    ],
+)
+def test_no_original_is_kept_otherwise(api: Api, body: bytes, options: dict[str, Any]) -> None:
+    job_id = api.submit(body=body, **options)
+    view = api.wait(job_id)
+    assert "original.pdf" not in view["files"]
+    assert "originalExpiresAt" not in view["job"]
+    assert not (api.jobs_dir / job_id / "original").exists()
+    assert not (api.jobs_dir / job_id / "in").exists()
+
+
+def test_a_kept_scan_becomes_a_pdf(api: Api) -> None:
+    pikepdf = pytest.importorskip("pikepdf")
+    image = pytest.importorskip("PIL.Image")
+    png = io.BytesIO()
+    image.new("RGB", (240, 320), (255, 255, 255)).save(png, format="PNG", dpi=(300, 300))
+    view = api.wait(api.submit(body=png.getvalue(), keepOriginal=True))
+    assert view["job"]["state"] == "released"
+    original = api.client.get(view["links"]["original.pdf"]).content
+    with pikepdf.open(io.BytesIO(original)) as pdf:
+        assert len(pdf.pages) == 1
+        # 240 x 320 px at 300 dpi, as the engine sees the scan
+        assert [float(v) for v in pdf.pages[0].MediaBox] == pytest.approx([0, 0, 57.6, 76.8], abs=0.01)
+
+
+def test_keeping_originals_can_be_turned_off(api_factory: Callable[..., Api]) -> None:
+    api = api_factory(original_retention_days=0)
+    res = api.client.post("/v1/jobs", json={"inputBytes": 10, "keepOriginal": True}, headers=AUTH)
+    assert (res.status_code, res.json()) == (403, {"error": "E_API_KEEP_ORIGINAL_DISABLED"})
+    assert api.client.get("/v1/system", headers=AUTH).json()["defaults"]["originalRetentionDays"] == 0
+
+
+def test_sweep_deletes_expired_originals(api: Api) -> None:
+    job_id = api.submit(body=stub_pdf("released"), keepOriginal=True)
+    api.wait(job_id)
+    store = JobStore(api.jobs_dir)
+    job = store.read(job_id)
+    assert job is not None
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    runner._sweep()
+    assert store.original_dir(job_id).exists()  # not yet expired
+    store.write(job.model_copy(update={"original_expires_at": iso_from_unix(time.time() - 60)}))
+    runner._sweep()
+    assert not store.original_dir(job_id).exists()
+    assert api.view(job_id)["files"] == ["redacted.pdf", "manifest.json", "run.json"]
 
 
 # ----------------------------------------------------------------------------------- privacy
