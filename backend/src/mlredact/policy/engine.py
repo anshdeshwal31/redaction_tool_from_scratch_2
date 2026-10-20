@@ -82,15 +82,33 @@ def split_kept_places(mentions: Sequence[Mention], tokens: Mapping[str, Token], 
 
 
 def _place_start(texts: Sequence[str]) -> int | None:
-    """Index of the first token of the place part of an address, or None without a state."""
-    state = next((i for i, t in enumerate(texts) if is_state_token(t)), None)
-    if state is None:
+    """Index of the first token of the place part of an address, or None when it cannot be told
+    apart from the street line (the whole address is then replaced).
+
+    The state is the one that ends the address (before any postcode), so a street named after a
+    state ("12 Victoria Road, ...") is not mistaken for it.  The street line ends at its last comma
+    ("8 Broadway, Ultimo NSW"; "3 Smith St, Castle Hill NSW"), or else after its street type.  A comma
+    with a number after it, or a street type only after it, is inside the street line ("Unit 5, ...")."""
+    state = len(texts) - (1 if texts and _POSTCODE.match(texts[-1]) else 0) - 1
+    if state < 0 or not is_state_token(texts[state]):
         return None
-    street_type = max((i for i in range(state) if is_street_type(texts[i])), default=None)
+    street_types = [i for i in range(state) if is_street_type(texts[i])]
+    comma = max((i for i in range(state - 1) if texts[i].endswith(",")), default=None)  # not "Parramatta, NSW"
+    if (
+        comma is not None
+        and not any(c.isdigit() for t in texts[comma + 1 : state] for c in t)
+        and (not street_types or street_types[0] <= comma)
+    ):
+        return comma + 1
+    street_type = street_types[-1] if street_types else None
     if street_type is not None:
         return street_type + 1
     numbered = max((i for i in range(state) if any(c.isdigit() for c in texts[i])), default=None)
-    return 0 if numbered is None else numbered + 1  # "PO Box 12 Parramatta NSW"
+    if numbered is None:
+        return 0  # "Parramatta NSW 2150": place only
+    if numbered > 0 and texts[numbered - 1].lower() == "box":
+        return numbered + 1  # "PO Box 12 Parramatta NSW"
+    return None  # "8 Broadway Ultimo NSW": no way to tell where the street name ends
 
 
 def _part(m: Mention, ids: tuple[str, ...], etype: EntityType, tokens: Mapping[str, Token]) -> Mention:

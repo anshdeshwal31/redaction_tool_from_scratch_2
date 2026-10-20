@@ -91,6 +91,27 @@ class TestKeptPlaces:
             (E.LOCALITY, "Parramatta NSW 2150"),
         ]
 
+    @pytest.mark.parametrize(
+        ("line", "street"),
+        [
+            ("12 Victoria Road, Gladesville NSW 2111", "12 Victoria Road,"),  # street named after a state
+            ("8 Broadway, Ultimo NSW 2007", "8 Broadway,"),  # no street type
+            ("3 Smith St, Castle Hill NSW 2154", "3 Smith St,"),  # suburb with a street-type word
+            ("Unit 5, 12 Smith St Parramatta NSW", "Unit 5, 12 Smith St"),  # comma inside the street line
+        ],
+    )
+    def test_the_street_line_ends_at_the_right_place(self, line: str, street: str) -> None:
+        pages = pages_from_lines([line])
+        m, tokens = _mention(pages, 0, E.STREET_ADDRESS)
+        parts = split_kept_places([m], tokens, CLIENT.policy)
+        assert (parts[0].entity_type, parts[0].value) == (E.STREET_ADDRESS, street)
+
+    @pytest.mark.parametrize("line", ["8 Broadway Ultimo NSW", "Unit 5, 8 Broadway Ultimo", "12 Victoria Road, Ryde"])
+    def test_an_unclear_street_line_is_replaced_whole(self, line: str) -> None:
+        pages = pages_from_lines([line])
+        m, tokens = _mention(pages, 0, E.STREET_ADDRESS)
+        assert split_kept_places([m], tokens, CLIENT.policy) == [m]
+
     def test_a_replaced_postcode_is_split_off(self) -> None:
         policy = load_config("client", overrides={"policy": {"entity_actions": {"postcode": "surrogate"}}}).policy
         pages = pages_from_lines(["12 Smith Street Parramatta NSW 2150"])
