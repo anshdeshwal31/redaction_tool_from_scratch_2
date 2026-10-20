@@ -177,7 +177,7 @@ const GUARANTEES: {
   },
   {
     title: "Your own server",
-    text: "Documents go straight from the browser to your redaction server and are processed there. Inputs are deleted when a job ends.",
+    text: "Documents go straight from the browser to your redaction server and are processed there. Inputs are deleted when a job ends, unless you keep the original for a few days to compare.",
     tone: "slate",
     flow: ["Browser", "Redaction server", "Engine", "Disk"],
     badge: "No external requests",

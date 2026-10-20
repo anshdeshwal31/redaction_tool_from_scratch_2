@@ -17,7 +17,7 @@ export default function JobsPage() {
             <br /> On the record.
           </>
         }
-        description="Every redaction run on the server. Inputs are deleted when a job ends; the artefacts stay until you delete the job."
+        description="Every redaction run on the server. Inputs are deleted when a job ends, or after a few days when the original was kept for comparison; the artefacts stay until you delete the job."
         actions={
           <ButtonLink href="/redact" variant="primary" size="lg">
             <Plus className="size-4" aria-hidden />

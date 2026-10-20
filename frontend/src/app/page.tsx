@@ -14,7 +14,10 @@ const FACTS = [
   { value: ENTITY_TYPES.length, label: "Identifier types detected and replaced, from names to Medicare numbers" },
   { value: REGION_KINDS.length, label: "Kinds of visual region removed, from signatures to faces" },
   { value: CHECKS.length, label: "Verification checks a document must pass before release" },
-  { value: 0, label: "Copies of the original kept once a job ends. Inputs are deleted when it finishes" },
+  {
+    value: 0,
+    label: "Copies of the original kept once a job ends, unless you keep one for a side-by-side comparison",
+  },
 ];
 
 function Hero() {
