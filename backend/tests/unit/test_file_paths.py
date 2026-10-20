@@ -46,6 +46,28 @@ class TestFilePaths:
         out = factory.file_path("C:\\Users\\Documents\\report.docx")
         assert out != "C:\\Users\\Documents\\report.docx" and out.endswith(".docx")
 
+    def test_folder_names_with_spaces_are_detected_whole(self) -> None:
+        lines = [
+            "Path C:\\Users\\John Smith",
+            "Saved C:\\Users\\jsmith\\Documents and sent",
+            "From /Users/jsmith/Smith Family/report.pdf today",
+            "Mac /Users/John Smith",
+        ]
+        result = detect_document(pages_from_lines(lines), CFG, "doc")
+        found = {m.value for m in result.mentions if m.entity_type is E.FILE_PATH}
+        assert found == {
+            "C:\\Users\\John Smith",
+            "C:\\Users\\jsmith\\Documents",
+            "/Users/jsmith/Smith Family/report.pdf",
+            "/Users/John Smith",
+        }
+
+    def test_a_single_changeable_character_becomes_a_word(self) -> None:
+        for value in ("IME report 3.docx", "S:\\Scans\\scan 3.pdf", "scan J.pdf"):
+            factory = SurrogateFactory(Chooser(b"k" * 32), [match_key(value)])
+            out = factory.file_path(value)
+            assert match_key(out) != match_key(value) and out.endswith(value[-4:])
+
     def test_every_profile_replaces_them(self) -> None:
         for profile in ("broad", "claimant_focused", "maximal"):
             assert load_config(profile).policy.entity_actions[E.FILE_PATH] is ActionKind.SURROGATE

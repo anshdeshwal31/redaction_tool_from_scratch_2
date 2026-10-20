@@ -15,26 +15,32 @@ EXTENSIONS = "docx?|dotx?|pdf|rtf|txt|odt|xlsx?|csv|pptx?|msg|eml|jpe?g|png|tiff
 _EXT_END = re.compile(rf"\.(?:{EXTENSIONS})(?![A-Za-z0-9])", re.IGNORECASE)
 # Drive-letter or UNC path, up to the end of the line (cut below).
 _WINDOWS = re.compile(r"(?<![\w\\])((?:[A-Za-z]:|\\\\[\w.$\-]+)\\[^\n<>|\"*?]*)")
-# POSIX path: under a well-known root, or with a document extension.
+# The rest of a last folder name with spaces: words that start with a capital or a digit
+# ("John Smith", "Smith J"), not the sentence that follows ("... and sent").
+_TAIL = r"(?: +[A-Z0-9][^\s\"'<>/\\,;]*)*"
+# POSIX path: under a well-known root, or with a document extension.  Folder names may contain
+# spaces when another "/" follows ("/Users/jsmith/Smith Family/report.pdf").
+_SEG = r"[^\s\"'<>/]+"
 _POSIX = re.compile(
-    rf"(?<![\w/.:])(/(?:home|Users|mnt|media|srv|data|shares?|Volumes|var|tmp|opt)/[^\s\"'<>]+"
-    rf"|/(?:[\w.\-]+/)+[\w.\-]+\.(?:{EXTENSIONS}))(?![\w])",
-    re.IGNORECASE,
+    rf"(?<![\w/.:])(/(?i:home|Users|mnt|media|srv|data|shares?|Volumes|var|tmp|opt)"
+    rf"(?:/{_SEG}(?: +{_SEG})*(?=/))*(?:/{_SEG}(?: +{_SEG})*\.(?i:{EXTENSIONS})(?![A-Za-z0-9])|/{_SEG}{_TAIL})"
+    rf"|/(?:[\w.\-]+(?: +[\w.\-]+)*/)+[\w.\-]+\.(?i:{EXTENSIONS}))(?![\w])"
 )
+_LAST_NAME = re.compile(rf"[^\s\"'<>/\\,;]*{_TAIL}")
 # Bare file name: a word with a document extension (not part of a path, URL or email address).
 _NAME = re.compile(rf"(?<![\w.\\/@\-])(\w[\w\-.()]*\.(?:{EXTENSIONS}))(?![\w\\/]|\.\w)", re.IGNORECASE)
 
 
 def _windows_end(text: str, start: int, end: int) -> int:
     """A path may contain spaces, so it ends after its last document extension or, without one,
-    at the first space after its last backslash."""
+    after its last folder name ("C:\\Users\\John Smith")."""
     run = text[start:end]
     ext = list(_EXT_END.finditer(run))
     if ext:
         return start + ext[-1].end()
-    last = run.rfind("\\")
-    space = run.find(" ", last + 1)
-    return start + (space if space >= 0 else len(run.rstrip()))
+    last = run.rfind("\\") + 1
+    tail = _LAST_NAME.match(run, last)
+    return start + (tail.end() if tail else last)
 
 
 class FilePathDetector:

@@ -307,12 +307,15 @@ class SurrogateFactory:
         ]
         if not changed:  # nothing identifying: still never equal to the original
             changed = [i for i in words if i not in fixed][-1:] or words[-1:]
+        # One changeable character ("scan 3.pdf") cannot move the result far enough from the
+        # original: that part becomes a pool word instead.
+        renamed = set(changed) if sum(len(parts[i]) for i in changed) < 2 else set()
 
         def make(attempt: int) -> str:
             out = list(parts)
             for i in changed:
                 word, slot = parts[i], f"{key}\x03{i}"
-                if word.isalpha() and len(word) >= 3:
+                if (word.isalpha() and len(word) >= 3) or i in renamed:
                     out[i] = apply_case(word, self._c.pick("file.word", slot, self._pools.surnames, attempt))
                 else:
                     out[i] = self._digits_like("file", slot, word, attempt)
