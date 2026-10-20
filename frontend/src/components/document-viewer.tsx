@@ -1,6 +1,6 @@
 "use client";
 
-import { Eye, EyeOff, FileWarning, Minus, Plus, RotateCcw } from "lucide-react";
+import { Columns2, Eye, EyeOff, FileWarning, Minus, Plus, RotateCcw } from "lucide-react";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 
@@ -66,46 +66,29 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 /* ------------------------------------------------------------------------------------ page */
 
 const MAX_CANVAS_PX = 2600;
+// Between the original and the redacted page when they are shown side by side.
+const SIDE_GAP_PX = 12;
 
-interface PageProps {
-  info: PageInfo;
-  pageCount: number;
-  doc: PDFDocumentProxy | null;
-  root: HTMLElement | null;
+/** One page of one PDF, drawn only while it is near the viewport. */
+function PageCanvas({
+  doc,
+  index,
+  near,
+  cssWidth,
+  label,
+}: {
+  doc: PDFDocumentProxy;
+  index: number;
+  near: boolean;
   cssWidth: number;
-  boxes: OverlayBox[];
-  items: Map<string, OverlayItem>;
-  isVisibleItem: (item: OverlayItem) => boolean;
-  selectedId: string | null;
-  flashKey: string | null;
-  hoverKey: string | null;
-  onHover: (key: string | null) => void;
-  onPick: (box: OverlayBox) => void;
-  showOverlay: boolean;
-}
-
-const Page = memo(function Page(props: PageProps) {
-  const { info, doc, root, cssWidth, boxes, items, isVisibleItem, showOverlay } = props;
-  const wrapRef = useRef<HTMLDivElement>(null);
+  label: string;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [near, setNear] = useState(false);
   const [rendered, setRendered] = useState(false);
-
-  // Only pages near the viewport hold a canvas: long records would otherwise exhaust memory.
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el || !root) return;
-    const io = new IntersectionObserver(([e]) => setNear(Boolean(e?.isIntersecting)), {
-      root,
-      rootMargin: "1500px 0px",
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [root]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!doc || !canvas || !near || cssWidth < 50) {
+    if (!canvas || !near || cssWidth < 50) {
       if (canvas && !near) {
         canvas.width = 0;
         canvas.height = 0;
@@ -117,7 +100,7 @@ const Page = memo(function Page(props: PageProps) {
     let cancelled = false;
     const handle = setTimeout(async () => {
       try {
-        const page = await doc.getPage(info.index + 1);
+        const page = await doc.getPage(index + 1);
         if (cancelled) return;
         const base = page.getViewport({ scale: 1 });
         const target = Math.min(MAX_CANVAS_PX, cssWidth * Math.min(window.devicePixelRatio || 1, 2));
@@ -142,7 +125,57 @@ const Page = memo(function Page(props: PageProps) {
       clearTimeout(handle);
       task?.cancel();
     };
-  }, [doc, near, cssWidth, info.index]);
+  }, [doc, near, cssWidth, index]);
+
+  return (
+    <>
+      <canvas ref={canvasRef} className="absolute inset-0 size-full" aria-label={label} />
+      {!rendered ? (
+        <div className="absolute inset-0 flex items-center justify-center text-muted">
+          <Spinner />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+interface PageProps {
+  info: PageInfo;
+  pageCount: number;
+  doc: PDFDocumentProxy | null;
+  /** Side by side: the original page left of the redacted one. */
+  compare: boolean;
+  original: PDFDocumentProxy | null;
+  root: HTMLElement | null;
+  /** The width of one page (of each page, side by side). */
+  cssWidth: number;
+  boxes: OverlayBox[];
+  items: Map<string, OverlayItem>;
+  isVisibleItem: (item: OverlayItem) => boolean;
+  selectedId: string | null;
+  flashKey: string | null;
+  hoverKey: string | null;
+  onHover: (key: string | null) => void;
+  onPick: (box: OverlayBox) => void;
+  showOverlay: boolean;
+}
+
+const Page = memo(function Page(props: PageProps) {
+  const { info, doc, compare, original, root, cssWidth, boxes, items, isVisibleItem, showOverlay } = props;
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [near, setNear] = useState(false);
+
+  // Only pages near the viewport hold a canvas: long records would otherwise exhaust memory.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || !root) return;
+    const io = new IntersectionObserver(([e]) => setNear(Boolean(e?.isIntersecting)), {
+      root,
+      rootMargin: "1500px 0px",
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [root]);
 
   const visibleBoxes = showOverlay
     ? boxes.filter((b) => b.itemIds.some((id) => {
@@ -152,27 +185,22 @@ const Page = memo(function Page(props: PageProps) {
     : [];
   const hovered = visibleBoxes.find((b) => b.key === props.hoverKey) ?? null;
 
-  return (
-    <div className="mx-auto" style={{ width: cssWidth || "100%" }}>
-      <div className="mb-1.5 flex items-center justify-between text-xs text-muted">
-        <span className="font-medium">
-          Page {info.index + 1} of {props.pageCount}
-        </span>
-        <span>{info.kind.replace("_", " ")}</span>
-      </div>
+  // Both sides carry the same boxes, so a box on the original shows what the redacted side changed.
+  const sheet = (side: "original" | "redacted") => {
+    const source = side === "original" ? original : doc;
+    return (
       <div
-        ref={wrapRef}
-        id={`page-${info.index}`}
         className="relative overflow-visible bg-paper shadow-[0_1px_3px_rgba(0,0,0,0.18)] ring-1 ring-line"
         style={{ aspectRatio: `${info.width_px} / ${info.height_px}` }}
       >
-        {doc ? (
-          <canvas ref={canvasRef} className="absolute inset-0 size-full" aria-label={`Redacted page ${info.index + 1}`} />
-        ) : null}
-        {doc && !rendered ? (
-          <div className="absolute inset-0 flex items-center justify-center text-muted">
-            <Spinner />
-          </div>
+        {source ? (
+          <PageCanvas
+            doc={source}
+            index={info.index}
+            near={near}
+            cssWidth={cssWidth}
+            label={`${side === "original" ? "Original" : "Redacted"} page ${info.index + 1}`}
+          />
         ) : null}
         {visibleBoxes.map((box) => (
           <BoxMark
@@ -189,7 +217,43 @@ const Page = memo(function Page(props: PageProps) {
             onPick={props.onPick}
           />
         ))}
-        {hovered ? <BoxTooltip box={hovered} info={info} items={items} isVisibleItem={isVisibleItem} /> : null}
+        {/* One tooltip, on the redacted side, wherever the box is hovered. */}
+        {hovered && side === "redacted" ? (
+          <BoxTooltip box={hovered} info={info} items={items} isVisibleItem={isVisibleItem} />
+        ) : null}
+      </div>
+    );
+  };
+  const caption = "mb-1 text-[0.6875rem] font-semibold tracking-wide text-muted uppercase";
+
+  return (
+    <div className="mx-auto" style={{ width: (compare ? cssWidth * 2 + SIDE_GAP_PX : cssWidth) || "100%" }}>
+      <div className="mb-1.5 flex items-center justify-between text-xs text-muted">
+        <span className="font-medium">
+          Page {info.index + 1} of {props.pageCount}
+        </span>
+        <span>{info.kind.replace("_", " ")}</span>
+      </div>
+      <div
+        ref={wrapRef}
+        id={`page-${info.index}`}
+        className={compare ? "grid grid-cols-2" : undefined}
+        style={compare ? { columnGap: SIDE_GAP_PX } : undefined}
+      >
+        {compare ? (
+          <>
+            <div>
+              <div className={caption}>Original</div>
+              {sheet("original")}
+            </div>
+            <div>
+              <div className={caption}>Redacted</div>
+              {sheet("redacted")}
+            </div>
+          </>
+        ) : (
+          sheet("redacted")
+        )}
       </div>
     </div>
   );
@@ -361,9 +425,24 @@ function ItemRow({
 
 const ZOOMS = [1, 1.25, 1.5, 2];
 
-export function DocumentViewer({ manifest, pdfUrl }: { manifest: Manifest; pdfUrl: PdfSource | null }) {
+export function DocumentViewer({
+  manifest,
+  pdfUrl,
+  originalUrl = null,
+}: {
+  manifest: Manifest;
+  pdfUrl: PdfSource | null;
+  /** The kept original: offered side by side, and shown that way first. */
+  originalUrl?: PdfSource | null;
+}) {
   const model: OverlayModel = useMemo(() => buildOverlay(manifest), [manifest]);
   const pdf = usePdf(pdfUrl);
+  const [compare, setCompare] = useState(originalUrl !== null);
+  const comparing = compare && originalUrl !== null;
+  // Downloaded on first use, and kept while the comparison is switched off.
+  const [originalOpened, setOriginalOpened] = useState(comparing);
+  if (comparing && !originalOpened) setOriginalOpened(true);
+  const original = usePdf(originalOpened ? originalUrl : null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
@@ -441,6 +520,7 @@ export function DocumentViewer({ manifest, pdfUrl }: { manifest: Manifest; pdfUr
 
   // `width` is the scroller's content box (padding and scrollbar already excluded).
   const pageWidth = Math.max(0, Math.floor(width * zoom));
+  const sheetWidth = comparing ? Math.max(0, Math.floor((pageWidth - SIDE_GAP_PX) / 2)) : pageWidth;
 
   return (
     <div className="flex flex-col gap-3">
@@ -485,6 +565,20 @@ export function DocumentViewer({ manifest, pdfUrl }: { manifest: Manifest; pdfUr
           </label>
         ) : null}
         <div className="ml-auto flex items-center gap-1">
+          {originalUrl ? (
+            <button
+              type="button"
+              onClick={() => setCompare((v) => !v)}
+              aria-pressed={comparing}
+              className={cx(
+                "inline-flex h-7 items-center gap-1.5 px-2 text-xs font-medium hover:bg-surface-2 hover:text-ink",
+                comparing ? "bg-surface-2 text-ink" : "text-ink-2",
+              )}
+            >
+              <Columns2 className="size-3.5" aria-hidden />
+              Side by side
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setShowOverlay((v) => !v)}
@@ -530,11 +624,16 @@ export function DocumentViewer({ manifest, pdfUrl }: { manifest: Manifest; pdfUr
 
       {!pdfUrl ? (
         <Notice tone="warn" icon={<FileWarning className="size-4" />} title="No PDF was released for this job">
-          The pages below are outlines. Boxes show where the engine planned its changes, from the manifest.
+          The redacted pages below are outlines. Boxes show where the engine planned its changes, from the manifest.
         </Notice>
       ) : pdf.error ? (
         <Notice tone="crit" icon={<FileWarning className="size-4" />} title="The redacted PDF could not be displayed">
           Download it to view it in another reader. The overlay is still shown on page outlines.
+        </Notice>
+      ) : null}
+      {comparing && original.error ? (
+        <Notice tone="crit" icon={<FileWarning className="size-4" />} title="The original could not be displayed">
+          The original side shows page outlines with the overlay. It may have just been deleted: reload the page.
         </Notice>
       ) : null}
 
@@ -556,8 +655,10 @@ export function DocumentViewer({ manifest, pdfUrl }: { manifest: Manifest; pdfUr
                   info={info}
                   pageCount={manifest.pages.length}
                   doc={pdf.error ? null : pdf.doc}
+                  compare={comparing}
+                  original={original.error ? null : original.doc}
                   root={scrollEl}
-                  cssWidth={pageWidth}
+                  cssWidth={sheetWidth}
                   boxes={model.boxesByPage.get(info.index) ?? []}
                   items={model.itemsById}
                   isVisibleItem={isVisibleItem}

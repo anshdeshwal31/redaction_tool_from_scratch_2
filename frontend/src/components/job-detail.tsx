@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, downloadUrl, freshFileUrl, send, useNow, usePolling } from "@/lib/api";
 import { formatBytes, formatClock, formatDate, formatDuration, shortHash, shortId } from "@/lib/format";
-import { ACTIVE_STATES, type JobView, type OutputFile } from "@/lib/jobs";
+import { ACTIVE_STATES, type JobFile, type JobView, type OutputFile } from "@/lib/jobs";
 import type { Manifest } from "@/lib/manifest";
 import { PROFILE_INFO, reasonText, STYLE_INFO } from "@/lib/vocab";
 
@@ -189,6 +189,7 @@ export function JobDetail({ id }: { id: string }) {
   const { manifest, loading: manifestLoading } = useManifest(id, files.includes("manifest.json"));
   // A fresh signed link each time the viewer opens, so a page left open never shows an expired one.
   const pdfSource = useCallback(() => freshFileUrl(id, "redacted.pdf"), [id]);
+  const originalSource = useCallback(() => freshFileUrl(id, "original.pdf"), [id]);
 
   useEffect(() => {
     const fromHash = window.location.hash.slice(1);
@@ -228,7 +229,7 @@ export function JobDetail({ id }: { id: string }) {
   const released = job.state === "released";
   const activeTab: Tab = tab ?? (released ? "document" : "overview");
   if (activeTab === "document" && !documentOpened) setDocumentOpened(true);
-  const has = (name: OutputFile) => files.includes(name);
+  const has = (name: JobFile) => files.includes(name);
   const o = job.options;
 
   async function cancel() {
@@ -276,6 +277,15 @@ export function JobDetail({ id }: { id: string }) {
   if (o.scope === "caller") meta.push(<span key="sc">Caller scope</span>);
   if (o.seedCount) meta.push(<span key="se">{o.seedCount} known identifier{o.seedCount === 1 ? "" : "s"}</span>);
   if (o.devKey) meta.push(<span key="dk" className="font-medium text-warn-text">Development key</span>);
+  if (job.originalExpiresAt) {
+    meta.push(
+      <span key="or">
+        {has("original.pdf")
+          ? `Original kept until ${formatDate(job.originalExpiresAt)}`
+          : `Original deleted ${formatDate(job.originalExpiresAt)}`}
+      </span>,
+    );
+  }
 
   const reasons = manifest?.reasons ?? job.summary?.reasons ?? [];
   const summary = job.summary;
@@ -427,7 +437,11 @@ export function JobDetail({ id }: { id: string }) {
                 hidden={activeTab !== "document"}
                 className="fade-up pt-2"
               >
-                <DocumentViewer manifest={manifest} pdfUrl={has("redacted.pdf") ? pdfSource : null} />
+                <DocumentViewer
+                  manifest={manifest}
+                  pdfUrl={has("redacted.pdf") ? pdfSource : null}
+                  originalUrl={has("original.pdf") ? originalSource : null}
+                />
               </div>
             ) : null}
             {activeTab !== "document" ? (

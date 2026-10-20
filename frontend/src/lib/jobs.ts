@@ -59,6 +59,8 @@ export interface JobRecord {
   /** A content-free reason code when the job failed outside the engine's own quarantine path. */
   errorCode?: string;
   summary?: JobSummary;
+  /** Set when the original was kept: the server deletes it then. */
+  originalExpiresAt?: string;
 }
 
 export const OUTPUT_FILES = [
