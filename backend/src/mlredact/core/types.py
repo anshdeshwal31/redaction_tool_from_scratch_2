@@ -70,6 +70,7 @@ class EntityType(StrEnum):
     VIN = "vin"
     ORGANISATION = "organisation"
     OTHER_ID = "other_id"
+    FILE_PATH = "file_path"  # file paths and file names (often carry a person's or a matter's name)
 
 
 class RegionKind(StrEnum):
@@ -91,6 +92,7 @@ class ActionKind(StrEnum):
     SURROGATE = "surrogate"
     RETYPESET_REGION = "retypeset_region"
     REMOVE = "remove"  # opaque neutral fill (optionally labelled)
+    SYNTHESISE = "synthesise"  # region replaced by a synthetic stand-in (pen strokes, a silhouette)
     BLACKOUT = "blackout"
     LABEL = "label"
     SUPPRESS_INK = "suppress_ink"

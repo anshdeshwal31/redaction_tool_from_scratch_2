@@ -39,6 +39,7 @@ policy:
     vin: surrogate
     organisation: surrogate
     other_id: surrogate
+    file_path: surrogate
   region_actions:
     signature: remove
     handwriting: remove

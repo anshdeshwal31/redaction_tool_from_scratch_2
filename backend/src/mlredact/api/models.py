@@ -110,7 +110,7 @@ class Seed(ApiModel):
 
 
 class CreateJob(ApiModel):
-    profile: str = "broad"
+    profile: str = "client"
     style: RenderStyle = "surrogate"
     workers: int | None = Field(default=None, ge=1, le=64)
     scope_id: str | None = Field(default=None, max_length=200)
@@ -132,7 +132,7 @@ class CreateJob(ApiModel):
 
 
 class SelfcheckRequest(ApiModel):
-    profile: str = "broad"
+    profile: str = "client"
 
 
 # ------------------------------------------------------------------------------------- responses

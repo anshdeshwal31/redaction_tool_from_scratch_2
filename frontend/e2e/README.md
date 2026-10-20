@@ -31,7 +31,7 @@ cd backend && uv sync                    # the backend's Python, used for the AP
 cd ../frontend && npm ci && npx playwright install chromium
 ```
 
-Real mode also needs the models (`uv run mlredact models fetch --profile broad`, about 1.8 GB) and
+Real mode also needs the models (`uv run mlredact models fetch --profile client`, about 1.8 GB) and
 Tesseract on the PATH, so `uv run mlredact selfcheck` passes.
 
 ## What is covered

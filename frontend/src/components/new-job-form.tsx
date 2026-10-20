@@ -16,7 +16,9 @@ import { FileDrop } from "./file-drop";
 import { Button, cx, Notice, Spinner } from "./ui";
 import { Aurora, Flow, GlassChip } from "./visuals";
 
-const FALLBACK_PROFILES = ["broad", "claimant_focused", "maximal"];
+// The engine's default profile (the client's policy), listed first.
+const DEFAULT_PROFILE = "client";
+const FALLBACK_PROFILES = ["client", "broad", "claimant_focused", "maximal"];
 
 const SUBMIT_ERRORS: Record<string, string> = {
   E_API_UPLOAD_TOO_LARGE: "The document is larger than the server's upload limit.",
@@ -111,7 +113,7 @@ export function NewJobForm() {
   const { data: system } = usePolling<SystemInfo>("/api/system", 5000, () => true);
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
-  const [profile, setProfile] = useState("broad");
+  const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [style, setStyle] = useState<RenderStyle>("surrogate");
   const [scopeId, setScopeId] = useState("");
   const [workers, setWorkers] = useState<string>("");
@@ -123,7 +125,9 @@ export function NewJobForm() {
   const [error, setError] = useState<string | null>(null);
   const hydrated = useHydrated();
 
-  const profiles = system?.profiles ?? FALLBACK_PROFILES;
+  const profiles = [...(system?.profiles ?? FALLBACK_PROFILES)].sort(
+    (a, b) => Number(b === DEFAULT_PROFILE) - Number(a === DEFAULT_PROFILE),
+  );
   const maxBytes = (system?.defaults.maxUploadMb ?? 200) * 1024 * 1024;
   const keyConfigured = system?.surrogateKey.fromEnv ?? false;
   const keyHex = evaluatorKey.trim();

@@ -67,7 +67,7 @@ def run(
         Path, typer.Argument(exists=True, dir_okay=False, readable=True, help="Input PDF, TIFF, PNG or JPEG")
     ],
     out: Annotated[Path, typer.Option("--out", "-o", help="Output directory")] = Path("out"),
-    profile: Annotated[str, typer.Option(help="Policy profile")] = "broad",
+    profile: Annotated[str, typer.Option(help="Policy profile")] = "client",
     config: Annotated[list[Path] | None, typer.Option("--config", "-c", help="Deployment YAML (repeatable)")] = None,
     style: Annotated[str | None, typer.Option(help="Override render style: surrogate | label | blackout")] = None,
     workers: Annotated[int | None, typer.Option(help="Worker processes")] = None,
@@ -134,7 +134,7 @@ def run(
 
 @app.command()
 def selfcheck(
-    profile: Annotated[str, typer.Option()] = "broad",
+    profile: Annotated[str, typer.Option()] = "client",
     config: Annotated[list[Path] | None, typer.Option("--config", "-c", help="Deployment YAML (repeatable)")] = None,
 ) -> None:
     """Validate configuration, runtime profile, resources, model artefacts and engine binaries."""
@@ -236,7 +236,7 @@ def sensitive_open(
 def models_fetch(
     model_ids: Annotated[list[str] | None, typer.Argument(help="Model ids (default: all registered)")] = None,
     directory: Annotated[str, typer.Option(help="Models directory")] = ".models",
-    profile: Annotated[str | None, typer.Option(help="Fetch only the models this profile needs (e.g. broad)")] = None,
+    profile: Annotated[str | None, typer.Option(help="Fetch only the models this profile needs (e.g. client)")] = None,
 ) -> None:
     """Download and verify model files (never used by processing code)."""
     from mlredact.pipeline.requirements import required_model_ids

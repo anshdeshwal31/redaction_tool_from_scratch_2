@@ -653,7 +653,8 @@
         "vehicle_reg",
         "vin",
         "organisation",
-        "other_id"
+        "other_id",
+        "file_path"
       ]
     },
     "action": {
@@ -661,6 +662,7 @@
         "surrogate",
         "retypeset_region",
         "remove",
+        "synthesise",
         "blackout",
         "label",
         "suppress_ink",

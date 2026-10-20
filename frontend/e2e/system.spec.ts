@@ -6,7 +6,7 @@ test("the system page shows the server's settings and runs the self-check", asyn
   await page.goto("/system");
 
   const profiles = page.getByLabel("Profile to check").locator("option");
-  await expect(profiles).toHaveCount(3);
+  await expect(profiles).toHaveCount(4);
   await expect(page.getByText("Upload limit")).toBeVisible();
 
   await page.getByRole("button", { name: "Run self-check" }).click();

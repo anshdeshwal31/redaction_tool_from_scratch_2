@@ -13,7 +13,7 @@ import { Button, Card, CardHeader, cx, KeyValue, Mono, Notice, Pill, Spinner } f
 
 export function SystemPanel() {
   const { data: info, error } = usePolling<SystemInfo>("/api/system", 3000, () => true);
-  const [profile, setProfile] = useState("broad");
+  const [profile, setProfile] = useState("client");
   const [check, setCheck] = useState<SelfcheckReport | null>(null);
   const [running, setRunning] = useState(false);
 

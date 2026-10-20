@@ -40,6 +40,7 @@ export const ENTITY_LABELS: Record<EntityType, string> = {
   vin: "VIN",
   organisation: "Organisation",
   other_id: "Other identifier",
+  file_path: "File path or name",
 };
 
 export const REGION_LABELS: Record<RegionKind, string> = {
@@ -59,6 +60,7 @@ export const ACTION_LABELS: Record<Action, string> = {
   surrogate: "Surrogate",
   retypeset_region: "Line re-typeset",
   remove: "Removed",
+  synthesise: "Synthetic stand-in",
   blackout: "Blacked out",
   label: "Label",
   suppress_ink: "Ink suppressed",
@@ -119,6 +121,7 @@ const CATEGORY_OF: Record<EntityType, CategoryId> = {
   vin: "other_id",
   organisation: "organisation",
   other_id: "other_id",
+  file_path: "other_id",
 };
 
 export function categoryOf(type: EntityType): CategoryId {
@@ -143,6 +146,11 @@ export function typeLabel(type: string): string {
 }
 
 export const PROFILE_INFO: Record<string, { title: string; summary: string }> = {
+  client: {
+    title: "Client policy",
+    summary:
+      "Replaces every person, organisation, contact detail, identifier, file name and street line. Dates (including dates of birth), ages, suburbs and postcodes stay. Signatures and photos get synthetic stand-ins; figures stay.",
+  },
   broad: {
     title: "Broad",
     summary:

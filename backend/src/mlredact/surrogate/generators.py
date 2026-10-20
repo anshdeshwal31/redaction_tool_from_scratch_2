@@ -7,6 +7,7 @@ Every generator is a pure function of (scope key, entity type, canonical origina
 * e-mail addresses / URLs use RFC 2606 reserved domains;
 * identifiers keep their format but **fail** their check digit, so a surrogate can never be a
   real person's identifier;
+* file paths keep their shape (drive, separators, folder words, extension) with new names;
 * no surrogate equals (by comparison key) any original value in the document.
 """
 
@@ -25,6 +26,7 @@ from mlredact.detect.rules.checksums import (
     provider_number_valid,
     tfn_valid,
 )
+from mlredact.detect.rules.files import EXTENSIONS
 from mlredact.detect.rules.lexicon import STATES, STREET_TYPE_WORDS
 from mlredact.surrogate.drbg import Chooser
 from mlredact.surrogate.pools import Locality, Pools, load_pools
@@ -61,6 +63,21 @@ _ORG_GENERIC = frozenset(
     constructions construction building builders logistics transport warehouse supermarket store stores
     school college university council club foundation trust &""".split()
 )
+# Folder and file-name words that identify no one: kept in file-path surrogates.
+_PATH_GENERIC = frozenset(
+    """users user documents document docs desktop downloads onedrive sharepoint sites shared share shares data
+    home mnt volumes appdata local temp tmp program files file folder clients client matters matter cases case
+    claims claim records correspondence letters letter reports report medical legal medicolegal scans scan
+    scanned images image photos photo attachments email emails outlook archive admin misc general final draft
+    copy signed redacted version new old notes invoice invoices statement statements affidavit brief court
+    hearing notice damages plaintiff defendant transcript training independent impairment assessment ime dpi
+    psychiatrist psychiatric psychology psychologist dr of and the re v for to""".split()
+)
+_PATH_SPLIT = re.compile(r"([\\/ _\-.()]+)")
+_PATH_EXTENSION = re.compile(rf"(?i)^(?:{EXTENSIONS})$")
+_DRIVE = re.compile(r"^[A-Za-z]:$")
+# Years and day/month numbers in file names are dates, which the policies keep.
+_PATH_DATE_PART = re.compile(r"^(?:(?:19|20)\d\d|\d{1,2})$")
 _MAX_ATTEMPTS = 64
 
 
@@ -273,6 +290,38 @@ class SurrogateFactory:
     def url(self, value: str) -> str:
         key = match_key(value)
         return self._unique("url", key, lambda a: f"www.{self._c.pick('url.domain', key, RESERVED_EMAIL_DOMAINS, a)}")
+
+    def file_path(self, value: str) -> str:
+        """Same shape: drive letter, separators, extension and generic folder words stay; other words
+        become pool surnames, and digits and short codes become other digits and letters."""
+        key = match_key(value)
+        parts = _PATH_SPLIT.split(value)  # even indices: words; odd: separators
+        words = [i for i in range(0, len(parts), 2) if parts[i]]
+        fixed = {0} if _DRIVE.match(parts[0]) else set()
+        if len(words) > 1 and parts[words[-1] - 1].endswith(".") and _PATH_EXTENSION.match(parts[words[-1]]):
+            fixed.add(words[-1])
+        changed = [
+            i
+            for i in words
+            if i not in fixed and parts[i].lower() not in _PATH_GENERIC and not _PATH_DATE_PART.match(parts[i])
+        ]
+        if not changed:  # nothing identifying: still never equal to the original
+            changed = [i for i in words if i not in fixed][-1:] or words[-1:]
+        # One changeable character ("scan 3.pdf") cannot move the result far enough from the
+        # original: that part becomes a pool word instead.
+        renamed = set(changed) if sum(len(parts[i]) for i in changed) < 2 else set()
+
+        def make(attempt: int) -> str:
+            out = list(parts)
+            for i in changed:
+                word, slot = parts[i], f"{key}\x03{i}"
+                if (word.isalpha() and len(word) >= 3) or i in renamed:
+                    out[i] = apply_case(word, self._c.pick("file.word", slot, self._pools.surnames, attempt))
+                else:
+                    out[i] = self._digits_like("file", slot, word, attempt)
+            return "".join(out)
+
+        return self._unique("file", key, make)
 
     # ----------------------------------------------------------------------------------- dates
     def date_of_birth(self, value: str) -> str:

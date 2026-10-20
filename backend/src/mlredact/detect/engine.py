@@ -19,6 +19,7 @@ from mlredact.detect.rules.ages import AgeDetector
 from mlredact.detect.rules.au_ids import AuIdentifierDetector
 from mlredact.detect.rules.contact import ContactDetector
 from mlredact.detect.rules.dates import DateDetector
+from mlredact.detect.rules.files import FilePathDetector
 from mlredact.detect.rules.generic_id import GenericIdDetector
 from mlredact.detect.rules.labels import LabelValueDetector
 from mlredact.detect.rules.persons import PersonCueDetector
@@ -58,6 +59,7 @@ def default_detectors() -> tuple[Detector, ...]:
         AddressDetector(),
         GenericIdDetector(),
         AgeDetector(),
+        FilePathDetector(),
     )
 
 
