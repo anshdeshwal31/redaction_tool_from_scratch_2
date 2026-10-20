@@ -2,7 +2,8 @@
 
 One job loads the NER models (~2.5 GB) and starts its own page workers, so jobs never overlap.  The
 queue lives in this process; a restart marks unfinished jobs as interrupted and deletes their
-inputs.  Uploads that never arrive expire and are swept away with their seeds.
+inputs.  Uploads that never arrive expire and are swept away with their seeds.  A job that asked to
+keep its original keeps it, once the job is released or quarantined, until it expires.
 """
 
 from __future__ import annotations
@@ -16,14 +17,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
+from mlredact.api import originals
 from mlredact.api.engine import kill_tree, spawn, watch_error_code
-from mlredact.api.models import JobRecord
+from mlredact.api.models import ORIGINAL_FILE, JobRecord
 from mlredact.api.settings import ApiSettings
-from mlredact.api.store import JobStore, now_iso, summarise
+from mlredact.api.store import JobStore, iso_from_unix, now_iso, summarise
+from mlredact.config.loader import load_config
+from mlredact.config.schema import LimitsConfig
 from mlredact.security.logging import get_logger
 
 _log = get_logger("mlredact.api")
 SWEEP_EVERY_S = 15.0
+# A reviewer compares these with their original; other outcomes have nothing to compare.
+_KEEPS_ORIGINAL = frozenset({"released", "quarantined"})
 
 
 @dataclass
@@ -293,11 +299,11 @@ class Runner:
             active.removed = True
             self._remove(job_id)
             return
-        # A failed delete is retried by the sweep; the state update below must not be lost.
-        with contextlib.suppress(OSError):
-            self._store.remove_inputs(job_id)
         job = self._store.read(job_id)
         if job is None:
+            # A failed delete is retried by the sweep.
+            with contextlib.suppress(OSError):
+                self._store.remove_inputs(job_id)
             return
         manifest = self._store.read_output_json(job_id, "manifest.json")
         update: dict[str, object] = {"finished_at": now_iso(), "exit_code": code}
@@ -322,6 +328,13 @@ class Runner:
             )
         if manifest is not None:
             update["summary"] = summarise(manifest, self._store.read_output_json(job_id, "run.json"))
+        # Only once pages were analysed: an input rejected at intake has nothing to compare.
+        wants_original = job.options.keep_original and update["state"] in _KEEPS_ORIGINAL
+        if wants_original and manifest and manifest.get("pages") and (expires := self._keep_original(job)):
+            update["original_expires_at"] = expires
+        # A failed delete is retried by the sweep; the state update below must not be lost.
+        with contextlib.suppress(OSError):
+            self._store.remove_inputs(job_id)
         self._store.write(job.model_copy(update=update))
         _log.info(
             "api.job.done",
@@ -329,6 +342,27 @@ class Runner:
             exit_code=code,
             duration_ms=round((time.monotonic() - active.started) * 1000.0, 1),
         )
+
+    def _keep_original(self, job: JobRecord) -> str | None:
+        """Keep the job's document for side-by-side review.  Returns when it expires, or None when it
+        could not be kept (the job is recorded as usual, without it)."""
+        days = self._settings.original_retention_days
+        if days <= 0:
+            return None
+        try:
+            try:
+                limits = load_config(job.options.profile, files=self._settings.config_files).limits
+            except Exception:  # the engine has already read this config; fall back to the defaults
+                limits = LimitsConfig()
+            directory = self._store.original_dir(job.id)
+            directory.mkdir(mode=0o700, exist_ok=True)
+            if originals.keep(self._store.input_dir(job.id) / "input", directory / ORIGINAL_FILE, limits):
+                return iso_from_unix(time.time() + days * 86_400)
+        except Exception as exc:
+            _log.warning("api.job.original_not_kept", job=_log_id(job.id), error_type=type(exc).__name__)
+        with contextlib.suppress(OSError):
+            self._store.remove_original(job.id)
+        return None
 
     def _remove(self, job_id: str) -> None:
         """Delete a job's directory; when that fails the sweep retries it, so the delete is not lost."""

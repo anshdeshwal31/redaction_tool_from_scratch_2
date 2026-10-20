@@ -44,6 +44,11 @@ def stub_input(scenario: str, delay_ms: int = 0) -> bytes:
     return f"%STUB {scenario}{f' delay={delay_ms}' if delay_ms else ''}\n".encode()
 
 
+def stub_pdf(scenario: str) -> bytes:
+    """An input that also reads as a PDF (the API keeps only PDFs and scans as originals)."""
+    return b"%PDF-1.7\n" + stub_input(scenario)
+
+
 class Api:
     """A test client plus the helpers every test needs."""
 
@@ -57,8 +62,10 @@ class Api:
         data: dict[str, Any] = res.json()
         return data
 
-    def submit(self, scenario: str = "released", *, delay_ms: int = 0, **options: Any) -> str:
-        body = stub_input(scenario, delay_ms)
+    def submit(
+        self, scenario: str = "released", *, delay_ms: int = 0, body: bytes | None = None, **options: Any
+    ) -> str:
+        body = stub_input(scenario, delay_ms) if body is None else body
         created = self.create(body, **options)
         res = self.client.put(created["uploadPath"], content=body, headers={"content-type": "application/octet-stream"})
         assert res.status_code == 202, res.text

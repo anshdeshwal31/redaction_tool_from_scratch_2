@@ -30,6 +30,9 @@ OUTPUT_FILES: tuple[str, ...] = (
     "quarantine.json",
     "sensitive-manifest.sealed.json",
 )
+# The uploaded document, kept for side-by-side review only when the job asked for it.
+ORIGINAL_FILE = "original.pdf"
+JOB_FILES: tuple[str, ...] = (*OUTPUT_FILES, ORIGINAL_FILE)
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -88,6 +91,8 @@ class JobRecord(ApiModel):
     # A content-free reason code when the job failed outside the engine's quarantine path.
     error_code: str | None = None
     summary: JobSummary | None = None
+    # Set when the original was kept: the sweep deletes it then.
+    original_expires_at: str | None = None
 
 
 # ------------------------------------------------------------------------------------- requests

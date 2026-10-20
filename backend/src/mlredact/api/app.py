@@ -38,7 +38,7 @@ from mlredact.api.engine import EngineResult, run_short
 from mlredact.api.links import link_key, sign, verify
 from mlredact.api.models import (
     ACTIVE_STATES,
-    OUTPUT_FILES,
+    JOB_FILES,
     CreatedJob,
     CreateJob,
     Defaults,
@@ -383,7 +383,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     def get_job(job_id: str, _: Authorised) -> dict[str, Any]:
         job = job_or_404(job_id)
         done = job.state not in ACTIVE_STATES and job.state != "awaiting_upload"
-        files = store.outputs(job_id) if done else []
+        files = store.files(job_id) if done else []
         links: dict[str, str] = {}
         expires: int | None = None
         for name in files:
@@ -400,12 +400,13 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     @app.get("/v1/jobs/{job_id}/files/{name}")
     def get_file(job_id: str, name: str, token: Annotated[str, Query()], download: bool = False) -> FileResponse:
-        """Browser download of an artefact, with a signed link from ``GET /v1/jobs/{id}``."""
-        if not is_job_id(job_id) or name not in OUTPUT_FILES:
+        """Browser download of an artefact or the kept original, with a signed link from
+        ``GET /v1/jobs/{id}``."""
+        if not is_job_id(job_id) or name not in JOB_FILES:
             raise ApiError(404, "E_API_NOT_FOUND")
         if problem := verify(key, token, "file", job_id, name):
             raise ApiError(403, problem)
-        path = store.output_path(job_id, name)
+        path = store.file_path(job_id, name)
         if not path.is_file():
             raise ApiError(404, "E_API_NOT_FOUND")
         return FileResponse(
