@@ -198,6 +198,21 @@ def test_keeping_originals_can_be_turned_off(api_factory: Callable[..., Api]) ->
     assert api.client.get("/v1/system", headers=AUTH).json()["defaults"]["originalRetentionDays"] == 0
 
 
+def test_sweep_deletes_expired_originals(api: Api) -> None:
+    job_id = api.submit(body=stub_pdf("released"), keepOriginal=True)
+    api.wait(job_id)
+    store = JobStore(api.jobs_dir)
+    job = store.read(job_id)
+    assert job is not None
+    runner = api.client.app.state.runner  # type: ignore[attr-defined]
+    runner._sweep()
+    assert store.original_dir(job_id).exists()  # not yet expired
+    store.write(job.model_copy(update={"original_expires_at": iso_from_unix(time.time() - 60)}))
+    runner._sweep()
+    assert not store.original_dir(job_id).exists()
+    assert api.view(job_id)["files"] == ["redacted.pdf", "manifest.json", "run.json"]
+
+
 # ----------------------------------------------------------------------------------- privacy
 
 

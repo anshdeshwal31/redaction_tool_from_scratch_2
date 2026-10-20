@@ -389,7 +389,8 @@ class Runner:
                 _log.error("api.sweep_failed", error_type=type(exc).__name__)
 
     def _sweep(self) -> None:
-        """Drop uploads that never arrived, and inputs a finished job could not delete at the time."""
+        """Drop uploads that never arrived, inputs a finished job could not delete at the time, and
+        originals past their expiry."""
         now = time.time()
         with self._cv:
             busy = set(self._uploading) | set(self._queue) | ({self._active.id} if self._active else set())
@@ -434,5 +435,8 @@ class Runner:
                                 self._removing.discard(job.id)
                 elif job.state not in ("queued", "running") and self._store.input_dir(job.id).exists():
                     self._store.remove_inputs(job.id)
+                kept_until = job.original_expires_at
+                if kept_until and datetime.fromisoformat(kept_until).timestamp() < now:
+                    self._store.remove_original(job.id)
             except OSError:
                 continue
