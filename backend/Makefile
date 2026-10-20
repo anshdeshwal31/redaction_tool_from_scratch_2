@@ -4,7 +4,7 @@ UV ?= uv
 PYTEST := $(UV) run pytest
 LICENCE_DENY := GPL;SSPL;BUSL;Non-Commercial;NonCommercial;BY-NC;Commons Clause
 
-.PHONY: help sync models selfcheck lint test test-slow test-all determinism leaktest verify-mutations licences ci serve synth-corpus
+.PHONY: help sync models selfcheck lint test test-slow test-all determinism leaktest verify-mutations licences ci serve synth-corpus synth-score
 
 help:  ## list targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
@@ -52,3 +52,6 @@ serve:  ## run the HTTP API for the frontend (needs MLREDACT_API_TOKEN; see READ
 
 synth-corpus:  ## nine synthetic scanned medico-legal PDFs (3 tiers) with answer keys, into out/synth_corpus
 	PYTHONPATH=tools $(UV) run python -m synthdocs.corpus --out out/synth_corpus
+
+synth-score:  ## score runs in out/synth_runs/<slug>/ against the corpus answer keys; report in out/synth_runs/report
+	PYTHONPATH=tools $(UV) run python -m synthdocs.score --corpus out/synth_corpus --runs out/synth_runs
