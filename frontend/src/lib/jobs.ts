@@ -26,6 +26,8 @@ export interface JobOptions {
   seedCount: number;
   sealed: boolean;
   devKey: boolean;
+  /** The job asked to keep its original for side-by-side review. */
+  keepOriginal: boolean;
 }
 
 /** Counts derived from the manifest when a job ends, so the job list never reads manifests. */
@@ -94,7 +96,8 @@ export interface SystemInfo {
   engine: { command: string; cwd: string; configFiles: string[] };
   jobsDir: string;
   profiles: string[];
-  defaults: { workers: number; maxUploadMb: number; jobTimeoutMin: number };
+  /** originalRetentionDays: 0 when this server never keeps originals. */
+  defaults: { workers: number; maxUploadMb: number; jobTimeoutMin: number; originalRetentionDays: number };
   /** fromConfig: a deployment config names surrogate.key_file or turns on the development key. */
   surrogateKey: { fromEnv: boolean; fromConfig: boolean; devKeyAllowed: boolean };
   queue: { running?: string; queued: number };

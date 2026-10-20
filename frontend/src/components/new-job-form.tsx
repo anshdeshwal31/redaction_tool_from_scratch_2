@@ -28,6 +28,7 @@ const SUBMIT_ERRORS: Record<string, string> = {
   E_API_BAD_REQUEST:
     "The server refused these options. Check the known identifiers (type and value, up to 500 characters), the scope ID and the evaluator key.",
   E_API_DEV_KEY_DISABLED: "The development key is disabled on this server.",
+  E_API_KEEP_ORIGINAL_DISABLED: "This server does not keep originals. Untick “Keep original for comparison”.",
   E_API_LINK_EXPIRED: "The upload link expired before the upload started. Try again.",
   E_UI_BACKEND_UNREACHABLE: "The redaction server could not be reached.",
   E_UI_UPLOAD_NETWORK:
@@ -35,7 +36,11 @@ const SUBMIT_ERRORS: Record<string, string> = {
   E_UI_NETWORK: "This app's server could not be reached.",
 };
 
-const FACTS = ["The filename stays in your browser", "The input is deleted when the job ends", "Jobs run one at a time"];
+const facts = (keptDays: number | null) => [
+  "The filename stays in your browser",
+  keptDays ? `The original is kept ${keptDays} days for comparison` : "The input is deleted when the job ends",
+  "Jobs run one at a time",
+];
 
 type SeedRow = { type: EntityType; value: string };
 
@@ -118,6 +123,7 @@ export function NewJobForm() {
   const [scopeId, setScopeId] = useState("");
   const [workers, setWorkers] = useState<string>("");
   const [devKey, setDevKey] = useState(false);
+  const [keepOriginal, setKeepOriginal] = useState(false);
   const [seeds, setSeeds] = useState<SeedRow[]>([]);
   const [evaluatorKey, setEvaluatorKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -130,6 +136,9 @@ export function NewJobForm() {
   );
   const maxBytes = (system?.defaults.maxUploadMb ?? 200) * 1024 * 1024;
   const keyConfigured = system?.surrogateKey.fromEnv ?? false;
+  // Offered only once the server says it keeps originals (0 days: it never does).
+  const retentionDays = system?.defaults.originalRetentionDays ?? 0;
+  const keeping = keepOriginal && retentionDays > 0;
   const keyHex = evaluatorKey.trim();
   const keyValid = keyHex === "" || /^[0-9a-fA-F]{64}$/.test(keyHex);
   const seedsValid = seeds.every((s) => s.value.trim().length > 0 && s.value.length <= 500);
@@ -151,6 +160,7 @@ export function NewJobForm() {
         ...(devKey && style === "surrogate" ? { devKey: true } : {}),
         ...(seeds.length ? { seeds: seeds.map((s) => ({ type: s.type, value: s.value.trim() })) } : {}),
         ...(keyHex ? { evaluatorKey: keyHex } : {}),
+        ...(keeping ? { keepOriginal: true } : {}),
         inputBytes: file.size,
       });
       // 2. Send the document straight to the redaction server: any size, and only the bytes,
@@ -192,9 +202,30 @@ export function NewJobForm() {
             }}
           />
           {fileError ? <p className="mt-2 text-sm text-crit-text">{fileError}</p> : null}
+          {retentionDays > 0 ? (
+            <label className="mt-4 flex items-start gap-3 text-sm text-ink-2">
+              <input
+                type="checkbox"
+                className="check mt-0.5"
+                checked={keepOriginal}
+                onChange={(e) => setKeepOriginal(e.target.checked)}
+                disabled={submitting}
+              />
+              <span>
+                <span className="font-medium text-ink">Keep original for comparison</span>
+                <span className="mt-0.5 block text-xs text-muted">
+                  Shows the original beside the redacted version, page by page. The server keeps the document for{" "}
+                  {retentionDays} day{retentionDays === 1 ? "" : "s"} after the job, or until you delete the job, and every
+                  signed-in user can open it.
+                </span>
+              </span>
+            </label>
+          ) : null}
           <p className="mt-3 text-xs text-muted">
-            The filename stays in your browser. The server stores the document under a fixed name and deletes it as soon
-            as the job ends.
+            The filename stays in your browser. The server stores the document under a fixed name and{" "}
+            {keeping
+              ? `deletes it ${retentionDays} day${retentionDays === 1 ? "" : "s"} after the job ends.`
+              : "deletes it as soon as the job ends."}
           </p>
         </Step>
 
@@ -413,7 +444,7 @@ export function NewJobForm() {
           <GlassChip className="absolute bottom-5 left-5">Released only if every check passes</GlassChip>
         </div>
         <ul className="grid gap-2 sm:grid-cols-3">
-          {FACTS.map((f) => (
+          {facts(keeping ? retentionDays : null).map((f) => (
             <li key={f} className="flex gap-3 bg-surface px-5 py-4 text-sm leading-snug text-ink-2">
               <Mark className="mt-0.5 size-3.5 text-muted" />
               {f}
