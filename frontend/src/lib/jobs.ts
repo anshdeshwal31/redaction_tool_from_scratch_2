@@ -69,6 +69,9 @@ export const OUTPUT_FILES = [
   "sensitive-manifest.sealed.json",
 ] as const;
 export type OutputFile = (typeof OUTPUT_FILES)[number];
+/** The artefacts, and the uploaded document when a job kept it (always a PDF, scans included). */
+export const JOB_FILES = [...OUTPUT_FILES, "original.pdf"] as const;
+export type JobFile = (typeof JOB_FILES)[number];
 
 export interface JobListItem extends JobRecord {
   queuePosition?: number;
@@ -77,9 +80,9 @@ export interface JobListItem extends JobRecord {
 export interface JobView {
   job: JobRecord;
   queuePosition?: number;
-  files: OutputFile[];
-  /** Absolute, signed, expiring URLs on the backend, one per artefact. */
-  links: Partial<Record<OutputFile, string>>;
+  files: JobFile[];
+  /** Absolute, signed, expiring URLs on the backend, one per file. */
+  links: Partial<Record<JobFile, string>>;
   linksExpireAt?: string;
   run?: RunRecord;
 }

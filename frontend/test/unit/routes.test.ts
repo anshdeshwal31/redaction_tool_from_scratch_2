@@ -150,6 +150,13 @@ describe("GET /api/jobs/[id]/files/[name]", () => {
     expect(await res.json()).toEqual({ url: `https://api.example.com/v1/jobs/${ID}/files/redacted.pdf?token=t` });
   });
 
+  it("serves the kept original like an artefact", async () => {
+    reply = () =>
+      Response.json({ job: { id: ID }, files: ["original.pdf"], links: { "original.pdf": `/v1/jobs/${ID}/files/original.pdf?token=t` } });
+    const res = await files.GET(get(`/api/jobs/${ID}/files/original.pdf?as=json`), params({ id: ID, name: "original.pdf" }));
+    expect(await res.json()).toEqual({ url: `https://api.example.com/v1/jobs/${ID}/files/original.pdf?token=t` });
+  });
+
   it("serves only known artefacts that exist", async () => {
     expect((await files.GET(get("/x"), params({ id: ID, name: "job.json" }))).status).toBe(404);
     expect((await files.GET(get("/x"), params({ id: ID, name: "run.json" }))).status).toBe(404); // not in this job
