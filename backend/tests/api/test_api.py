@@ -126,6 +126,16 @@ def test_engine_crash_gets_an_api_code(api: Api) -> None:
     assert "Citizen" not in api.job_file(job_id)
 
 
+# ----------------------------------------------------------------------------------- originals
+
+
+def test_keeping_originals_can_be_turned_off(api_factory: Callable[..., Api]) -> None:
+    api = api_factory(original_retention_days=0)
+    res = api.client.post("/v1/jobs", json={"inputBytes": 10, "keepOriginal": True}, headers=AUTH)
+    assert (res.status_code, res.json()) == (403, {"error": "E_API_KEEP_ORIGINAL_DISABLED"})
+    assert api.client.get("/v1/system", headers=AUTH).json()["defaults"]["originalRetentionDays"] == 0
+
+
 # ----------------------------------------------------------------------------------- privacy
 
 

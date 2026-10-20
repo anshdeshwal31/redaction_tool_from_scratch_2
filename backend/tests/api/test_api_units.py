@@ -82,5 +82,8 @@ def test_settings_parse_the_environment(tmp_path: object) -> None:
     assert s.engine == ("python", "stub.py")
     assert s.cors_origins == ("https://app.example", "http://localhost:3100")
     assert s.max_upload_bytes == 5 * 1024 * 1024
+    assert s.original_retention_days == 7
+    off = ApiSettings.from_env({"MLREDACT_API_TOKEN": "t" * 32, "MLREDACT_API_ORIGINAL_RETENTION_DAYS": "0"})
+    assert off.original_retention_days == 0
     with pytest.raises(EnvironmentErrorMl):
         ApiSettings.from_env({"MLREDACT_API_TOKEN": "t" * 32, "MLREDACT_API_ENGINE": "not json"})

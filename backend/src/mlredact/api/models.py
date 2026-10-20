@@ -51,6 +51,7 @@ class JobOptions(ApiModel):
     seed_count: int
     sealed: bool
     dev_key: bool
+    keep_original: bool = False
 
 
 class InputInfo(ApiModel):
@@ -117,6 +118,8 @@ class CreateJob(ApiModel):
     seeds: list[Seed] = Field(default_factory=list, max_length=500)
     evaluator_key: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     dev_key: bool = False
+    # Keep the document after the job, for side-by-side review (released and quarantined jobs).
+    keep_original: bool = False
     # Declared document size: the upload must match it exactly.
     input_bytes: int = Field(gt=0)
 
@@ -172,6 +175,8 @@ class Defaults(ApiModel):
     workers: int
     max_upload_mb: int
     job_timeout_min: int
+    # 0: originals are never kept.
+    original_retention_days: int
 
 
 class KeyInfo(ApiModel):

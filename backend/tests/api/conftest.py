@@ -35,6 +35,7 @@ def make_settings(jobs_dir: Path, **changes: Any) -> ApiSettings:
         upload_ttl_s=600,
         link_ttl_s=600,
         cors_origins=(ORIGIN,),
+        original_retention_days=7,
     )
     return replace(base, **changes)
 
