@@ -32,6 +32,27 @@ test("a released job shows the redacted PDF, passed checks and a working downloa
   expect((await res.body()).subarray(0, 5).toString("latin1")).toBe("%PDF-");
 });
 
+test("a kept original is shown beside the redacted pages", async ({ page }) => {
+  const res = await page.request.get("/api/system");
+  await expect(res).toBeOK();
+  const { defaults } = (await res.json()) as SystemInfo;
+  test.skip(!defaults.originalRetentionDays, "this backend does not keep originals");
+  const id = await submitJob(page, documents.comparable(), { style: "label", keepOriginal: true });
+  await expectJobState(page, id, "Released");
+
+  await expect(page.locator("header:has(h1)").getByText(/^Original kept until /)).toBeVisible();
+  // Side by side is where a job with its original opens.
+  const sideBySide = page.getByRole("button", { name: "Side by side" });
+  await expect(sideBySide).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Original page 1", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Redacted page 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("The original could not be displayed")).toHaveCount(0);
+
+  await sideBySide.click();
+  await expect(page.getByLabel("Original page 1", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Redacted page 1", { exact: true })).toBeVisible();
+});
+
 test("a quarantined job lists its reasons and releases no PDF", async ({ page }) => {
   const id = await submitJob(page, documents.quarantined(), { style: "label" });
   await expectJobState(page, id, "Quarantined");
