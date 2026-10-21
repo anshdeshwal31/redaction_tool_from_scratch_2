@@ -1,7 +1,8 @@
 """Command-line interface.
 
 Output files have fixed names (``redacted.pdf``, ``manifest.json``, ``run.json``,
-``quarantine.json``): input filenames often contain names and are never echoed or reused.
+``quarantine.json``, and ``held-back.NOT-RELEASED.pdf`` with ``--keep-held-back``): input
+filenames often contain names and are never echoed or reused.
 Exit codes: 0 released, 2 quarantined, 1 usage/environment error.
 """
 
@@ -32,6 +33,10 @@ keys_app = typer.Typer(no_args_is_help=True, help="Key material for sealed sensi
 app.add_typer(keys_app, name="keys")
 sensitive_app = typer.Typer(no_args_is_help=True, help="Sealed sensitive manifests (evaluator side).")
 app.add_typer(sensitive_app, name="sensitive")
+
+# The redacted copy of a quarantined document: it failed verification, so its name must never
+# pass for a release.
+HELD_BACK_PDF = "held-back.NOT-RELEASED.pdf"
 
 
 def _fail(exc: BaseException) -> None:
@@ -82,6 +87,14 @@ def run(
         Path | None,
         typer.Option(help="Evaluator public key file: also write the sealed sensitive manifest (original text)"),
     ] = None,
+    keep_held_back: Annotated[
+        bool,
+        typer.Option(
+            "--keep-held-back",
+            help=f"If the document is quarantined, also write its redacted copy as {HELD_BACK_PDF} "
+            "(testing and review only: it failed verification and is not a release)",
+        ),
+    ] = False,
     log_level: Annotated[str, typer.Option(help="Log level")] = "WARNING",
 ) -> None:
     """Redact INPUT and write the release artefacts (or a quarantine record) to --out."""
@@ -106,7 +119,9 @@ def run(
 
             recipient = load_public_key(sensitive_to.read_text("utf-8"))
         with Redactor(cfg, log_level=log_level) as redactor:
-            result = redactor.run(data, seeds=seed_list, scope_id=scope_id, sensitive_to=recipient)
+            result = redactor.run(
+                data, seeds=seed_list, scope_id=scope_id, sensitive_to=recipient, keep_held_back=keep_held_back
+            )
     except MlredactError as exc:
         _fail(exc)
         return
@@ -129,6 +144,9 @@ def run(
         ),
     )
     typer.echo(f"quarantined: {', '.join(result.manifest['reasons']) or 'verification failed'}", err=True)
+    if result.held_back_pdf is not None:
+        _write(out / HELD_BACK_PDF, result.held_back_pdf)
+        typer.echo(f"held-back copy (not released): {out / HELD_BACK_PDF}", err=True)
     raise typer.Exit(2)
 
 

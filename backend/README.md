@@ -54,6 +54,7 @@ Outputs (fixed names — input filenames are never reused because they often con
 | `run.json` | operational: job id, timings |
 | `quarantine.json` | only when quarantined: reason codes |
 | `sensitive-manifest.sealed.json` | only with `--sensitive-to evaluator.pub`: original text, sealed to the evaluator's key |
+| `held-back.NOT-RELEASED.pdf` | only with `--keep-held-back`, when quarantined after the output was built: the redacted copy that failed verification, for testing and review. Never treat it as a release |
 
 Exit codes: `0` released, `2` quarantined, `1` usage/environment error.
 

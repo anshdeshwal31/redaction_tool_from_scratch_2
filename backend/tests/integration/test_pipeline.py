@@ -14,15 +14,16 @@ import pytest
 from jsonschema import Draft202012Validator
 from synthdocs import combine, encrypted, make_ime_letter
 
+import mlredact.pipeline.runner as runner_module
 from mlredact.core.canonical import canonical_json
-from mlredact.core.types import JobStatus
+from mlredact.core.types import JobStatus, VerificationCheck
 from mlredact.ingest.render import open_document, render_page
 from mlredact.ocr.ppocr import PPOCREngine
 from mlredact.pipeline.runner import JobResult, Redactor
 from mlredact.registry.models import models_dir
 from mlredact.surrogate.generators import canonical_date
 from mlredact.text.normalize import match_key
-from mlredact.verify.checks import extract_all_text
+from mlredact.verify.checks import CheckResult, extract_all_text
 from support import make_config, ner_enabled
 
 pytestmark = [pytest.mark.slow, pytest.mark.models]
@@ -135,6 +136,20 @@ def test_non_pdf_input_is_quarantined(redactor: Redactor) -> None:
     assert res.manifest["reasons"] == ["E_INPUT_UNSUPPORTED"]
     _assert_valid_manifest(res.manifest)
     assert "Quarrington" not in canonical_json(res.manifest).decode()
+
+
+def test_held_back_output_is_returned_only_when_asked(redactor: Redactor, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A job that fails verification after its output was built keeps that output only on request."""
+    failing = CheckResult(VerificationCheck.TEXT, False, {"hits": 1})
+    monkeypatch.setattr(runner_module, "check_text_leak", lambda *_args, **_kwargs: failing)
+    doc = make_ime_letter(scanned=False)
+    default, kept = redactor.run(doc.pdf), redactor.run(doc.pdf, keep_held_back=True)
+    for res in (default, kept):
+        assert res.status is JobStatus.QUARANTINED and res.pdf is None
+        assert res.manifest["reasons"] == ["V2_TEXT_LEAK"]
+    assert default.held_back_pdf is None
+    assert kept.held_back_pdf is not None
+    assert len(pdfium.PdfDocument(kept.held_back_pdf)) == 1
 
 
 def test_manifest_contains_no_document_text(redactor: Redactor) -> None:

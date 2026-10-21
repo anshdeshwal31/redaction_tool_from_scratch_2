@@ -64,6 +64,9 @@ class JobResult:
     run_record: dict[str, Any]
     # Sealed sensitive manifest (original text), only when the caller supplied an evaluator key.
     sensitive: bytes | None = field(default=None, repr=False)
+    # The redacted copy of a quarantined job, only when the caller asked to keep it (testing and
+    # review).  It failed verification: never a release.
+    held_back_pdf: bytes | None = field(default=None, repr=False)
 
 
 class Redactor:
@@ -111,11 +114,14 @@ class Redactor:
         seeds: Sequence[Seed] = (),
         scope_id: str | None = None,
         sensitive_to: bytes | None = None,
+        keep_held_back: bool = False,
     ) -> JobResult:
         """Redact ``data``.  ``scope_id`` (e.g. a matter/claim identifier) makes surrogates consistent
         across all documents of that scope; by default the scope is the document itself.
         ``sensitive_to``: an evaluator's X25519 public key; the sensitive manifest (original text) is
-        then returned sealed to it (never in plaintext)."""
+        then returned sealed to it (never in plaintext).
+        ``keep_held_back``: when the job is quarantined after its output was built, return that output
+        as ``held_back_pdf`` (testing and review only; ``pdf`` stays None)."""
         cfg = self.config
         job_id = f"job-{uuid.uuid4().hex}"
         input_sha = sha256_hex(data)
@@ -291,7 +297,8 @@ class Redactor:
                 sensitive_to,
             )
         _log.info("job.done", job=job_id, status=status, pages=len(pages), duration_ms=timings["total_ms"])
-        return JobResult(status, pdf if released else None, manifest, run_record, sensitive)
+        held_back = pdf if keep_held_back and not released else None
+        return JobResult(status, pdf if released else None, manifest, run_record, sensitive, held_back)
 
     # ------------------------------------------------------------------------------- helpers
     def _page_specs(
