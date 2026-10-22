@@ -1,0 +1,474 @@
+"""``mlredact bench`` in the oracle modes (``oracle_text``, ``oracle_mentions``, ``oracle_entities``): the real
+runner, fed the benchmark's injected stage inputs for the synthetic letter.
+
+Jobs run as in tests/unit/test_bench_runner.py: its in-process worker pool and its configuration without models, so
+the verification re-read reads the output's own text layer.  The injected files are written in the benchmark's own
+format (tests/inject_support.py).  All text is fictitious.
+"""
+
+from __future__ import annotations
+
+import functools
+import json
+import re
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+from click.testing import Result
+from synthdocs import SynthDoc, make_ime_letter
+from synthdocs.generator import medicare_number
+from test_bench_runner import LETTER, NO_MODELS, RESIDUAL, InProcessPool
+from typer.testing import CliRunner
+
+import mlredact.bench.environment as bench_env
+import mlredact.pipeline.runner as runner_module
+import mlredact.pipeline.workers as workers_module
+from inject_support import (
+    LETTER_CLUSTERS,
+    LETTER_MENTIONS,
+    Docs,
+    add_line,
+    keep_mentions,
+    letter_docs,
+    mention,
+    token_polys,
+    without_mentions,
+    write_inject_dir,
+)
+from mlredact.bench.artifacts import display_poly
+from mlredact.bench.inject import MODE_FILES
+from mlredact.bench.labels import LABEL_MAP
+from mlredact.cli.main import app
+from mlredact.core.model import PageGeometry
+from mlredact.surrogate.pools import load_pools
+from mlredact.text.normalize import digits_only
+from mlredact.verify.checks import extract_all_text
+
+DPI = 150  # NO_MODELS renders at 150 dpi
+# The configuration of tests/unit/test_bench_runner.py, without face detection (its model is the only one region
+# analysis needs) and with lossless page images.
+CONFIG: dict[str, Any] = {**NO_MODELS, "regions": {"faces": False}, "output": {"image_encoding": "flate"}}
+# The same with NER on, as the client profile has it: the modes that inject mentions switch it off (without models a
+# Redactor with NER on could not even start).
+WITH_NER = {k: v for k, v in CONFIG.items() if k != "detection"}
+MODES = ("oracle_text", "oracle_mentions", "oracle_entities")
+STAGE_FILES = ("entities.json", "mentions.json", "plan.json", "pseudonyms.json", "text.json")
+CHANGED = ("constant", "persistent")  # a word of the letter, injected as another word (oracle_text)
+# A mention left out of the injection (oracle_mentions).
+LEFT_OUT = "phone-mobile"
+CC = "person-cc"  # "J. Smith", injected on a line of its own (oracle_entities)
+
+
+@dataclass
+class Bench:
+    """One ``bench`` run: what it was given, what it wrote, and what the stand-ins saw.  ``state``: the worker state
+    after the run (the engines it made); ``regions``: each region analysis, as (token texts, keyword arguments);
+    ``detections``: tool 2's detection runs; ``ner``: per Redactor, whether GLiNER and the privacy filter were on."""
+
+    mode: str
+    docs: Docs
+    result: Result
+    out: Path
+    builds: int
+    state: frozenset[str]
+    regions: list[tuple[tuple[str, ...], dict[str, Any]]]
+    detections: int
+    ner: list[tuple[bool, bool]]
+
+    def json(self, name: str) -> Any:
+        return json.loads((self.out / name).read_text("utf-8"))
+
+    def read(self, name: str) -> bytes:
+        return (self.out / name).read_bytes()
+
+    def mentions(self) -> dict[str, dict[str, Any]]:
+        return {m["id"]: m for m in self.json("mentions.json")["mentions"]}
+
+    def plan(self) -> list[dict[str, Any]]:
+        regions: list[dict[str, Any]] = self.json("plan.json")["regions"]
+        return regions
+
+    def replacement(self, mention_id: str) -> str:
+        (found,) = [m["replacement"] for m in self.json("pseudonyms.json")["mentions"] if m["mention"] == mention_id]
+        return str(found)
+
+
+def bench(
+    folder: Path,
+    mode: str,
+    docs: Docs,
+    *,
+    pdf: bytes = LETTER,
+    config: Mapping[str, Any] = CONFIG,
+    pool: InProcessPool | None = None,
+    ghost: bool = False,
+) -> Bench:
+    """``mlredact bench --mode <mode>`` with ``docs`` injected, as tests/unit/test_bench_runner.py runs bench.
+    ``ghost``: region analysis also takes the page's first token for show-through."""
+    pool = pool or InProcessPool()
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+    detections: list[int] = []
+    ner: list[tuple[bool, bool]] = []
+    analyse, detect, build_ner = (
+        workers_module.analyse_regions,
+        runner_module.detect_document,
+        runner_module.build_ner_detectors,
+    )
+
+    def regions(rgb: Any, lines: Sequence[Any], *args: Any, **kwargs: Any) -> Any:
+        calls.append((tuple(t.text for line in lines for t in line.tokens), kwargs))
+        found = analyse(rgb, lines, *args, **kwargs)
+        return replace(found, ghost_tokens=frozenset({lines[0].tokens[0].token_id})) if ghost else found
+
+    def detection(*args: Any, **kwargs: Any) -> Any:
+        detections.append(1)
+        return detect(*args, **kwargs)
+
+    def ner_detectors(cfg: Any, directory: Any) -> Any:
+        ner.append((cfg.detection.ner.gliner.enabled, cfg.detection.ner.privacy_filter.enabled))
+        return build_ner(cfg, directory)
+
+    with pytest.MonkeyPatch.context() as mp:
+        pool.install(mp)
+        mp.setattr(workers_module, "analyse_regions", regions)
+        mp.setattr(runner_module, "detect_document", detection)
+        mp.setattr(runner_module, "build_ner_detectors", ner_detectors)
+        mp.setattr(bench_env, "candidate_version", lambda root=None: "0.1.0+gtest")
+        mp.delenv("MLREDACT_CONFIG", raising=False)
+        mp.setenv("MLREDACT_MODELS_DIR", str(folder))  # never read: model files are not resolved
+        mp.chdir(folder)
+        cfg, src, out = folder / "config.yaml", folder / "input.pdf", folder / "out"
+        cfg.write_text(yaml.safe_dump(dict(config)), "utf-8")
+        src.write_bytes(pdf)
+        inject = write_inject_dir(folder / "inject", mode, docs)
+        args = ["bench", "--input", str(src), "--workdir", str(out), "--config", str(cfg)]
+        result = CliRunner().invoke(app, [*args, "--mode", mode, "--inject-dir", str(inject)])
+        state = frozenset(workers_module._STATE)
+    return Bench(mode, docs, result, out, len(pool.builds), state, calls, len(detections), ner)
+
+
+# ------------------------------------------------------------------------------------- injected files
+@functools.cache
+def _letter() -> str:
+    return json.dumps(letter_docs(LETTER, DPI))
+
+
+def letter() -> Docs:
+    """The letter's injected files (a fresh copy)."""
+    docs: Docs = json.loads(_letter())
+    return docs
+
+
+def changed_word() -> Docs:
+    docs = letter()
+    (token,) = [t for t in docs["text.json"]["pages"][0]["tokens"] if t["text"] == CHANGED[0]]
+    token["text"] = CHANGED[1]
+    return docs
+
+
+def with_cc(cluster: str) -> Docs:
+    """The letter with "Copy to J. Smith" injected below it, "J. Smith" a mention in ``cluster``."""
+    docs = letter()
+    ids = add_line(docs, "lcc", "Copy to J. Smith", (60.0, 520.0))
+    docs["mentions.json"]["mentions"].append(
+        mention(CC, "PERSON_NAME", "J. Smith", ids[2:], token_polys(docs, ids[2:]))
+    )
+    (members,) = [c["mentions"] for c in docs["entities.json"]["clusters"] if c["id"] == cluster]
+    members.append(CC)
+    return docs
+
+
+@functools.cache
+def scanned_letter() -> SynthDoc:
+    """The letter scanned, with a signature, a QR code, a stamp, margin handwriting and show-through."""
+    return make_ime_letter(scanned=True, artefacts=True, dpi=DPI)
+
+
+def scanned() -> Docs:
+    """The scanned letter's words with perfect boxes (tests/unit/test_regions.py's typesetting of the letter)."""
+    from test_regions import typeset
+
+    _image, lines = typeset(list(scanned_letter().lines), DPI)
+    geometry = PageGeometry(0, 595.276, 841.89, DPI, 1240, 1754)
+    tokens = [
+        {"id": t.token_id, "text": t.text, "poly": display_poly(t.bbox, geometry), "line": line.line_id}
+        for line in lines
+        for t in line.tokens
+    ]
+    for order, t in enumerate(tokens):
+        t["order"] = order
+    return {"text.json": {"schema": "rb.text/0.1", "source": "ocr", "pages": [{"index": 0, "tokens": tokens}]}}
+
+
+RUNS: dict[str, Callable[[Path], Bench]] = {
+    # A residual barcode on the first re-read; region analysis takes a word for show-through.
+    "oracle_text": lambda d: bench(
+        d, "oracle_text", changed_word(), pool=InProcessPool(residuals=(RESIDUAL,)), ghost=True
+    ),
+    "oracle_text again": lambda d: bench(
+        d, "oracle_text", changed_word(), pool=InProcessPool(residuals=(RESIDUAL,)), ghost=True
+    ),
+    "oracle_text, scanned": lambda d: bench(d, "oracle_text", scanned(), pdf=scanned_letter().pdf),
+    "oracle_mentions": lambda d: bench(d, "oracle_mentions", without_mentions(letter(), {LEFT_OUT}), config=WITH_NER),
+    "oracle_mentions again": lambda d: bench(
+        d, "oracle_mentions", without_mentions(letter(), {LEFT_OUT}), config=WITH_NER
+    ),
+    "oracle_mentions, one Smith": lambda d: bench(
+        d, "oracle_mentions", keep_mentions(letter(), {"person-smith-exam"}), config=WITH_NER
+    ),
+    "oracle_entities": lambda d: bench(d, "oracle_entities", with_cc("ent-john"), config=WITH_NER),
+    "oracle_entities again": lambda d: bench(d, "oracle_entities", with_cc("ent-john"), config=WITH_NER),
+    "oracle_entities, J. Smith is Jane": lambda d: bench(d, "oracle_entities", with_cc("ent-jane"), config=WITH_NER),
+}
+RELEASE = {
+    "oracle_text": {"released": True, "checks_failed": []},
+    # The mobile number was not injected: verification finds it again, and does not re-plan it.  V2 matches the
+    # digits of a whole line, and the line's digits (0412345678) hold the injected claim number's (WC1234567).
+    "oracle_mentions": {"released": False, "checks_failed": ["V2_TEXT_LEAK", "V4_RESIDUAL"]},
+    "oracle_entities": {"released": True, "checks_failed": []},
+}
+
+
+class Runs:
+    """Each run made once, on first use (every run renders the letter)."""
+
+    def __init__(self, factory: pytest.TempPathFactory) -> None:
+        self._factory = factory
+        self._done: dict[str, Bench] = {}
+
+    def __getitem__(self, name: str) -> Bench:
+        if name not in self._done:
+            self._done[name] = RUNS[name](self._factory.mktemp("bench"))
+        return self._done[name]
+
+
+@pytest.fixture(scope="module")
+def runs(tmp_path_factory: pytest.TempPathFactory) -> Runs:
+    return Runs(tmp_path_factory)
+
+
+def _box(points: Sequence[Sequence[float]]) -> tuple[float, float, float, float]:
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _overlap(a: Sequence[float], b: Sequence[float]) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+# ----------------------------------------------------------------------------------------- every mode
+@pytest.mark.parametrize("mode", MODES)
+def test_the_output_and_every_stage_file_are_handed_over(runs: Runs, mode: str) -> None:
+    run = runs[mode]
+    assert run.result.exit_code == 0, run.result.output
+    info = run.json("run_info.json")
+    assert info["release"] == RELEASE[mode]
+    held = [] if info["release"]["released"] else ["quarantine.json"]
+    assert sorted(p.name for p in run.out.iterdir()) == sorted(
+        ["manifest.json", "output.pdf", "run.json", "run_info.json", *STAGE_FILES, *held]
+    )
+    assert {k: info["config"][k] for k in ("mode", "injected", "ner_enabled")} == {
+        "mode": mode,
+        "injected": sorted(f.kind for f in MODE_FILES[mode]),
+        "ner_enabled": False,
+    }
+    # Count notes: what was injected, then verification's residual hits (before the note on a held-back output).
+    notes = [n.split(":")[0] for n in info["notes"].split("; ")]
+    injected = {
+        "oracle_text": ["injected text"],
+        "oracle_mentions": ["injected text", "injected mentions"],
+        "oracle_entities": ["injected text", "injected mentions", "injected clusters"],
+    }[mode]
+    assert [n for n in notes if n.startswith("injected ")] == injected
+    assert notes[len(notes) - (1 if info["release"]["released"] else 2)] == "V4 residual hits"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_text_json_is_the_injected_text(runs: Runs, mode: str) -> None:
+    run = runs[mode]
+    injected = sorted(run.docs["text.json"]["pages"][0]["tokens"], key=lambda t: t["order"])
+    text = run.json("text.json")
+    (page,) = text["pages"]
+    assert text["source"] == "text_layer"
+    assert [t["text"] for t in page["tokens"]] == [t["text"] for t in injected]
+    assert [t["order"] for t in page["tokens"]] == list(range(len(injected)))
+    # Tool 2's pixel boxes, rounded outward: at most one pixel (72/dpi points) larger on each side.
+    for written, given in zip(page["tokens"], injected, strict=True):
+        (x0, y0, x1, y1), (g0, h0, g1, h1) = _box(written["poly"]), _box(given["poly"])
+        assert all(-1e-3 <= d <= 72 / DPI + 1e-3 for d in (g0 - x0, h0 - y0, x1 - g1, y1 - h1))
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_stage_files_name_only_what_they_list(runs: Runs, mode: str) -> None:
+    run = runs[mode]
+    tokens = {t["id"] for p in run.json("text.json")["pages"] for t in p["tokens"]}
+    mentions = run.mentions()
+    assert all(set(m.get("tokens") or ()) <= tokens for m in mentions.values())
+    named = {i for r in run.plan() for i in r["mentions"]}
+    named |= {i for c in run.json("entities.json")["clusters"] for i in c["mentions"]}
+    named |= {m["mention"] for m in run.json("pseudonyms.json")["mentions"]}
+    assert named and named <= set(mentions)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_no_ocr_engine_is_made(runs: Runs, mode: str) -> None:
+    assert not any(key.startswith("ocr:") for key in runs[mode].state)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_two_runs_are_identical(runs: Runs, mode: str) -> None:
+    first, again = runs[mode], runs[f"{mode} again"]
+    for name in ("output.pdf", "manifest.json", *STAGE_FILES):
+        assert first.read(name) == again.read(name), name
+
+
+# ------------------------------------------------------------------------------------------ oracle_text
+def test_regions_are_found_around_the_injected_text(runs: Runs) -> None:
+    run = runs["oracle_text"]
+    ((texts, kwargs),) = run.regions
+    injected = sorted(run.docs["text.json"]["pages"][0]["tokens"], key=lambda t: t["order"])
+    assert texts == tuple(t["text"] for t in injected) and kwargs["reread"] is None
+    # The word region analysis took for show-through is still read.
+    assert run.json("text.json")["pages"][0]["tokens"][0]["text"] == "HARBOURSIDE"
+    assert run.detections == 1
+
+
+def test_the_text_is_the_injection_s_not_the_pdf_s(runs: Runs) -> None:
+    texts = [t["text"] for t in runs["oracle_text"].json("text.json")["pages"][0]["tokens"]]
+    assert CHANGED[1] in texts and CHANGED[0] not in texts
+
+
+def test_tool_2_detects_and_keeps_as_usual(runs: Runs) -> None:
+    found = {(m["label"], m.get("text")) for m in runs["oracle_text"].mentions().values()}
+    assert {
+        ("person", "John Andrew SMITH"),
+        ("phone", "0412 345 678"),
+        ("email", "john.smith78@example.org"),
+        ("medicare", medicare_number("29537015", 1)),
+    } <= found
+    # The client keeps dates and places.
+    assert not {label for label, _text in found} & {"date", "date_of_birth", "locality", "postcode"}
+
+
+def test_every_residual_hit_is_re_planned(runs: Runs) -> None:
+    run = runs["oracle_text"]
+    assert run.builds == 2 and any(r["id"].startswith("R-") for r in run.plan())
+    assert (
+        "V4 residual hits: 0 (0 removed values, 0 re-detection, 0 regions) after 1 re-plans"
+        in run.json("run_info.json")["notes"]
+    )
+
+
+def test_the_regions_of_a_scanned_page_are_found_around_the_injected_words(runs: Runs) -> None:
+    run = runs["oracle_text, scanned"]
+    assert run.result.exit_code == 0, run.result.output
+    kinds = {r["kind"] for r in run.json("manifest.json")["regions"]}
+    assert {"signature", "barcode", "stamp"} <= kinds
+    assert {"signature", "barcode", "stamp"} <= {m["label"] for m in run.mentions().values()}
+
+
+# -------------------------------------------------------------------------------------- oracle_mentions
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities"])
+def test_the_injection_replaces_detection_and_region_analysis(runs: Runs, mode: str) -> None:
+    run = runs[mode]
+    assert (run.detections, run.regions) == (0, [])
+    assert run.ner == [(False, False)]  # NER is on in the configuration file
+    detectors = run.json("manifest.json")["provenance"]["detectors"]
+    assert detectors == [{"id": "bench.inject", "version": "1"}, {"id": "resolve.persons", "version": "1"}]
+
+
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities"])
+def test_the_injected_mentions_are_reported_under_their_ids(runs: Runs, mode: str) -> None:
+    run = runs[mode]
+    injected = {m["id"]: m for m in run.docs["mentions.json"]["mentions"]}
+    reported = run.mentions()
+    assert set(reported) == set(injected)
+    texts = {t["id"]: t["text"] for t in run.docs["text.json"]["pages"][0]["tokens"]}
+    tool_2 = {t["id"]: t["text"] for t in run.json("text.json")["pages"][0]["tokens"]}
+    for mention_id, m in reported.items():
+        assert LABEL_MAP[m["label"]] == injected[mention_id]["label"], mention_id
+        own = [texts[t] for t in injected[mention_id]["tokens"] or ()]
+        assert [tool_2[t] for t in m.get("tokens", ())] == own and m.get("text", "") == " ".join(own)
+
+
+def test_a_location_and_its_postcode_are_replaced_together(runs: Runs) -> None:
+    run = runs["oracle_mentions"]
+    output = extract_all_text(run.read("output.pdf"))
+    pools = load_pools()
+    for mention_id, place, postcode in (("loc-penrith", "Penrith", "2750"), ("loc-sydney", "Sydney", "2000")):
+        name, fake = run.replacement(mention_id).rsplit(" ", 1)
+        assert fake in {loc.postcode for loc in pools.localities if loc.name == name}, mention_id
+        assert re.search(rf"\b({place}|{postcode})\b", output) is None
+
+
+def test_a_name_inside_an_organisation_is_drawn_with_it(runs: Runs) -> None:
+    run = runs["oracle_mentions"]
+    assert run.mentions()["person-firm"]["label"] == "person"
+    naming = [r["mentions"] for r in run.plan() if "person-firm" in r["mentions"]]
+    assert naming and all(names[0] == "org-firm" for names in naming)
+    assert "person-firm" not in {m["mention"] for m in run.json("pseudonyms.json")["mentions"]}
+    assert "Smith & Partners" not in extract_all_text(run.read("output.pdf"))
+
+
+def test_the_signature_becomes_a_stand_in(runs: Runs) -> None:
+    run = runs["oracle_mentions"]
+    (region,) = [r for r in run.json("manifest.json")["regions"] if r["kind"] == "signature"]
+    assert (region["action"], region["detector"], region["rule"]) == ("synthesise", "inject", "inject.SIGNATURE")
+    # A region's operation replaces only when it draws a stand-in (otherwise it removes).
+    (drawn,) = [r for r in run.plan() if r["mentions"] == ["signature"]]
+    assert drawn["action"] == "replace" and drawn["id"].startswith(region["region_id"])
+
+
+def test_a_mention_left_out_stays_and_holds_the_document_back(runs: Runs) -> None:
+    run = runs["oracle_mentions"]
+    assert "0412345678" in digits_only(extract_all_text(run.read("output.pdf")))
+    (phone,) = [m for m in LETTER_MENTIONS if m[0] == LEFT_OUT]
+    words = [t for t in run.json("text.json")["pages"][0]["tokens"] if t["text"] in phone[3].split()]
+    assert words and not any(_overlap(_box(w["poly"]), _box(r["poly"])) for w in words for r in run.plan())
+    # Verification finds it again, which holds the document back, but re-plans only removed values.
+    assert run.builds == 1 and not any(r["id"].startswith("R-") for r in run.plan())
+    notes = run.json("run_info.json")["notes"]
+    assert "0 removed values" in notes and "(re-plans from: removed values)" in notes
+
+
+def test_a_removed_value_still_readable_is_re_planned(runs: Runs) -> None:
+    run = runs["oracle_mentions, one Smith"]
+    assert set(run.mentions()) == {"person-smith-exam"}
+    replanned = [r for r in run.plan() if r["id"].startswith("R-")]
+    assert run.builds == 2 and replanned and all(r["mentions"] == [] for r in replanned)
+    assert "after 1 re-plans" in run.json("run_info.json")["notes"]
+
+
+# ------------------------------------------------------------------------------------- oracle_entities
+def test_the_clusters_are_the_injected_ones(runs: Runs) -> None:
+    run = runs["oracle_entities"]
+    clusters = run.json("entities.json")["clusters"]
+    assert [(c["id"], c["mentions"]) for c in clusters] == [
+        ("ent-jane", ["person-citizen", "person-jane"]),
+        ("ent-john", [CC, "person-email", "person-john", "person-smith-contact", "person-smith-exam"]),
+        ("ent-peter", ["person-peter"]),  # not the signature: entities.json clusters people's names
+        ("person-firm", ["person-firm"]),  # the firm's namesake, injected as an entity of its own
+    ]
+    assert {c for c, _members in LETTER_CLUSTERS} < {c["id"] for c in run.docs["entities.json"]["clusters"]}
+
+
+def test_the_cluster_chooses_the_initial(runs: Runs) -> None:
+    john, jane = runs["oracle_entities"], runs["oracle_entities, J. Smith is Jane"]
+    with_john, with_jane = john.replacement(CC).split(), jane.replacement(CC).split()
+    # The initial is drawn from the fake given name of the person the cluster says J. Smith is.
+    assert with_john[0] == john.replacement("person-john")[0] + "."
+    assert with_jane[0] == jane.replacement("person-jane")[0] + "."
+    assert with_john[0] != with_jane[0] and with_john[1] == with_jane[1]
+
+
+def test_pseudonyms_name_the_injected_clusters(runs: Runs) -> None:
+    run = runs["oracle_entities"]
+    entries = run.json("pseudonyms.json")["entries"]
+    by_original = {e["original"]: e["cluster"] for e in entries}
+    assert by_original["John Andrew SMITH"] == by_original["J. Smith"] == "ent-john"
+    assert by_original["Jane Citizen"] == "ent-jane" and by_original["0412 345 678"] is None
+    assert {e["cluster"] for e in entries} <= {c["id"] for c in run.docs["entities.json"]["clusters"]} | {None}
