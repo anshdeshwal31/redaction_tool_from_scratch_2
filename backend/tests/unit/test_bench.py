@@ -5,10 +5,14 @@ All text is fictitious.  The schemas themselves belong to the benchmark and are 
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import mlredact.bench.environment as bench_env
+from mlredact import __version__
 from mlredact.bench.artifacts import (
     LABELS,
     PII_REGION_KINDS,
@@ -354,3 +358,30 @@ def test_region_decisions_follow_the_policy_and_the_render_style() -> None:
     expected = {"G-bar": ActionKind.REMOVE, "G-faint": ActionKind.SUPPRESS_INK, "G-fig": ActionKind.KEEP}
     assert decided("surrogate") == {"G-sig": ActionKind.SYNTHESISE, **expected}
     assert decided("blackout") == {"G-sig": ActionKind.REMOVE, **expected}  # stand-ins only with surrogates
+
+
+# ------------------------------------------------------------------------------ environment
+def test_version_names_the_commit_and_marks_uncommitted_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("", "utf-8")
+    status = {"out": ""}
+
+    def fake_run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        out = "abc1234\n" if "rev-parse" in cmd else status["out"]
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(bench_env.shutil, "which", lambda _name: "git")
+    monkeypatch.setattr(bench_env.subprocess, "run", fake_run)
+    assert bench_env.candidate_version(tmp_path) == f"{__version__}+gabc1234"
+    status["out"] = " M src/mlredact/cli/main.py\n"
+    assert bench_env.candidate_version(tmp_path) == f"{__version__}+gabc1234.dirty"
+
+
+def test_version_is_the_plain_version_without_git_or_a_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert bench_env.candidate_version(tmp_path) == __version__  # no pyproject.toml: not a checkout
+    (tmp_path / "pyproject.toml").write_text("", "utf-8")
+    monkeypatch.setattr(bench_env.shutil, "which", lambda _name: None)
+    assert bench_env.candidate_version(tmp_path) == __version__
