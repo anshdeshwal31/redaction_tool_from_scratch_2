@@ -54,7 +54,7 @@ from mlredact.core.geometry import BBox, union_all
 from mlredact.core.model import PageGeometry
 from mlredact.pipeline.injection import pt_box
 from mlredact.surrogate.pools import load_pools
-from mlredact.text.normalize import digits_only
+from mlredact.text.normalize import digits_only, match_key
 from mlredact.verify.checks import extract_all_text
 
 DPI = 150  # NO_MODELS renders at 150 dpi
@@ -484,6 +484,24 @@ def test_a_removed_value_still_readable_is_re_planned(runs: Runs) -> None:
     replanned = [r for r in run.plan() if r["id"].startswith("R-")]
     assert run.builds == 2 and replanned and all(r["mentions"] == [] for r in replanned)
     assert "after 1 re-plans" in run.json("run_info.json")["notes"]
+
+
+def test_of_what_verification_finds_only_removed_values_are_re_planned(runs: Runs) -> None:
+    """Verification finds the injected "Smith" elsewhere, and PII that was not injected: it re-plans only the
+    former.  The rest stays as it was and still counts, so the document is held back."""
+    run = runs["oracle_mentions, one Smith"]
+    info = run.json("run_info.json")
+    assert info["release"] == {"released": False, "checks_failed": ["V2_TEXT_LEAK", "V4_RESIDUAL"]}
+    found = re.search(r"V4 residual hits: \d+ \((\d+) removed values, (\d+) re-detection", info["notes"])
+    assert found is not None and (int(found[1]), int(found[2]) > 0) == (0, True)
+    # Each re-plan blacks out another "Smith", and no other word.
+    geometry = _geometry(run)
+    words = [(t["text"], pt_box(t["poly"], geometry)) for t in run.json("text.json")["pages"][0]["tokens"]]
+    for r in run.plan():
+        if r["id"].startswith("R-"):
+            box = pt_box(r["poly"], geometry)
+            under = [text for text, word in words if word.overlap_fraction(box) >= 0.5]
+            assert under and {match_key(text) for text in under} == {"smith"}, r["id"]
 
 
 # ------------------------------------------------------------------------------------- oracle_entities
