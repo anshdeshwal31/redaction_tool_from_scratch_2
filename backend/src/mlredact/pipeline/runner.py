@@ -1,7 +1,8 @@
 """Job orchestration (plan §5): intake -> analyse -> detect -> resolve -> policy -> surrogates ->
 render -> build -> verify.
 
-Release is fail-closed: the PDF is returned only when every verification check passes.
+Release is fail-closed: the PDF is returned only when every verification check passes.  On request
+a job also returns its trace (what every stage saw and decided) for the benchmark adapter.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from mlredact.policy.engine import Decision, decide, split_kept_places
 from mlredact.registry.models import load_registry, models_dir, resolve
 from mlredact.render.label import NOTICE_REMOVED, NOTICE_SURROGATE
 from mlredact.render.plan import check_supported, pad_box, plan_ops, rotated_token_ids
+from mlredact.resolve.persons import PersonResolution
 from mlredact.resolve.roles import professional_mentions
 from mlredact.resources.loader import verify_resources
 from mlredact.runtime.profile import RuntimeProfile, check_runtime_profile
@@ -54,6 +56,8 @@ from mlredact.verify.surrogates import check_surrogates
 
 _log = get_logger("mlredact.pipeline")
 IMAGE_FORMATS = frozenset({"tiff", "png", "jpeg"})
+# The last output built and what it was drawn from: (pdf, render ops, rendered pages).
+_Built = tuple[bytes, dict[int, tuple[RenderOp, ...]], list[RedactedPage]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +66,26 @@ class RegionDecision:
 
     region: Region
     action: ActionKind
+
+
+@dataclass(frozen=True)
+class JobTrace:
+    """What every stage of one job saw and decided, for the benchmark adapter (``mlredact bench``) only.
+
+    It holds document text (tokens, mention values, surrogates): it is never logged, never part of the
+    manifest, and only the adapter writes it out, into the evaluator's run folder.  ``pdf``, ``ops``
+    and ``erased`` belong together: the last output the pipeline built (released or not, also when a
+    later step failed), the render operations it was drawn from (after verification re-plans) and the
+    boxes those operations actually erased, keyed like the manifest's ``erased_px``."""
+
+    pdf: bytes | None = field(repr=False)
+    pages: tuple[PageAnalysis, ...] = field(repr=False)
+    decisions: tuple[Decision, ...] = field(repr=False)
+    persons: PersonResolution | None = field(repr=False)
+    surrogates: Mapping[str, MentionSurrogate] = field(repr=False)
+    ops: Mapping[int, tuple[RenderOp, ...]] = field(repr=False)
+    erased: Mapping[tuple[str, BBox], BBox]
+    regions: tuple[RegionDecision, ...]
 
 
 @dataclass(frozen=True)
@@ -75,6 +99,8 @@ class JobResult:
     # The redacted copy of a quarantined job, only when the caller asked to keep it (testing and
     # review).  It failed verification: never a release.
     held_back_pdf: bytes | None = field(default=None, repr=False)
+    # Only when the caller asked for it (benchmark adapter): holds document text.
+    trace: JobTrace | None = field(default=None, repr=False)
 
 
 class Redactor:
@@ -123,13 +149,16 @@ class Redactor:
         scope_id: str | None = None,
         sensitive_to: bytes | None = None,
         keep_held_back: bool = False,
+        trace: bool = False,
     ) -> JobResult:
         """Redact ``data``.  ``scope_id`` (e.g. a matter/claim identifier) makes surrogates consistent
         across all documents of that scope; by default the scope is the document itself.
         ``sensitive_to``: an evaluator's X25519 public key; the sensitive manifest (original text) is
         then returned sealed to it (never in plaintext).
         ``keep_held_back``: when the job is quarantined after its output was built, return that output
-        as ``held_back_pdf`` (testing and review only; ``pdf`` stays None)."""
+        as ``held_back_pdf`` (testing and review only; ``pdf`` stays None).
+        ``trace``: also return the job's :class:`JobTrace` (document text included) for the benchmark
+        adapter.  Everything else in the result is the same with or without it."""
         cfg = self.config
         job_id = f"job-{uuid.uuid4().hex}"
         input_sha = sha256_hex(data)
@@ -145,6 +174,7 @@ class Redactor:
         reasons: list[str] = []
         pdf: bytes | None = None
         redacted: list[RedactedPage] = []
+        built: _Built | None = None  # read only for the trace
         _log.info("job.start", job=job_id, doc=input_sha[:32])
 
         def lap(name: str, t0: float) -> None:
@@ -204,6 +234,7 @@ class Redactor:
                             task_redact, [(blob.ref, i, ops.get(i, ()), notice) for i in range(n)]
                         )
                         pdf = build_pdf(self._page_specs(redacted, pages, ops, notice), cfg.output)
+                        built = (pdf, ops, redacted)
                         lap(f"render_build_ms_{replans}", t0)
 
                         t0 = time.perf_counter()
@@ -306,7 +337,8 @@ class Redactor:
             )
         _log.info("job.done", job=job_id, status=status, pages=len(pages), duration_ms=timings["total_ms"])
         held_back = pdf if keep_held_back and not released else None
-        return JobResult(status, pdf if released else None, manifest, run_record, sensitive, held_back)
+        job_trace = self._trace(pages, decisions, detection, surrogates, built, ops, redacted) if trace else None
+        return JobResult(status, pdf if released else None, manifest, run_record, sensitive, held_back, job_trace)
 
     # ------------------------------------------------------------------------------- helpers
     def _page_specs(
@@ -360,6 +392,32 @@ class Redactor:
                 r = d.region
                 merged.setdefault(r.page, []).append(RenderOp(r.page, d.action, r.bbox, r.kind.value, r.region_id))
         return {p: tuple(sorted(v, key=lambda o: o.sort_key)) for p, v in sorted(merged.items())}
+
+    def _trace(
+        self,
+        pages: Sequence[PageAnalysis],
+        decisions: Sequence[Decision],
+        detection: DetectionResult | None,
+        surrogates: Mapping[str, MentionSurrogate],
+        built: _Built | None,
+        ops: Mapping[int, tuple[RenderOp, ...]],
+        redacted: Sequence[RedactedPage],
+    ) -> JobTrace:
+        """The job's trace.  When an output was built, the ops and erased boxes are the ones it was
+        drawn from (a step that failed after it may already have planned more)."""
+        pdf: bytes | None = None
+        if built is not None:
+            pdf, ops, redacted = built
+        return JobTrace(
+            pdf=pdf,
+            pages=tuple(pages),
+            decisions=tuple(decisions),
+            persons=detection.persons if detection else None,
+            surrogates=dict(surrogates),
+            ops=dict(ops),
+            erased={(a.ref_id, a.planned): a.erased for r in redacted for a in r.applied},
+            regions=tuple(d for p in pages for d in self._region_decisions(p)),
+        )
 
     def _kept_regions(
         self, decisions: Sequence[Decision], tokens: Mapping[str, Token], geoms: Mapping[int, Any]
