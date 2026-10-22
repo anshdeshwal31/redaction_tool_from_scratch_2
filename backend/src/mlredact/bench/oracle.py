@@ -8,14 +8,16 @@ production.
   2's own, over the injected text;
 * ``oracle_mentions``: the injected mentions also replace region detection, detection and the policy's keeps: every
   one of them is redacted, with the profile's action, or a surrogate where the profile would keep the value;
-* ``oracle_entities``: the injected clusters also replace tool 2's clustering of person names.
+* ``oracle_entities``: the injected clusters also replace tool 2's clustering of person names;
+* ``oracle_regions``: the injected plan also replaces tool 2's planning: exactly its regions are applied
+  (:mod:`mlredact.bench.oracle_plan`).
 
 An injected mention becomes tool 2's mentions over whole tokens, and regions where its anchors are not text (a
 signature) or are not explained by its tokens (a logo around an organisation's name).  Where injected mentions share
 a token, the tokens are redacted once, with the type of the mention that has the most of them; every injected mention
 is still reported under its own id (``InjectReport``).  Verification checks the output as usual, but from
-``oracle_mentions`` on it re-plans only removed values that are still readable: whatever else it finds was not
-injected, and only counts against the release.
+``oracle_mentions`` on it re-plans only removed values that are still readable, and in ``oracle_regions`` nothing:
+whatever else it finds was not injected, and only counts against the release.
 
 Nothing here logs.  Errors and notes carry counts and fixed names only, never injected text.
 """
@@ -39,6 +41,7 @@ from mlredact.bench.labels import (
     refine,
     split_location,
 )
+from mlredact.bench.oracle_plan import InjectedPlan, injected_ops
 from mlredact.config.schema import AppConfig
 from mlredact.core.canonical import content_id
 from mlredact.core.errors import EnvironmentErrorMl, ReasonCode
@@ -58,13 +61,14 @@ from mlredact.verify.residual import ResidualHit
 DETECTOR = ("bench.inject", "1")
 REGION_DETECTOR = "inject"
 # The oracle modes, each injecting one stage input more than the one before.
-MODES = ("oracle_text", "oracle_mentions", "oracle_entities")
+MODES = ("oracle_text", "oracle_mentions", "oracle_entities", "oracle_regions")
 # Residual hit sources (``ResidualHit.source``) verification may re-plan, per mode; every hit still counts for the
 # release.  From oracle_mentions on, what the rules find again was not injected, and stays as it was.
 REPLAN_SOURCES: dict[str, tuple[str, ...]] = {
     "oracle_text": ("removed_value", "redetect", "region"),
     "oracle_mentions": ("removed_value",),
     "oracle_entities": ("removed_value",),
+    "oracle_regions": (),
 }
 _SOURCE_NAMES = {"removed_value": "removed values", "redetect": "re-detection", "region": "regions"}
 # A region anchor that one of the mention's token boxes matches this closely (IoU), or covers this much of, is that
@@ -92,8 +96,8 @@ def check_region_actions(config: AppConfig) -> None:
 class OracleInputs:
     """The runner's hooks for one document's injected stage inputs (``StageInputs``).
 
-    ``stage`` keeps what the stage files report (the injected mentions as tool 2 redacted them, their aliases and
-    clusters, count notes); a repeated run replaces it."""
+    ``stage`` and ``plan`` keep what the stage files report (the injected mentions as tool 2 redacted them, their
+    aliases and clusters, how each plan region was applied, count notes); a repeated run replaces it."""
 
     def __init__(self, injection: Injection) -> None:
         if injection.mode not in MODES:
@@ -101,6 +105,7 @@ class OracleInputs:
         self._injection = injection
         self._beyond = 0  # injected tokens on pages the document does not have
         self._staged: _Staged | None = None
+        self._planned: InjectedPlan | None = None
 
     @property
     def mode(self) -> str:
@@ -119,6 +124,7 @@ class OracleInputs:
         """Detection and policy from the injected mentions; None in ``oracle_text`` (tool 2 detects)."""
         if self._injection.mentions is None:
             return None
+        self._planned = None
         self._staged = _Stager(self._injection, pages, doc_key).run(config)
         return self._staged.stage
 
@@ -133,8 +139,24 @@ class OracleInputs:
         rotated: AbstractSet[str],
         config: AppConfig,
     ) -> dict[int, tuple[RenderOp, ...]] | None:
-        """None: tool 2 plans the operations."""
-        return None
+        """The operations that apply the injected plan (``oracle_regions``); None in the other modes (tool 2
+        plans)."""
+        if self._injection.plan is None:
+            return None
+        staged = self._staged
+        self._planned = injected_ops(
+            self._injection,
+            staged.mentions if staged is not None else (),
+            staged.aliases if staged is not None else {},
+            decisions=decisions,
+            surrogates=surrogates,
+            tokens=tokens,
+            pages=pages,
+            region_actions=region_actions,
+            rotated=rotated,
+            style=config.redaction.style,
+        )
+        return self._planned.ops
 
     def replan_hits(self, hits: Sequence[ResidualHit]) -> list[ResidualHit]:
         if self.mode == "oracle_text":
@@ -143,12 +165,17 @@ class OracleInputs:
         return [h for h in hits if h.source in allowed]
 
     def report(self) -> InjectReport:
-        injection, staged = self._injection, self._staged
-        notes = (_text_note(injection, self._beyond), *(staged.notes if staged is not None else ()))
+        injection, staged, planned = self._injection, self._staged, self._planned
+        notes = (
+            _text_note(injection, self._beyond),
+            *(staged.notes if staged is not None else ()),
+            *([planned.note] if planned is not None else []),
+        )
         if staged is None:
             return InjectReport(injection.mode, injection.text_source, notes=notes)
+        echoes = planned.echoes if planned is not None else None
         return InjectReport(
-            injection.mode, injection.text_source, staged.mentions, staged.aliases, staged.clusters, notes=notes
+            injection.mode, injection.text_source, staged.mentions, staged.aliases, staged.clusters, echoes, notes
         )
 
     def residual_note(self, manifest: Mapping[str, Any]) -> str:
