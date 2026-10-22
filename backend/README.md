@@ -189,6 +189,9 @@ last, so it exists only together with every other file.
 | `MLREDACT_MODELS_DIR` | models folder; when unset and the configured `.models` is not in the current folder (the benchmark starts the adapter from its run folder), the backend's own `.models` is used |
 | `RB_MLREDACT_PYTHON` | benchmark side: this backend's Python, used by the candidate manifest |
 
+On a machine without Tesseract, point `MLREDACT_CONFIG` at `configs/runtime/laptop-no-engine-b.yaml`
+(absolute path); results then differ from runs with engine B.
+
 ## Tests
 
 ```bash

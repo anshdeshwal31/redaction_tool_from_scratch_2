@@ -1,0 +1,10 @@
+# Laptop development only: switches off OCR engine B (Tesseract), for machines without the binary.
+# Everything else (NER, engine A, regions, verification) stays as configured.
+# Results then differ from runs with engine B: words only Tesseract reads are missed, and the
+# verification re-read uses engine A alone.  Never use this for real releases or reported results.
+#
+#   uv run mlredact selfcheck --config configs/runtime/laptop-no-engine-b.yaml
+#   MLREDACT_CONFIG=<absolute path to this file> ... mlredact bench ...
+ocr:
+  engine_b:
+    enabled: false
