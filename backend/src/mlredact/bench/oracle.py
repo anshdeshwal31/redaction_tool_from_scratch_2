@@ -7,7 +7,8 @@ production.
 * ``oracle_text``: the injected tokens replace OCR.  Region detection, detection, the policy and planning are tool
   2's own, over the injected text;
 * ``oracle_mentions``: the injected mentions also replace region detection, detection and the policy's keeps: every
-  one of them is redacted, with the profile's action, or a surrogate where the profile would keep the value;
+  one of them is redacted, with the profile's action, or a surrogate where the profile would keep the value (words
+  without a letter or digit, which no fake can stand in for, are removed);
 * ``oracle_entities``: the injected clusters also replace tool 2's clustering of person names;
 * ``oracle_regions``: the injected plan also replaces tool 2's planning: exactly its regions are applied
   (:mod:`mlredact.bench.oracle_plan`).
@@ -285,8 +286,14 @@ class _Stager:
             for mention_id, cluster in sorted(first.items()):
                 members[cluster].append(mention_id)
             clusters = tuple((cluster, tuple(ids)) for cluster, ids in sorted(members.items()))
-        decisions = decide_injected(mentions, config.policy)
+        # A run with no letter or digit (a dash, a bullet, a barcode's bars read as "|||") has nothing a fake could
+        # stand in for: it is removed.
+        decisions = [
+            d if _fakeable(d.mention.value) else Decision(d.mention, ActionKind.REMOVE)
+            for d in decide_injected(mentions, config.policy)
+        ]
         self.counts["kept_acted"] = sum(d.action is ActionKind.KEEP for d in decide(mentions, config.policy))
+        self.counts["unfakeable"] = sum(not _fakeable(m.value) for m in mentions)
 
         regions: dict[str, Region] = {}
         for a in anchored:
@@ -486,7 +493,8 @@ class _Stager:
             f"{c['nested']} sharing tokens another one owns, {c['split']} split into runs, "
             f"{c['location_split']} locations split into locality and postcode, {c['kept_acted']} of a kept type "
             f"redacted, {c['fallback']} labels taken as other_id, {c['extra_regions']} anchors not explained by "
-            f"their tokens, {c['anchors_off_page']} anchors off their page"
+            f"their tokens, {c['anchors_off_page']} anchors off their page, {c['unfakeable']} runs without a letter "
+            "or digit removed"
         )
 
     def _cluster_note(self) -> str:
@@ -510,6 +518,12 @@ def _text_note(injection: Injection, beyond: int) -> str:
 def _rule(label: str) -> str:
     """The manifest's evidence rule for an injected label: never the label itself unless it is a known one."""
     return f"inject.{label}" if label in _RULE_LABELS else "inject.other"
+
+
+def _fakeable(value: str) -> bool:
+    """A fake can stand in for the value: it has a letter or a digit (fakes change those, and keep every other
+    character as it is)."""
+    return any(c.isalpha() or c.isdigit() for c in value)
 
 
 def _region(page: int, kind: RegionKind, box: BBox, rule: str, score: float) -> Region:

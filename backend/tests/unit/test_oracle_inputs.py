@@ -480,6 +480,50 @@ def test_every_injected_mention_is_redacted(tmp_path: Path) -> None:
     assert (detection.low_evidence, detection.propagation_rounds) == ((), 0)
 
 
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities", "oracle_regions"])
+def test_words_without_a_letter_or_digit_are_removed(tmp_path: Path, mode: str) -> None:
+    """No fake can stand in for them (fakes change letters and digits only): a run of such words is removed, whatever
+    its type, where a surrogate would never be found; the rest of its mention is replaced."""
+    tokens = layout("Claim WC 123 - 456", "Ref # pending", "Code ||| here", "Pay & go")
+    words = {
+        "claim": ("t0.1", "t0.3"),  # "WC" and the dash: the dash is a run of its own
+        "hash": ("t1.1",),
+        "bars": ("t2.1",),  # a barcode, read as bars
+        "odd": ("t3.1",),
+    }
+    mentions = [
+        mention("claim", "ID_CLAIM", tokens=list(words["claim"])),
+        mention("hash", "ID_CLAIM", tokens=list(words["hash"])),
+        mention("bars", "ID_OTHER", regions=polys(tokens, *words["bars"])),  # a region swapped in from another tool
+        mention("odd", f"LABEL {CANARY}", tokens=list(words["odd"])),  # a label nobody maps
+    ]
+    files = docs(tokens, mentions, [(m, (m,)) for m in words])
+    plan = [r for m, ids in words.items() for r in word_regions(tokens, m, *ids)]
+    files["plan.json"] = {"schema": "rb.plan/0.1", "regions": plan}
+    outcome = oracle_outcome(tmp_path, mode, files, CONFIG)  # the surrogates are drawn as the runner draws them
+    decisions = {d["mention"]["value"]: (d["mention"]["mention_id"], d["action"]) for d in outcome["decisions"]}
+    assert {value: action for value, (_id, action) in decisions.items()} == {
+        "WC": "surrogate",
+        "-": "remove",
+        "#": "remove",
+        "|||": "remove",
+        "&": "remove",
+    }
+    assert [ref for ref, _fake in outcome["surrogates"]] == [decisions["WC"][0]]
+    kinds: dict[str, set[str]] = {}
+    for _page, ops in outcome["ops"]:
+        for op in ops:
+            kinds.setdefault(op["ref_id"], set()).add(op["kind"])
+    assert {value: kinds[ref] for value, (ref, _action) in decisions.items()} == {
+        "WC": {"surrogate"},
+        "-": {"remove"},
+        "#": {"remove"},
+        "|||": {"remove"},
+        "&": {"remove"},
+    }
+    assert "4 runs without a letter or digit removed" in " ".join(outcome["report"]["notes"])
+
+
 # ---------------------------------------------------------------------------------------- clusters
 PEOPLE = ("John Andrew Smith", "Mr Smith", "J. Smith", "Jane Smith")
 

@@ -70,6 +70,7 @@ CHANGED = ("constant", "persistent")  # a word of the letter, injected as anothe
 # A mention left out of the injection (oracle_mentions), or out of the plan only (oracle_regions).
 LEFT_OUT = "phone-mobile"
 CC = "person-cc"  # "J. Smith", injected on a line of its own (oracle_entities)
+DASH = "claim-dash"  # "WC" and "-" of "WC 123 - 456", injected on a line of its own (oracle_entities)
 LOGO = "org-harbourside-3"  # the plan region of the letterhead's logo
 
 
@@ -194,6 +195,17 @@ def with_cc(cluster: str) -> Docs:
     return docs
 
 
+def with_dash() -> Docs:
+    """The letter with "Other claim WC 123 - 456" injected below it, a claim number made of "WC" and the dash: two
+    pieces, and the dash has no letter or digit for a fake to change."""
+    docs = letter()
+    ids = add_line(docs, "ldash", "Other claim WC 123 - 456", (60.0, 520.0))
+    pieces = [ids[2], ids[4]]
+    docs["mentions.json"]["mentions"].append(mention(DASH, "ID_CLAIM", None, pieces, token_polys(docs, pieces)))
+    docs["entities.json"]["clusters"].append({"id": DASH, "mentions": [DASH], "attributes": {}})
+    return docs
+
+
 @functools.cache
 def scanned_letter() -> SynthDoc:
     """The letter scanned, with a signature, a QR code, a stamp, margin handwriting and show-through."""
@@ -235,6 +247,7 @@ RUNS: dict[str, Callable[[Path], Bench]] = {
     "oracle_entities": lambda d: bench(d, "oracle_entities", with_cc("ent-john"), config=WITH_NER),
     "oracle_entities again": lambda d: bench(d, "oracle_entities", with_cc("ent-john"), config=WITH_NER),
     "oracle_entities, J. Smith is Jane": lambda d: bench(d, "oracle_entities", with_cc("ent-jane"), config=WITH_NER),
+    "oracle_entities, a dash in a claim number": lambda d: bench(d, "oracle_entities", with_dash(), config=WITH_NER),
     # The mobile number's regions are left out of the plan; a residual barcode on the first re-read.
     "oracle_regions": lambda d: bench(
         d,
@@ -493,6 +506,16 @@ def test_the_cluster_chooses_the_initial(runs: Runs) -> None:
     assert with_john[0] == john.replacement("person-john")[0] + "."
     assert with_jane[0] == jane.replacement("person-jane")[0] + "."
     assert with_john[0] != with_jane[0] and with_john[1] == with_jane[1]
+
+
+def test_a_piece_without_a_letter_or_digit_is_removed(runs: Runs) -> None:
+    """No fake can be made for the dash (fakes change letters and digits only): it is removed, the rest of the
+    claim number replaced, and the document goes through."""
+    run = runs["oracle_entities, a dash in a claim number"]
+    assert run.result.exit_code == 0, run.result.output
+    assert (run.out / "output.pdf").is_file() and run.mentions()[DASH]["text"] == "WC -"
+    assert sorted(r["action"] for r in run.plan() if DASH in r["mentions"]) == ["remove", "replace"]
+    assert "1 runs without a letter or digit removed" in run.json("run_info.json")["notes"]
 
 
 def test_pseudonyms_name_the_injected_clusters(runs: Runs) -> None:
