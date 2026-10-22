@@ -18,7 +18,7 @@ from mlredact.config.schema import AppConfig
 from mlredact.core.canonical import sha256_hex
 from mlredact.core.errors import EnvironmentErrorMl, MlredactError, ReasonCode
 from mlredact.core.geometry import BBox
-from mlredact.core.model import PageAnalysis, RenderOp, Token
+from mlredact.core.model import PageAnalysis, Region, RenderOp, Token
 from mlredact.core.types import ActionKind, JobStatus, VerificationCheck
 from mlredact.detect.base import Detector
 from mlredact.detect.engine import DetectionResult, Seed, default_detectors, detect_document
@@ -54,6 +54,14 @@ from mlredact.verify.surrogates import check_surrogates
 
 _log = get_logger("mlredact.pipeline")
 IMAGE_FORMATS = frozenset({"tiff", "png", "jpeg"})
+
+
+@dataclass(frozen=True, slots=True)
+class RegionDecision:
+    """What happens to a non-text region: KEEP, or the raster operation drawn over it."""
+
+    region: Region
+    action: ActionKind
 
 
 @dataclass(frozen=True)
@@ -324,26 +332,33 @@ class Redactor:
             specs.append(PageSpec(r.geometry.width_pt, r.geometry.height_pt, r.image, layer))
         return specs
 
-    def _with_region_ops(
-        self, ops: Mapping[int, tuple[RenderOp, ...]], pages: Sequence[PageAnalysis]
-    ) -> dict[int, tuple[RenderOp, ...]]:
-        """Non-text regions (signatures, barcodes, faces, stamps, handwriting, faint ink) -> raster ops.
+    def _region_decisions(self, page: PageAnalysis) -> list[RegionDecision]:
+        """Non-text regions (signatures, barcodes, faces, stamps, handwriting, faint ink) -> actions.
 
         Synthetic stand-ins belong with realistic surrogates; the label and blackout styles remove."""
         actions = self.config.policy.region_actions
-        merged: dict[int, list[RenderOp]] = {p: list(v) for p, v in ops.items()}
-        for page in pages:
-            for region in page.regions:
-                action = actions.get(region.kind, ActionKind.REMOVE)
-                if action is ActionKind.KEEP:
-                    continue
+        out: list[RegionDecision] = []
+        for region in page.regions:
+            action = actions.get(region.kind, ActionKind.REMOVE)
+            if action is not ActionKind.KEEP:
                 drawn = action is ActionKind.SUPPRESS_INK or (
                     action is ActionKind.SYNTHESISE and self.config.redaction.style == "surrogate"
                 )
-                kind = action if drawn else ActionKind.REMOVE
-                merged.setdefault(region.page, []).append(
-                    RenderOp(region.page, kind, region.bbox, region.kind.value, region.region_id)
-                )
+                action = action if drawn else ActionKind.REMOVE
+            out.append(RegionDecision(region, action))
+        return out
+
+    def _with_region_ops(
+        self, ops: Mapping[int, tuple[RenderOp, ...]], pages: Sequence[PageAnalysis]
+    ) -> dict[int, tuple[RenderOp, ...]]:
+        """Region decisions -> raster ops."""
+        merged: dict[int, list[RenderOp]] = {p: list(v) for p, v in ops.items()}
+        for page in pages:
+            for d in self._region_decisions(page):
+                if d.action is ActionKind.KEEP:
+                    continue
+                r = d.region
+                merged.setdefault(r.page, []).append(RenderOp(r.page, d.action, r.bbox, r.kind.value, r.region_id))
         return {p: tuple(sorted(v, key=lambda o: o.sort_key)) for p, v in sorted(merged.items())}
 
     def _kept_regions(
