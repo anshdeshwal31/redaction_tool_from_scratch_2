@@ -1,6 +1,6 @@
-"""Injected mentions as tool 2's stages (``mlredact.bench.oracle``, the benchmark's oracle modes): where the mentions
-land on tool 2's tokens, what they become (mentions, regions), how shared tokens are redacted, the types and the
-decisions.
+"""Injected mentions and clusters as tool 2's stages (``mlredact.bench.oracle``, the benchmark's oracle modes): where
+the mentions land on tool 2's tokens, what they become (mentions, regions), how shared tokens are redacted, the types,
+the clusters and the decisions.
 
 Pages are built from the injected tokens on a hand-made A4 page at 150 dpi, without rendering anything.  The files are
 written in the benchmark's own format (no benchmark import).  All text is fictitious.
@@ -9,6 +9,7 @@ written in the benchmark's own format (no benchmark import).  All text is fictit
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -101,13 +102,18 @@ class Staged:
 Tokens = list[dict[str, Any]] | dict[int, list[dict[str, Any]]]
 
 
-def docs(tokens: Tokens, mentions: list[dict[str, Any]]) -> dict[str, Any]:
+def docs(tokens: Tokens, mentions: list[dict[str, Any]], clusters: Any = None) -> dict[str, Any]:
     by_page = tokens if isinstance(tokens, dict) else {0: tokens}
     pages = [{"index": i, "tokens": t} for i, t in sorted(by_page.items())]
     out: dict[str, Any] = {
         "text.json": {"schema": "rb.text/0.1", "source": "text_layer", "pages": pages},
         "mentions.json": {"schema": "rb.mentions/0.1", "mentions": mentions},
     }
+    if clusters is not None:
+        out["entities.json"] = {
+            "schema": "rb.entities/0.1",
+            "clusters": [{"id": c, "mentions": list(m)} for c, m in clusters],
+        }
     return out
 
 
@@ -127,10 +133,12 @@ def stage(
     folder: Path,
     tokens: Tokens,
     mentions: list[dict[str, Any]],
+    clusters: Any = None,
     config: Any = CONFIG,
 ) -> Staged:
-    """OracleInputs.stage on pages made of the injected tokens (``oracle_mentions``)."""
-    inputs = OracleInputs(load_injection("oracle_mentions", write(folder, docs(tokens, mentions))))
+    """OracleInputs.stage on pages made of the injected tokens (``oracle_entities`` when clusters are given)."""
+    mode = "oracle_mentions" if clusters is None else "oracle_entities"
+    inputs = OracleInputs(load_injection(mode, write(folder, docs(tokens, mentions, clusters))))
     count = max(tokens) + 1 if isinstance(tokens, dict) else 1
     staged = inputs.stage([analysed(p) for p in inputs.pages(count)], config, "doc")
     assert staged is not None
@@ -422,18 +430,72 @@ def test_every_injected_mention_is_redacted(tmp_path: Path) -> None:
     assert (detection.low_evidence, detection.propagation_rounds) == ((), 0)
 
 
+# ---------------------------------------------------------------------------------------- clusters
+PEOPLE = ("John Andrew Smith", "Mr Smith", "J. Smith", "Jane Smith")
+
+
+def people() -> list[dict[str, Any]]:
+    return [
+        mention("p-john", "PERSON_NAME", tokens=["t0.0", "t0.1", "t0.2"]),
+        mention("p-mr", "PERSON_NAME", tokens=["t1.1"]),
+        mention("p-j", "PERSON_NAME", tokens=["t2.0", "t2.1"]),
+        mention("p-jane", "PERSON_NAME", tokens=["t3.0", "t3.1"]),
+    ]
+
+
+def clusters_of(s: Staged) -> dict[str, str | None]:
+    """Each mention's cluster, by value (None for a mention that is not a person's)."""
+    persons = s.stage.detection.persons.mentions
+    return {m.value: p.cluster if (p := persons.get(m.mention_id)) else None for m in s.stage.detection.mentions}
+
+
+def test_injected_clusters_replace_tool_2_s(tmp_path: Path) -> None:
+    own = stage(tmp_path / "own", layout(*PEOPLE), people())
+    assert own.report.clusters is None
+    # Tool 2's own: two people named Smith, so it cannot tell whom "Mr Smith" and "J. Smith" are.
+    own_clusters = clusters_of(own)
+    assert own_clusters == {"John Andrew Smith": "P001", "Smith": None, "J. Smith": None, "Jane Smith": "P000"}
+    # "J. Smith" is Jane here; Jane is listed twice and takes the first cluster in id order.
+    injected = [("c2", ("p-j", "p-jane")), ("c1", ("p-john", "p-mr", "nobody")), ("c0", ("p-jane",))]
+    s = stage(tmp_path / "injected", layout(*PEOPLE), people(), injected)
+    assert clusters_of(s) == {"John Andrew Smith": "c1", "Smith": "c1", "J. Smith": "c2", "Jane Smith": "c0"}
+    assert s.stage.detection.persons.clusters == {
+        "c0": (s.internal("Jane Smith"),),
+        "c1": tuple(sorted((s.internal("John Andrew Smith"), s.internal("Smith")))),
+        "c2": (s.internal("J. Smith"),),
+    }
+    assert s.report.clusters == (("c0", ("p-jane",)), ("c1", ("p-john", "p-mr")), ("c2", ("p-j",)))
+    note = s.note("injected clusters")
+    assert "3 read (0 merged by id), 1 mentions in several clusters" in note
+    assert "1 members that are not mentions" in note
+
+
+def test_a_person_takes_the_cluster_of_the_names_it_absorbed(tmp_path: Path) -> None:
+    tokens = layout("Dr Peter Brown", "Brown & Co")
+    mentions = [
+        mention("full", "PERSON_NAME", tokens=["t0.1", "t0.2"]),
+        mention("surname", "PERSON_NAME", tokens=["t0.2"]),
+        mention("firm", "ORGANISATION", tokens=["t1.0", "t1.1", "t1.2"]),
+        mention("firm-name", "PERSON_NAME", tokens=["t1.0"]),
+    ]
+    s = stage(tmp_path, tokens, mentions, [("c-brown", ("surname",)), ("c-firm", ("firm-name", "firm"))])
+    assert clusters_of(s) == {"Peter Brown": "c-brown", "Brown & Co": None}  # an organisation has no cluster
+    assert "1 non-person members" in s.note("injected clusters")
+
+
 # ------------------------------------------------------------------------------------- the inputs
 def test_each_mode_re_plans_its_own_residual_hits(tmp_path: Path) -> None:
     hits = [ResidualHit(0, BBox(0, 0, 9, 9), "phone", source) for source in ("removed_value", "redetect", "region")]
-    files = docs(layout("Jane"), [mention("p", "PERSON_NAME", tokens=["t0.0"])])
+    files = docs(layout("Jane"), [mention("p", "PERSON_NAME", tokens=["t0.0"])], [("c", ("p",))])
     folder = write(tmp_path, files)
     replanned = {
         mode: [h.source for h in OracleInputs(load_injection(mode, folder)).replan_hits(hits)]
-        for mode in ("oracle_text", "oracle_mentions")
+        for mode in ("oracle_text", "oracle_mentions", "oracle_entities")
     }
     assert replanned == {
         "oracle_text": ["removed_value", "redetect", "region"],
         "oracle_mentions": ["removed_value"],
+        "oracle_entities": ["removed_value"],
     }
 
 
@@ -500,6 +562,42 @@ def test_the_report_shows_no_injected_text_outside_the_mentions(tmp_path: Path) 
         e.rule_id for m in s.stage.detection.mentions for e in m.evidence
     )
     assert CANARY.split()[0] not in shown
+
+
+def test_the_file_order_does_not_matter(tmp_path: Path) -> None:
+    tokens = layout("Smith & Partners Lawyers", "Mr John Smith of Penrith NSW 2750", "Medicare 2123 45670 1")
+    mentions = [
+        mention("org", "ORGANISATION", tokens=["t0.0", "t0.1", "t0.2", "t0.3"]),
+        mention("org-name", "PERSON_NAME", tokens=["t0.0"]),
+        mention("john", "PERSON_NAME", tokens=["t1.1", "t1.2"]),
+        mention("place", "LOCATION", tokens=["t1.4", "t1.5", "t1.6"], regions=polys(tokens, "t1.4")),
+        mention("medicare", "ID_GOVERNMENT", tokens=["t2.1", "t2.2", "t2.3"]),
+        mention("sig", "SIGNATURE", regions=[{"page": 0, "poly": poly(60, 400, 200, 440)}]),
+    ]
+    clusters = [("c-john", ("john", "sig")), ("c-firm", ("org-name",)), ("c-org", ("org",))]
+
+    def outcome(s: Staged) -> Any:
+        persons = s.stage.detection.persons
+        return (
+            s.stage.detection.mentions,
+            s.stage.decisions,
+            persons,
+            s.regions,
+            s.report,
+        )
+
+    first = outcome(stage(tmp_path / "a", tokens, mentions, clusters))
+    rng = random.Random(7)
+    for k in range(3):
+        shuffled_tokens, shuffled_mentions = list(tokens), [dict(m) for m in mentions]
+        rng.shuffle(shuffled_tokens)
+        rng.shuffle(shuffled_mentions)
+        for m in shuffled_mentions:
+            if "tokens" in m:
+                m["tokens"] = rng.sample(m["tokens"], len(m["tokens"]))
+        shuffled_clusters = [(c, tuple(rng.sample(list(ms), len(ms)))) for c, ms in rng.sample(clusters, len(clusters))]
+        again = stage(tmp_path / f"b{k}", shuffled_tokens, shuffled_mentions, shuffled_clusters)
+        assert outcome(again) == first
 
 
 def test_a_repeated_stage_replaces_the_report(tmp_path: Path) -> None:

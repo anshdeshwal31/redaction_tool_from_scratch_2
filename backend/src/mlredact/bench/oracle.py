@@ -7,7 +7,8 @@ production.
 * ``oracle_text``: the injected tokens replace OCR.  Region detection, detection, the policy and planning are tool
   2's own, over the injected text;
 * ``oracle_mentions``: the injected mentions also replace region detection, detection and the policy's keeps: every
-  one of them is redacted, with the profile's action, or a surrogate where the profile would keep the value.
+  one of them is redacted, with the profile's action, or a surrogate where the profile would keep the value;
+* ``oracle_entities``: the injected clusters also replace tool 2's clustering of person names.
 
 An injected mention becomes tool 2's mentions over whole tokens, and regions where its anchors are not text (a
 signature) or are not explained by its tokens (a logo around an organisation's name).  Where injected mentions share
@@ -48,7 +49,7 @@ from mlredact.detect.engine import DetectionResult, default_detectors
 from mlredact.detect.fusion import TYPE_PRIORITY
 from mlredact.pipeline.injection import InjectedPage, InjectedStage, InjectReport, ReportedMention, pt_box
 from mlredact.policy.engine import Decision, decide, decide_injected
-from mlredact.resolve.persons import resolve_persons
+from mlredact.resolve.persons import resolve_persons, with_clusters
 from mlredact.surrogate.assign import MentionSurrogate
 from mlredact.text.views import TextView, build_line_view, build_views
 from mlredact.verify.residual import ResidualHit
@@ -57,12 +58,13 @@ from mlredact.verify.residual import ResidualHit
 DETECTOR = ("bench.inject", "1")
 REGION_DETECTOR = "inject"
 # The oracle modes, each injecting one stage input more than the one before.
-MODES = ("oracle_text", "oracle_mentions")
+MODES = ("oracle_text", "oracle_mentions", "oracle_entities")
 # Residual hit sources (``ResidualHit.source``) verification may re-plan, per mode; every hit still counts for the
 # release.  From oracle_mentions on, what the rules find again was not injected, and stays as it was.
 REPLAN_SOURCES: dict[str, tuple[str, ...]] = {
     "oracle_text": ("removed_value", "redetect", "region"),
     "oracle_mentions": ("removed_value",),
+    "oracle_entities": ("removed_value",),
 }
 _SOURCE_NAMES = {"removed_value": "removed values", "redetect": "re-detection", "region": "regions"}
 # A region anchor that one of the mention's token boxes matches this closely (IoU), or covers this much of, is that
@@ -90,8 +92,8 @@ def check_region_actions(config: AppConfig) -> None:
 class OracleInputs:
     """The runner's hooks for one document's injected stage inputs (``StageInputs``).
 
-    ``stage`` keeps what the stage files report (the injected mentions as tool 2 redacted them, their aliases, count
-    notes); a repeated run replaces it."""
+    ``stage`` keeps what the stage files report (the injected mentions as tool 2 redacted them, their aliases and
+    clusters, count notes); a repeated run replaces it."""
 
     def __init__(self, injection: Injection) -> None:
         if injection.mode not in MODES:
@@ -145,7 +147,9 @@ class OracleInputs:
         notes = (_text_note(injection, self._beyond), *(staged.notes if staged is not None else ()))
         if staged is None:
             return InjectReport(injection.mode, injection.text_source, notes=notes)
-        return InjectReport(injection.mode, injection.text_source, staged.mentions, staged.aliases, notes=notes)
+        return InjectReport(
+            injection.mode, injection.text_source, staged.mentions, staged.aliases, staged.clusters, notes=notes
+        )
 
     def residual_note(self, manifest: Mapping[str, Any]) -> str:
         """The ``run_info`` note on verification's residual check (V4): its hits by source after the re-plans, and
@@ -169,6 +173,7 @@ class _Staged:
     stage: InjectedStage
     mentions: tuple[ReportedMention, ...]
     aliases: dict[str, tuple[str, ...]]
+    clusters: tuple[tuple[str, tuple[str, ...]], ...] | None
     notes: tuple[str, ...]
 
 
@@ -244,6 +249,14 @@ class _Stager:
         mentions = sorted(internal, key=lambda m: (m.token_ids[0], m.token_ids[-1], m.entity_type.value))
 
         persons = resolve_persons(mentions, self.view)
+        clusters = None
+        if self.injection.clusters is not None:
+            first = self._first_clusters({a.source.id: a for a in anchored})
+            persons = with_clusters(persons, _person_clusters(mentions, groups, first))
+            members: dict[str, list[str]] = defaultdict(list)
+            for mention_id, cluster in sorted(first.items()):
+                members[cluster].append(mention_id)
+            clusters = tuple((cluster, tuple(ids)) for cluster, ids in sorted(members.items()))
         decisions = decide_injected(mentions, config.policy)
         self.counts["kept_acted"] = sum(d.action is ActionKind.KEEP for d in decide(mentions, config.policy))
 
@@ -265,8 +278,8 @@ class _Stager:
         owners = {group[0].id for group in groups.values()}
         reported = [self._report(a, slots, owners) for a in anchored if a.tokens or a.regions]
         reported.sort(key=lambda r: (min(page for page, _box in r.boxes), r.mention_id))
-        notes = (self._mention_note(),)
-        return _Staged(stage, tuple(reported), dict(sorted(aliases.items())), notes)
+        notes = (self._mention_note(), *([self._cluster_note()] if clusters is not None else []))
+        return _Staged(stage, tuple(reported), dict(sorted(aliases.items())), clusters, notes)
 
     # ------------------------------------------------------------------------------------- anchors
     def _place(self, m: PredMention) -> _Placed:
@@ -395,6 +408,24 @@ class _Stager:
             value=" ".join(t.text for t in tokens),
         )
 
+    def _first_clusters(self, anchored: Mapping[str, _Anchored]) -> dict[str, str]:
+        """Each injected mention's cluster: the first, in id order, of the clusters that list it."""
+        first: dict[str, str] = {}
+        several: set[str] = set()
+        for cluster in sorted(self.injection.clusters or (), key=lambda c: c.id):
+            for mention_id in dict.fromkeys(cluster.mentions):
+                a = anchored.get(mention_id)
+                if a is None:
+                    self.counts["unknown_members"] += 1
+                    continue
+                if mention_id in first:
+                    several.add(mention_id)
+                    continue
+                first[mention_id] = cluster.id
+                self.counts["non_person_members"] += a.family.default is not EntityType.PERSON
+        self.counts["in_several"] = len(several)
+        return first
+
     def _report(self, a: _Anchored, slots: Mapping[int, tuple[str, int]], owners: AbstractSet[str]) -> ReportedMention:
         tokens = [self.view.tokens[i] for i in a.tokens]
         return ReportedMention(
@@ -420,6 +451,14 @@ class _Stager:
             f"{c['location_split']} locations split into locality and postcode, {c['kept_acted']} of a kept type "
             f"redacted, {c['fallback']} labels taken as other_id, {c['extra_regions']} anchors not explained by "
             "their tokens"
+        )
+
+    def _cluster_note(self) -> str:
+        c, n = self.counts, self.injection.counts
+        return (
+            f"injected clusters: {n['clusters']} read ({n['clusters_merged']} merged by id), {c['in_several']} "
+            f"mentions in several clusters, {c['non_person_members']} non-person members, {c['unknown_members']} "
+            "members that are not mentions"
         )
 
 
@@ -480,6 +519,24 @@ def _runs(indices: Sequence[int], view: TextView) -> list[list[int]]:
         else:
             runs.append([i])
     return runs
+
+
+def _person_clusters(
+    mentions: Sequence[Mention], groups: Mapping[str, Sequence[_Text]], first: Mapping[str, str]
+) -> dict[str, str]:
+    """Each person mention's injected cluster: its owner's, else the first, in id order, of the clusters of the
+    other injected persons it shares tokens with."""
+    out: dict[str, str] = {}
+    for m in mentions:
+        if m.entity_type is not EntityType.PERSON:
+            continue
+        owner, *others = groups[m.mention_id]
+        cluster = first.get(owner.id)
+        if cluster is None:
+            cluster = min((first[t.id] for t in others if t.kind is EntityType.PERSON and t.id in first), default=None)
+        if cluster is not None:
+            out[m.mention_id] = cluster
+    return out
 
 
 def _with_regions(pages: Sequence[PageAnalysis], regions: Iterable[Region]) -> tuple[PageAnalysis, ...]:
