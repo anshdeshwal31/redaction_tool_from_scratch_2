@@ -198,11 +198,12 @@ used: they are in display points.
   them (it tells text from other ink by its height down the page); planning and the stage files keep each word's
   own box.
 - From `oracle_mentions` on every injected mention is acted on: where the profile would keep its type (dates
-  and places under `client`) it gets a surrogate.  A mention becomes tool 2's mentions over whole words; a
-  signature, handwriting or an image, and an anchor its words do not explain (a logo around a name), become
-  regions, which the profile's region actions replace with a stand-in or remove.  A profile that keeps a kind
-  of region injected mentions become (signature, handwriting, photo, face, logo, barcode, stamp, illegible) is
-  refused (exit 1, `E_CONFIG_INVALID`).  NER is switched off (it would load for nothing).
+  and places under `client`) it gets a surrogate.  A mention becomes tool 2's mentions over whole words (an
+  anchor inside a word, such as a few characters' box, is that word); a signature, handwriting or an image, and
+  an anchor its words do not explain (a logo around a name), become regions, which the profile's region actions
+  replace with a stand-in or remove.  A profile that keeps a kind of region injected mentions become (signature,
+  handwriting, photo, face, logo, barcode, stamp, illegible) is refused (exit 1, `E_CONFIG_INVALID`).  NER is
+  switched off (it would load for nothing).
 - Verification counts every residual hit against the release, but re-plans fewer of them: all of them in
   `oracle_text` (as in `e2e`), only removed values that are still readable in `oracle_mentions` and
   `oracle_entities` (anything else it finds was not injected), none in `oracle_regions` (the plan is applied

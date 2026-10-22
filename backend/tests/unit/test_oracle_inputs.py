@@ -258,6 +258,29 @@ def test_mentions_that_land_nowhere_are_counted(tmp_path: Path) -> None:
     assert "(3 token ids not found, 1 anchors beyond the last page)" in note
 
 
+def test_a_box_inside_a_word_is_the_word(tmp_path: Path) -> None:
+    """A mention anchored only by the box of some of a word's characters (part of an e-mail address) takes the whole
+    word, as its token id or a span would give it, and no removal region."""
+    tokens = layout("Email john.smith78@example.org today")
+    email = tokens[1]["poly"]
+    characters = poly(email[0][0] + 27.5, email[0][1], email[0][0] + 55.0, email[2][1])  # "smith", a fifth of it
+    person = mention("person", "PERSON_NAME", regions=[{"page": 0, "poly": characters}])
+    s = stage(tmp_path / "alone", tokens, [person])
+    assert s.mentions == [("person", "john.smith78@example.org")] and s.regions == ()
+    assert s.reported["person"].token_ids == ("p0000.l0000.w001",)
+    note = s.note("injected mentions")
+    assert "0 placed by token ids, 0 by span, 1 by region anchors, 0 not placed" in note
+    assert "0 anchors not explained by their tokens" in note
+    # With the address injected too, the name is inside it.
+    both = stage(tmp_path / "both", tokens, [person, mention("email", "EMAIL", tokens=["t0.1"])])
+    assert both.mentions == [("email", "john.smith78@example.org")] and both.regions == ()
+    assert both.report.aliases[both.internal("john.smith78@example.org")] == ("email", "person")
+    # Its plan region, the characters' box, has the word's fake drawn over the whole word.
+    p = planned(tmp_path / "plan", tokens, [person], [plan_region("person-0", characters, "person")])
+    (op,) = p.page_ops
+    assert (op.kind, op.ref_id, op.box) == (ActionKind.SURROGATE, p.staged.internal(p.words[1].text), p.words[1].bbox)
+
+
 # ----------------------------------------------------------------------------------- shared tokens
 def test_a_name_inside_an_organisation_is_redacted_with_it(tmp_path: Path) -> None:
     tokens = layout("Smith & Partners Lawyers")

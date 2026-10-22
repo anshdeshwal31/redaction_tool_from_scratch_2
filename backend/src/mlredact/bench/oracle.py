@@ -74,7 +74,8 @@ _SOURCE_NAMES = {"removed_value": "removed values", "redetect": "re-detection", 
 # A region anchor that one of the mention's token boxes matches this closely (IoU), or covers this much of, is that
 # token: a word box, or a character box inside the word.  Any other anchor of a text mention becomes a region.
 _EXPLAINED = 0.9
-# A mention that names neither tokens nor a span has the tokens at least this much inside its region anchors.
+# A mention that names neither tokens nor a span has the tokens at least this much inside its region anchors, and the
+# token that is an anchor none of those is (``_EXPLAINED``: a character box inside a word is the word).
 _PROJECTED = 0.5
 # Labels of a fixed vocabulary (the benchmark's types, tool 2's own labels): only these name a rule in the manifest.
 # Any other label is injected text.
@@ -336,7 +337,8 @@ class _Stager:
         self, m: PredMention, family: Family, anchors: Sequence[tuple[int, BBox]]
     ) -> tuple[tuple[int, ...], str]:
         """The mention's tokens and how they were found: by its token ids, else by its span, else (a text label) as
-        the tokens mostly inside its region anchors."""
+        the tokens mostly inside its region anchors, and the token that holds an anchor none of those is (part of a
+        word: the box of some of its characters)."""
         if m.tokens:
             ids = [self.injection.token_ids.get(t) for t in dict.fromkeys(m.tokens)]
             found = {self.index[i] for i in ids if i is not None and i in self.index}
@@ -352,11 +354,15 @@ class _Stager:
             boxes: dict[int, list[BBox]] = defaultdict(list)
             for page, box in anchors:
                 boxes[page].append(box)
-            projected = tuple(
-                i for i, t in enumerate(self.view.tokens) if _covered(t.bbox, boxes.get(t.page, ())) >= _PROJECTED
-            )
+            tokens = self.view.tokens
+            projected = {i for i, t in enumerate(tokens) if _covered(t.bbox, boxes.get(t.page, ())) >= _PROJECTED}
+            for page, box in anchors:
+                if not self._explained(page, box, sorted(projected)):
+                    projected.update(
+                        i for i, t in enumerate(tokens) if t.page == page and box.overlap_fraction(t.bbox) >= _EXPLAINED
+                    )
             if projected:
-                return projected, "regions"
+                return tuple(sorted(projected)), "regions"
         return (), ""
 
     def _regions(
