@@ -2,6 +2,9 @@
 
 Detection, fusion, propagation, person resolution, policy and surrogate assignment run in fresh
 interpreters with different ``PYTHONHASHSEED`` values; their canonical output must be identical.
+So must every stage the benchmark's injected stage inputs replace (``mlredact bench`` oracle modes):
+reading the injected files, detection and policy from the injected mentions, clusters, surrogates,
+the injected plan's operations, the report and the stage files.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+SEEDS = ("0", "1", "2", "12345", "random")
 
 SCRIPT = r"""
 import hashlib
@@ -52,18 +56,52 @@ doc = {
 print(hashlib.sha256(canonical_json(doc)).hexdigest())
 """
 
+# The busy document of tests/inject_support.py in each oracle mode that injects mentions, every stage's outcome in the
+# order the stage made it (pages built from the injected tokens, nothing rendered).
+INJECTED_SCRIPT = r"""
+import hashlib
+import tempfile
+from pathlib import Path
+from mlredact.config.loader import load_config
+from mlredact.core.canonical import canonical_json
+from inject_support import busy_docs, oracle_outcome
 
-def _run(seed: str) -> str:
+cfg = load_config("client")
+with tempfile.TemporaryDirectory() as tmp:
+    outcomes = [
+        oracle_outcome(Path(tmp, mode), mode, busy_docs(), cfg)
+        for mode in ("oracle_mentions", "oracle_entities", "oracle_regions")
+    ]
+print(hashlib.sha256(canonical_json(outcomes)).hexdigest())
+"""
+
+
+def _run(seed: str) -> tuple[str, ...]:
+    """Each script's digest under ``PYTHONHASHSEED=seed``, in one fresh interpreter (starting one takes longest)."""
     env = dict(os.environ)
     env["PYTHONHASHSEED"] = seed
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "tests"), str(ROOT / "tools"), env.get("PYTHONPATH", "")])
     out = subprocess.run(
-        [sys.executable, "-c", SCRIPT], env=env, capture_output=True, text=True, check=True, cwd=ROOT, timeout=300
+        [sys.executable, "-c", SCRIPT + INJECTED_SCRIPT],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+        timeout=300,
     )
-    return out.stdout.strip()
+    return tuple(out.stdout.split())
 
 
-@pytest.mark.parametrize("seeds", [("0", "1", "2", "12345", "random")])
-def test_document_stages_are_independent_of_hash_seed(seeds: tuple[str, ...]) -> None:
-    digests = {_run(s) for s in seeds}
-    assert len(digests) == 1, digests
+@pytest.fixture(scope="module")
+def digests() -> list[tuple[str, ...]]:
+    """Per seed: the document stages' digest, then the injected stages'."""
+    return [_run(s) for s in SEEDS]
+
+
+def test_document_stages_are_independent_of_hash_seed(digests: list[tuple[str, ...]]) -> None:
+    assert len({d[0] for d in digests}) == 1, digests
+
+
+def test_injected_stages_are_independent_of_hash_seed(digests: list[tuple[str, ...]]) -> None:
+    assert all(len(d) == 2 for d in digests) and len({d[1] for d in digests}) == 1, digests
