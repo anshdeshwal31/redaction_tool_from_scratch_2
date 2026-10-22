@@ -16,6 +16,7 @@ import copy
 import functools
 import hashlib
 import json
+import random
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
@@ -444,6 +445,31 @@ def busy_docs() -> Docs:
         },
         "plan.json": {"schema": "rb.plan/0.1", "frame": "display_pt", "regions": plan},
     }
+
+
+def shuffled(docs: Docs, rng: random.Random) -> Docs:
+    """A copy with every list whose order means nothing shuffled: the pages and each page's tokens (their reading order
+    is set), the mentions with their token ids and region anchors, the clusters with their members, and the plan
+    regions with the mentions they name.  (A span counts in the text's file order: no mention may have one.)"""
+    out = copy.deepcopy(docs)
+    text = out["text.json"]
+    rng.shuffle(text["pages"])
+    for page in text["pages"]:
+        rng.shuffle(page["tokens"])
+    for m in out["mentions.json"]["mentions"]:
+        if m.get("span") is not None:
+            raise ValueError("a span counts in the text's file order")
+        for key in ("tokens", "regions"):
+            if m.get(key):
+                rng.shuffle(m[key])
+    rng.shuffle(out["mentions.json"]["mentions"])
+    for c in out["entities.json"]["clusters"]:
+        rng.shuffle(c["mentions"])
+    rng.shuffle(out["entities.json"]["clusters"])
+    for r in out["plan.json"]["regions"]:
+        rng.shuffle(r["mentions"])
+    rng.shuffle(out["plan.json"]["regions"])
+    return out
 
 
 def oracle_outcome(folder: Path, mode: str, docs: Docs, config: AppConfig) -> dict[str, Any]:

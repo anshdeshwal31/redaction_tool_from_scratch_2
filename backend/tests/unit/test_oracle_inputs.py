@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from synthdocs.generator import medicare_number, provider_number
 
+from inject_support import busy_docs, oracle_outcome, shuffled
 from mlredact.bench.artifacts import display_poly, stage_files
 from mlredact.bench.inject import load_injection
 from mlredact.bench.oracle import OracleInputs, check_region_actions
@@ -1158,3 +1159,32 @@ def test_the_plan_does_not_depend_on_the_file_order(tmp_path: Path) -> None:
             rng.sample(shuffled, len(shuffled)),
         )
         assert (again.ops, again.report.plan, again.note) == (first.ops, first.report.plan, first.note)
+
+
+# -------------------------------------------------------------------------------------------- every stage
+# What the busy document of tests/inject_support.py meets: every case the stages handle, as the notes count them.
+BUSY_CASES = (
+    "injected text: 58 tokens (1 empty, 1 with a repeated id",
+    "18 placed by token ids, 0 by span, 2 by region anchors, 1 not placed",
+    "2 sharing tokens another one owns",
+    "2 locations split into locality and postcode, 4 of a kept type redacted, 1 labels taken as other_id, 1 anchors "
+    "not explained by their tokens",
+    "injected clusters: 5 read (1 merged by id), 1 mentions in several clusters, 2 non-person members, 1 members",
+    "47 applied by 25 operations (13 joining regions of a mention on a line, 2 the same as another), 4 applied as "
+    "non-text regions, 2 over several mentions or other words, 2 over no mention's word removed as illegible, 1 beyond "
+    "the last page, 1 replacement texts not used",
+)
+
+
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities", "oracle_regions"])
+def test_no_stage_depends_on_the_order_of_the_injected_files(tmp_path: Path, mode: str) -> None:
+    """Every list of the injected files whose order means nothing shuffled (tokens with their reading order set): the
+    mentions, decisions, clusters, regions, surrogates, operations, report and stage files stay the same."""
+    first = oracle_outcome(tmp_path / "a", mode, busy_docs(), CONFIG)
+    if mode == "oracle_regions":
+        notes = " ".join(first["report"]["notes"])
+        assert [case for case in BUSY_CASES if case not in notes] == []
+    rng = random.Random(29)
+    for k in range(3):
+        again = oracle_outcome(tmp_path / f"b{k}", mode, shuffled(busy_docs(), rng), CONFIG)
+        assert [part for part, made in first.items() if again[part] != made] == [], k
