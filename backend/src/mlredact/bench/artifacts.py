@@ -102,7 +102,8 @@ def _page_sources(page: PageAnalysis, text_layer: bool) -> set[str]:
 
 def text_artifact(trace: JobTrace, *, text_layer: bool) -> dict[str, Any]:
     """``rb.text/0.1``: every token in reading order.  ``text_layer``: the configuration fuses the PDF's
-    text layer (``ocr.embedded_text``)."""
+    text layer (``ocr.embedded_text``).  Injected text (the oracle modes) keeps the source it was injected
+    with."""
     pages = []
     sources: set[str] = set()
     for page in trace.pages:
@@ -123,6 +124,8 @@ def text_artifact(trace: JobTrace, *, text_layer: bool) -> dict[str, Any]:
         pages.append({"index": geometry.index, "tokens": tokens})
         sources |= _page_sources(page, text_layer)
     source = "hybrid" if len(sources) > 1 else next(iter(sources), "ocr")
+    if trace.injected is not None:
+        source = trace.injected.text_source
     return {"schema": "rb.text/0.1", "frame": FRAME, "source": source, "pages": pages}
 
 
@@ -228,7 +231,13 @@ def pseudonyms_artifact(trace: JobTrace, mention_ids: AbstractSet[str]) -> dict[
 
 def stage_files(trace: JobTrace, *, text_layer: bool) -> dict[str, dict[str, Any]]:
     """Every stage file by file name.  Entities, plan and pseudonyms only name mentions that
-    ``mentions.json`` lists."""
+    ``mentions.json`` lists.  Where the mentions were injected (oracle modes from ``oracle_mentions`` on),
+    they are reported under their injected ids (``mlredact.bench.oracle_files``)."""
+    injected = trace.injected
+    if injected is not None and injected.mentions is not None:
+        from mlredact.bench import oracle_files  # it builds on this module's writers
+
+        return oracle_files.stage_files(trace, injected, text_artifact(trace, text_layer=text_layer))
     mentions = mentions_artifact(trace)
     ids = frozenset(m["id"] for m in mentions["mentions"])
     return {

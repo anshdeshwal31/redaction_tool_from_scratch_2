@@ -1,6 +1,6 @@
 """Injected mentions and clusters as tool 2's stages (``mlredact.bench.oracle``, the benchmark's oracle modes): where
 the mentions land on tool 2's tokens, what they become (mentions, regions), how shared tokens are redacted, the types,
-the clusters and the decisions.
+the clusters, the decisions, and what the stage files are told.
 
 Pages are built from the injected tokens on a hand-made A4 page at 150 dpi, without rendering anything.  The files are
 written in the benchmark's own format (no benchmark import).  All text is fictitious.
@@ -17,12 +17,13 @@ from typing import Any
 import pytest
 from synthdocs.generator import medicare_number, provider_number
 
+from mlredact.bench.artifacts import display_poly, stage_files
 from mlredact.bench.inject import load_injection
 from mlredact.bench.oracle import OracleInputs, check_region_actions
 from mlredact.config.loader import load_config
 from mlredact.core.errors import EnvironmentErrorMl, ReasonCode
 from mlredact.core.geometry import BBox
-from mlredact.core.model import PageAnalysis, PageGeometry, Region
+from mlredact.core.model import PageAnalysis, PageGeometry, Region, RenderOp
 from mlredact.core.types import ActionKind, EntityType, PageKind, RegionKind
 from mlredact.pipeline.injection import (
     InjectedPage,
@@ -32,6 +33,8 @@ from mlredact.pipeline.injection import (
     injected_lines,
     pt_box,
 )
+from mlredact.pipeline.runner import JobTrace
+from mlredact.surrogate.assign import MentionSurrogate
 from mlredact.verify.residual import ResidualHit
 
 E = EntityType
@@ -607,3 +610,99 @@ def test_a_repeated_stage_replaces_the_report(tmp_path: Path) -> None:
     again = s.inputs.stage([blank], CONFIG, "doc")
     assert again is not None and again.detection.mentions == ()
     assert s.inputs.report().mentions == ()
+
+
+# ------------------------------------------------------------------------------------------- stage files
+def files_of(s: Staged, ops: list[RenderOp], surrogates: dict[str, tuple[str, ...]]) -> dict[str, Any]:
+    """The stage files of a job that drew ``ops`` with ``surrogates``."""
+    trace = JobTrace(
+        pdf=b"%PDF-1.7 stub",
+        pages=s.stage.pages,
+        decisions=s.stage.decisions,
+        persons=s.stage.detection.persons,
+        surrogates={k: MentionSurrogate(k, v) for k, v in surrogates.items()},
+        ops={0: tuple(ops)},
+        erased={},
+        regions=(),
+        injected=s.report,
+    )
+    return stage_files(trace, text_layer=False)
+
+
+def test_the_stage_files_name_the_injected_mentions(tmp_path: Path) -> None:
+    tokens = layout("Smith & Partners Lawyers")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("org", "ORGANISATION", tokens=["t0.0", "t0.1", "t0.2", "t0.3"]),
+            mention("person", "PERSON_NAME", tokens=["t0.0"]),
+            mention("sig", "SIGNATURE", regions=[{"page": 0, "poly": poly(60, 400, 200, 440)}], conf=0.75),
+        ],
+    )
+    org, (signature,) = s.internal("Smith & Partners Lawyers"), s.regions
+    line = s.stage.pages[0].lines[0].bbox
+    drawn = RenderOp(0, ActionKind.SURROGATE, line, "organisation", org, text="Lakeview & Partners Lawyers")
+    ops = [
+        drawn,
+        RenderOp(0, ActionKind.SYNTHESISE, signature.bbox, "signature", signature.region_id),
+        RenderOp(0, ActionKind.BLACKOUT, BBox(900, 900, 950, 950), "person", "R-replanned"),
+    ]
+    fake = {org: ("Lakeview", "&", "Partners", "Lawyers")}
+    files = files_of(s, ops, fake)
+    assert files["text.json"]["source"] == "text_layer"
+    mentions = files["mentions.json"]["mentions"]
+    assert [(m["id"], m["label"], m.get("text"), m.get("conf")) for m in mentions] == [
+        ("org", "organisation", "Smith & Partners Lawyers", None),
+        ("person", "person", "Smith", None),
+        ("sig", "signature", None, 0.75),  # a confidence only where one was injected
+    ]
+    smith = s.stage.pages[0].lines[0].tokens[0]
+    assert (mentions[1]["tokens"], mentions[1]["regions"]) == (
+        [smith.token_id],
+        [{"page": 0, "poly": display_poly(smith.bbox, GEOM)}],
+    )
+    assert mentions[2]["regions"] == [{"page": 0, "poly": display_poly(signature.bbox, GEOM)}]
+    assert "tokens" not in mentions[2]
+    assert {r["id"]: r["mentions"] for r in files["plan.json"]["regions"]} == {
+        f"{org}.0": ["org", "person"],  # the owner first
+        f"{signature.region_id}.0": ["sig"],
+        "R-replanned.0": [],
+    }
+    # The name inside the organisation shows the organisation's fake: it has none of its own.
+    assert files["pseudonyms.json"]["mentions"] == [{"mention": "org", "replacement": "Lakeview & Partners Lawyers"}]
+    assert files["pseudonyms.json"]["entries"] == [
+        {"cluster": None, "original": "Smith & Partners Lawyers", "replacement": "Lakeview & Partners Lawyers"}
+    ]
+    # Blacked out instead (on a sideways line, say), the fake was never drawn.
+    blacked = files_of(s, [replace(drawn, kind=ActionKind.BLACKOUT, text=None)], fake)
+    assert blacked["pseudonyms.json"]["mentions"] == []
+
+
+def test_tool_2_s_clusters_name_each_injected_person_once(tmp_path: Path) -> None:
+    # The injected "Jane ... Smith" is two pieces, which tool 2 clusters with Jane Brown and with Tom Smith.
+    tokens = layout("Jane and Smith", "Jane Brown", "Tom Smith")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("pieces", "PERSON_NAME", tokens=["t0.0", "t0.2"]),
+            mention("brown", "PERSON_NAME", tokens=["t1.0", "t1.1"]),
+            mention("tom", "PERSON_NAME", tokens=["t2.0", "t2.1"]),
+        ],
+    )
+    assert files_of(s, [], {})["entities.json"]["clusters"] == [
+        {"id": "P000", "mentions": ["brown", "pieces"]},
+        {"id": "P001", "mentions": ["tom"]},
+    ]
+    jane, smith = s.internal("Jane"), s.internal("Smith")
+    boxes = [t.bbox for t in s.stage.pages[0].lines[0].tokens]
+    ops = [
+        RenderOp(0, ActionKind.SURROGATE, boxes[0], "person", jane, text="Mei"),
+        RenderOp(0, ActionKind.SURROGATE, boxes[2], "person", smith, text="Rossi"),
+    ]
+    fakes = {jane: ("Mei",), smith: ("Rossi",)}
+    drawn = files_of(s, ops, fakes)["pseudonyms.json"]["mentions"]
+    assert drawn == [{"mention": "pieces", "replacement": "Mei Rossi"}]
+    # A piece blacked out: the mention's fake was not drawn whole.
+    assert files_of(s, ops[:1], fakes)["pseudonyms.json"]["mentions"] == []
