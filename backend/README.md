@@ -168,7 +168,7 @@ as `e2e` and `oracle_text` write them; the other oracle modes report the injecte
 | `text.json` | every token: text, box, confidence, line, reading order |
 | `mentions.json` | what the tool decided to replace or remove: text mentions (with tokens and token boxes) and PII regions (signature, face, photo, handwriting, barcode, logo, stamp, illegible).  Values the policy keeps (dates, places under `client`) are left out (from `oracle_mentions` on: every injected mention) |
 | `entities.json` | one cluster per resolved person |
-| `plan.json` | one region per final render operation, with the box it actually erased (`replace` or `remove`; faint-ink suppression is not listed) |
+| `plan.json` | one region per final render operation, with the box it actually erased (`replace` or `remove`; faint-ink suppression is not listed; in `oracle_regions`: the injected plan regions) |
 | `pseudonyms.json` | every replacement text drawn, per mention and as original -> replacement (a surrogate whose mention was blacked out instead, e.g. on a sideways line, is not listed) |
 | `manifest.json`, `run.json`, `quarantine.json` | as for `run` |
 
@@ -188,6 +188,7 @@ before it:
 | `oracle_text` | `text.json` | OCR: the injected tokens, in their reading order and lines, are the text | region detection (signatures, stamps, barcodes, ...) around that text, detection, the policy (with its keeps), name clustering, surrogates, planning |
 | `oracle_mentions` | + `mentions.json` | region detection, detection and the policy: exactly the injected mentions are redacted | name parsing and clustering, surrogates, planning |
 | `oracle_entities` | + `entities.json` | person clustering: the injected clusters decide the given-name gender vote and how initials are filled; surname and given-name fakes stay keyed by the name as written (as in `e2e`) | name parsing, surrogates, planning |
+| `oracle_regions` | + `plan.json` | planning: exactly the injected regions are applied, without padding | the decisions and surrogates (what is drawn in each region), typesetting, stand-ins |
 
 Rendering, the PDF build and checks V1-V6 run in every mode and give the verdict as in `e2e`.  In every oracle
 mode run_info.json records `mode`, `injected` and `ner_enabled`.  A `dpi` given with the injected files is not
@@ -201,12 +202,15 @@ used: they are in display points.
   refused (exit 1, `E_CONFIG_INVALID`).  NER is switched off (it would load for nothing).
 - Verification counts every residual hit against the release, but re-plans fewer of them: all of them in
   `oracle_text` (as in `e2e`), only removed values that are still readable in `oracle_mentions` and
-  `oracle_entities` (anything else it finds was not injected).
+  `oracle_entities` (anything else it finds was not injected), none in `oracle_regions` (the plan is applied
+  as given).
 - Ids: `text.json` lists tool 2's own token ids in every mode (the manifest's schema requires them).  From
   `oracle_mentions` on, `mentions.json`, `entities.json`, `plan.json` and `pseudonyms.json` name the injected
   mention ids (a mention inside another keeps its own entry); from `oracle_entities` on the clusters are the
-  injected ones, under their ids.  The notes in run_info.json count what was injected and what could not be
-  used, never text.
+  injected ones, under their ids; in `oracle_regions` `plan.json` repeats the injected plan regions (ids and
+  polygons) with what was done to each (manifest.json gives each injected region the profile's action on its
+  kind, whether or not the plan applies it).  The notes in run_info.json count what was injected and what could
+  not be used, never text.
 
 Exit codes: `0` output.pdf written (released or not), `1` no output: nothing was built, the injected inputs
 could not be read (`E_CONFIG_INVALID`), or the files could not be written (run_info.json still says why),

@@ -44,9 +44,9 @@ app.add_typer(sensitive_app, name="sensitive")
 # pass for a release.
 HELD_BACK_PDF = "held-back.NOT-RELEASED.pdf"
 # Benchmark modes ``bench`` runs: end to end, and the oracle modes that take injected stage inputs.
-BENCH_MODES = ("e2e", "oracle_text", "oracle_mentions", "oracle_entities")
+BENCH_MODES = ("e2e", "oracle_text", "oracle_mentions", "oracle_entities", "oracle_regions")
 # Oracle modes whose mentions are injected: detection does not run, so neither does NER.
-_INJECTED_MENTIONS = ("oracle_mentions", "oracle_entities")
+_INJECTED_MENTIONS = ("oracle_mentions", "oracle_entities", "oracle_regions")
 
 
 def _fail(exc: BaseException) -> None:
@@ -183,7 +183,8 @@ _BENCH_HELP = (
     "records the verdict.\n\n"
     "Modes: e2e runs every stage.  The oracle modes take stage inputs from --inject-dir instead of running tool "
     "2's own stages: oracle_text the text (text.json); oracle_mentions also the mentions to redact, all of them "
-    "(mentions.json); oracle_entities also their clusters (entities.json).\n\n"
+    "(mentions.json); oracle_entities also their clusters (entities.json); oracle_regions also the regions to "
+    "apply, exactly those (plan.json).\n\n"
     "Exit codes: 0 output.pdf written (released or not), 1 no output (nothing was built, the injected inputs "
     "could not be read, or the files could not be written), 2 usage error (also an oracle mode without a folder "
     "of injected inputs), 3 unsupported mode."
@@ -202,7 +203,7 @@ def bench(
         typer.Option(
             "--inject-dir",
             help="Folder of injected stage inputs, display_pt (oracle modes: text.json, mentions.json, entities.json, "
-            "as the mode injects them); empty for e2e",
+            "plan.json, as the mode injects them); empty for e2e",
         ),
     ] = "",
     seed: Annotated[int | None, typer.Option(help="Benchmark seed (recorded only: runs are deterministic)")] = None,

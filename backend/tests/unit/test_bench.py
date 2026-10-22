@@ -554,6 +554,7 @@ def _inject_dir(folder: Path, **replaced: Any) -> Path:
         ("oracle_text", ["text"]),
         ("oracle_mentions", ["mentions", "text"]),
         ("oracle_entities", ["entities", "mentions", "text"]),
+        ("oracle_regions", ["entities", "mentions", "regions", "text"]),
     ],
 )
 def test_oracle_modes_run_with_the_injected_inputs(
@@ -599,6 +600,8 @@ def test_an_oracle_mode_needs_a_folder_of_injected_inputs(
         ("oracle_text", {"text": {"schema": "rb.text/0.1", "source": CANARY, "pages": []}}),
         ("oracle_mentions", {"mentions": None}),
         ("oracle_entities", {"entities": b"{not json " + CANARY.encode()}),
+        ("oracle_regions", {"plan": {"schema": "rb.plan/0.1", "regions": [{"id": "r", "page": 0, CANARY: 1}]}}),
+        ("oracle_regions", {"plan": None}),
     ],
 )
 def test_unreadable_injected_inputs_leave_only_run_info(
@@ -620,7 +623,17 @@ def test_unsupported_modes_exit_3(tmp_path: Path, stub: type[_StubRedactor], mod
     assert not out.exists() and stub.calls == []
 
 
-@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities"])
+def test_the_help_names_every_mode_and_what_it_injects(stub: type[_StubRedactor]) -> None:
+    res = CliRunner().invoke(app, ["bench", "--help"], terminal_width=200)
+    assert res.exit_code == 0
+    text = " ".join(res.output.split())
+    for mode in ("e2e", "oracle_text", "oracle_mentions", "oracle_entities", "oracle_regions"):
+        assert mode in text
+    assert all(name in text for name in ("text.json", "mentions.json", "entities.json", "plan.json"))
+    assert "3 unsupported mode" in text
+
+
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities", "oracle_regions"])
 def test_a_profile_that_keeps_injected_regions_is_refused(tmp_path: Path, stub: type[_StubRedactor], mode: str) -> None:
     keeps = tmp_path / "keeps.yaml"
     keeps.write_text("policy:\n  region_actions:\n    signature: keep\n", "utf-8")
