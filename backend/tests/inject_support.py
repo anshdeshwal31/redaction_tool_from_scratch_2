@@ -223,6 +223,16 @@ def without_regions(docs: Docs, ids: Collection[str]) -> Docs:
     return out
 
 
+def words_poly(docs: Docs, line: int, *texts: str) -> list[list[float]]:
+    """The box around the words ``texts`` of the letter's text-layer line ``line`` (display points)."""
+    tokens = [t for t in docs["text.json"]["pages"][0]["tokens"] if t["line"] == f"l{line}" and t["text"] in texts]
+    if len(tokens) != len(texts):
+        raise ValueError("the words are not on the line")
+    xs = [x for t in tokens for x, _y in t["poly"]]
+    ys = [y for t in tokens for _x, y in t["poly"]]
+    return poly((min(xs), min(ys), max(xs), max(ys)))
+
+
 def add_line(docs: Docs, line_id: str, text: str, origin: tuple[float, float]) -> list[str]:
     """Inject a line of words where the page is blank (``origin``: its top-left corner in display points), 11 pt
     high; the words' ids, in order."""
