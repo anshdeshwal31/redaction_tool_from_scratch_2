@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -43,6 +44,16 @@ def _fail(exc: BaseException) -> None:
     info = sanitize(exc)
     typer.echo(f"error: {info.code.value} ({info.error_type} at {info.where})", err=True)
     raise typer.Exit(1)
+
+
+def _quarantine_record(manifest: Mapping[str, Any]) -> bytes:
+    return canonical_json_pretty(
+        {
+            "status": "quarantined",
+            "reasons": manifest["reasons"],
+            "input_sha256": manifest["job"]["input_sha256"],
+        }
+    )
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -133,16 +144,7 @@ def run(
         _write(out / "redacted.pdf", result.pdf)
         typer.echo(f"released: {out / 'redacted.pdf'}")
         raise typer.Exit(0)
-    _write(
-        out / "quarantine.json",
-        canonical_json_pretty(
-            {
-                "status": "quarantined",
-                "reasons": result.manifest["reasons"],
-                "input_sha256": result.manifest["job"]["input_sha256"],
-            }
-        ),
-    )
+    _write(out / "quarantine.json", _quarantine_record(result.manifest))
     typer.echo(f"quarantined: {', '.join(result.manifest['reasons']) or 'verification failed'}", err=True)
     if result.held_back_pdf is not None:
         _write(out / HELD_BACK_PDF, result.held_back_pdf)
