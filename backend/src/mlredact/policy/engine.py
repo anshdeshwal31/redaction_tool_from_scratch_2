@@ -51,6 +51,17 @@ def _settle(d: Decision) -> Decision:
     return d  # anything else (e.g. GENERALISE of a non-age) is rendered fail-safe, never kept
 
 
+def decide_injected(mentions: Sequence[Mention], policy: PolicyConfig) -> list[Decision]:
+    """Decisions for mentions the benchmark injected (``mlredact bench`` oracle modes only), which it asks to redact,
+    every one: the profile's action, and a surrogate wherever that action would keep the value (a kept type, or a
+    transformation that would not change the text).  No professional is kept and no kept place is split off."""
+    out = []
+    for m in mentions:
+        d = _settle(Decision(m, policy.entity_actions[m.entity_type]))
+        out.append(Decision(m, ActionKind.SURROGATE) if d.action is ActionKind.KEEP else d)
+    return out
+
+
 def split_kept_places(mentions: Sequence[Mention], tokens: Mapping[str, Token], policy: PolicyConfig) -> list[Mention]:
     """Street addresses whose place part the profile keeps ("12 Smith St, Parramatta NSW 2150" when
     localities are kept): the place part (suburb, state, postcode) becomes its own mention, so only

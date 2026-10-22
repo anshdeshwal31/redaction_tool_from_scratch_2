@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from mlredact.config.loader import load_config
-from mlredact.core.model import Evidence, Mention
+from mlredact.core.model import Evidence, Mention, token_id
 from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, RegionKind
-from mlredact.policy.engine import split_kept_places
+from mlredact.policy.engine import decide, decide_injected, split_kept_places
 from support import pages_from_lines
 
 CLIENT = load_config("client")
@@ -126,3 +126,45 @@ class TestKeptPlaces:
         assert split_kept_places([no_state], tokens, CLIENT.policy) == [no_state]
         full, _ = _mention(pages, 1, E.STREET_ADDRESS)
         assert split_kept_places([full], tokens, load_config("broad").policy) == [full]
+
+
+def _injected(*items: tuple[EntityType, str]) -> list[Mention]:
+    ev = (Evidence("bench.inject", "1", "inject.TEST", EvidenceStrength.STRONG, 1.0),)
+    return [Mention(f"M-{i}", etype, (token_id(0, 0, i),), ev, value) for i, (etype, value) in enumerate(items)]
+
+
+class TestInjectedMentions:
+    """``decide_injected`` (benchmark oracle modes): the benchmark asks for every injected mention to be redacted."""
+
+    def test_kept_types_are_replaced_and_nothing_is_kept(self) -> None:
+        mentions = _injected(
+            (E.LOCALITY, "Penrith"),
+            (E.POSTCODE, "2750"),
+            (E.DATE_OF_BIRTH, "14/03/1978"),
+            (E.AGE, "42"),
+            (E.PERSON, "Jane"),
+            (E.PHONE, "0412 345 678"),
+        )
+        assert [d.action for d in decide(mentions, CLIENT.policy)] == [A.KEEP] * 4 + [A.SURROGATE] * 2
+        decisions = decide_injected(mentions, CLIENT.policy)
+        assert [d.mention for d in decisions] == mentions
+        assert [d.action for d in decisions] == [A.SURROGATE] * 6
+        assert decisions[4].action is CLIENT.policy.entity_actions[E.PERSON]
+        assert decisions[5].action is CLIENT.policy.entity_actions[E.PHONE]
+
+    def test_the_profile_s_own_transformations_stay_unless_they_would_change_nothing(self) -> None:
+        maximal = load_config("maximal").policy
+        mentions = _injected((E.DATE, "2 May 2024"), (E.AGE, "95"), (E.DATE, "1978"), (E.AGE, "42"))
+        assert [d.action for d in decide(mentions, maximal)] == [A.DATE_SHIFT, A.GENERALISE, A.KEEP, A.KEEP]
+        assert [d.action for d in decide_injected(mentions, maximal)] == [
+            A.DATE_SHIFT,
+            A.GENERALISE,
+            A.SURROGATE,  # a bare year cannot be shifted
+            A.SURROGATE,  # an age below the cap is not changed by top-coding
+        ]
+
+    def test_no_type_is_kept_under_any_profile(self) -> None:
+        mentions = _injected(*((etype, "Peter Brown") for etype in EntityType))
+        for profile in ("client", "broad", "claimant_focused", "maximal"):  # claimant_focused keeps organisations
+            policy = load_config(profile).policy
+            assert all(d.action is not A.KEEP for d in decide_injected(mentions, policy)), profile
