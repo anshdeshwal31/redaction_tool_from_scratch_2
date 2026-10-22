@@ -2,22 +2,34 @@
 
 The benchmark can give the tool perfect upstream input, from its ground truth or from another tool's output: the
 text (``oracle_text``), the mentions to redact (``oracle_mentions``), their clusters (``oracle_entities``) and the
-regions to apply (``oracle_regions``).  This module turns the injected text into tool 2's lines.
+regions to apply (``oracle_regions``).  ``Redactor.run(inject=...)`` takes them through :class:`StageInputs`, whose
+hooks replace stages of the pipeline; without it every stage is tool 2's own.  Only ``mlredact bench`` builds one.
 
 Injected coordinates are display points (``display_pt``: the page as displayed, origin top-left, y down).  The
 canonical raster is the displayed page, so a point converts to a pixel with the page's own dpi alone:
 px = pt * dpi / 72.
 
-Pure, no I/O.  It imports only ``mlredact.core``.
+Pure, no I/O.  At runtime this module imports only ``mlredact.core``: the pipeline names its types without loading
+the benchmark adapter.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol
 
 from mlredact.core.geometry import BBox, Quad, union_all
-from mlredact.core.model import Line, PageGeometry, Token, token_id
+from mlredact.core.model import Line, PageAnalysis, PageGeometry, RenderOp, Token, token_id
+from mlredact.core.types import ActionKind
+
+if TYPE_CHECKING:
+    from mlredact.config.schema import AppConfig
+    from mlredact.detect.engine import DetectionResult
+    from mlredact.policy.engine import Decision
+    from mlredact.surrogate.assign import MentionSurrogate
+    from mlredact.verify.residual import ResidualHit
 
 INJECTED_ENGINE = "inject"
 # A pixel coordinate this close to a whole pixel is that pixel: display points written with 3 decimals (the
@@ -123,3 +135,100 @@ def injected_lines(page: InjectedPage, geometry: PageGeometry) -> tuple[Line, ..
             Line(f"p{page.index:04d}.l{line_no:04d}", page.index, line_no, bbox, quad, conf, INJECTED_ENGINE, tokens)
         )
     return tuple(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class InjectedStage:
+    """Detection and policy from injected mentions: the pages with the injected regions attached, the detection
+    result over them and one decision per internal mention."""
+
+    pages: tuple[PageAnalysis, ...] = field(repr=False)
+    detection: DetectionResult = field(repr=False)
+    decisions: tuple[Decision, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ReportedMention:
+    """An injected mention as the stage files report it.  ``label``: the label reported for it (it maps back to the
+    injected type); ``token_ids``: its own tool 2 tokens; ``boxes``: (page, box) of those tokens and of the regions it
+    became; ``slots``: for each of its own tokens, the internal mention that redacts the token and the token's
+    position in it; ``owner``: its tokens took its type (where injected mentions overlap, one of them owns the
+    tokens); ``conf``: the injected confidence."""
+
+    mention_id: str
+    label: str
+    text: str = field(repr=False)
+    token_ids: tuple[str, ...]
+    boxes: tuple[tuple[int, BBox], ...]
+    slots: tuple[tuple[str, int], ...]
+    owner: bool
+    conf: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanEcho:
+    """An injected plan region and how it was applied.  ``poly``: as injected; ``mentions``: the injected mentions it
+    names that ``mentions.json`` lists; ``ops``: the (ref_id, box) of each operation that applied it (one per line
+    of a region over several lines), which keys the box it erased."""
+
+    region_id: str
+    page: int
+    poly: tuple[tuple[float, float], ...]
+    mentions: tuple[str, ...]
+    ops: tuple[tuple[str, BBox], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InjectReport:
+    """What the stage files need to know about an injection (``JobTrace.injected``).
+
+    ``mode``: the benchmark mode; ``text_source``: the injected text's ``source``; ``mentions``: the injected
+    mentions (None while the mentions are tool 2's own); ``aliases``: per internal mention id, the injected mentions
+    it stands for, owner first; ``clusters``: the injected clusters as (id, member ids), None while they are tool 2's
+    own; ``plan``: the injected plan regions that were applied, by page and id (``oracle_regions`` only); ``notes``:
+    count-only notes for ``run_info.json``, never document text."""
+
+    mode: str
+    text_source: str
+    mentions: tuple[ReportedMention, ...] | None = field(default=None, repr=False)
+    aliases: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    clusters: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+    plan: tuple[PlanEcho, ...] | None = None
+    notes: tuple[str, ...] = ()
+
+
+class StageInputs(Protocol):
+    """Injected stage inputs for one job (``Redactor.run(inject=...)``).  Each hook replaces one stage, or returns
+    None where tool 2's own stage runs.
+
+    * ``detect_regions``: page analysis looks for non-text regions (signatures, stamps, barcodes, ...) around the
+      injected text;
+    * ``pages(page_count)``: the injected text of every page of the document, in page order (it replaces OCR);
+    * ``stage(pages, config, doc_key)``: detection and policy from the injected mentions;
+    * ``plan(...)``: the render operations of the injected plan; ``region_actions`` is the action of every region by
+      region id, ``rotated`` the tokens on sideways lines;
+    * ``replan_hits(hits)``: the residual hits verification may re-plan (all of them still count for the verdict);
+    * ``report()``: what the stage files need to know (the job trace's ``injected``)."""
+
+    @property
+    def detect_regions(self) -> bool: ...
+
+    def pages(self, page_count: int) -> list[InjectedPage]: ...
+
+    def stage(self, pages: Sequence[PageAnalysis], config: AppConfig, doc_key: str) -> InjectedStage | None: ...
+
+    def plan(
+        self,
+        *,
+        decisions: Sequence[Decision],
+        surrogates: Mapping[str, MentionSurrogate],
+        tokens: Mapping[str, Token],
+        pages: Sequence[PageAnalysis],
+        region_actions: Mapping[str, ActionKind],
+        rotated: AbstractSet[str],
+        config: AppConfig,
+    ) -> dict[int, tuple[RenderOp, ...]] | None: ...
+
+    def replan_hits(self, hits: Sequence[ResidualHit]) -> list[ResidualHit]: ...
+
+    def report(self) -> InjectReport: ...

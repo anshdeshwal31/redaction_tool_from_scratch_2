@@ -12,7 +12,7 @@ import os
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mlredact.config.schema import AppConfig
 from mlredact.core.errors import MlredactError, ProcessingError, ReasonCode
@@ -30,6 +30,9 @@ from mlredact.registry.models import models_dir, resolve
 from mlredact.render.raster import Applied, apply_ops
 from mlredact.runtime.determinism import apply_process_settings
 from mlredact.security.logging import configure_logging
+
+if TYPE_CHECKING:
+    from mlredact.pipeline.injection import InjectedPage
 
 _STATE: dict[str, Any] = {}
 
@@ -198,6 +201,39 @@ def task_analyse(ref: BlobRef, page_index: int, ocr_profile: str = "primary") ->
                 regions, unexplained = found.regions, found.unexplained_ink
             else:
                 regions = tuple(visual)
+        return PageAnalysis(
+            geometry=rendered.geometry,
+            kind=_page_kind(rendered.embedded_char_count, rendered.image_object_count),
+            lines=lines,
+            embedded_char_count=rendered.embedded_char_count,
+            regions=regions,
+            unexplained_ink=unexplained,
+        )
+    except MlredactError:
+        raise
+    except Exception:
+        raise _guard(ReasonCode.OCR_FAILED, page_index) from None
+
+
+def task_analyse_injected(ref: BlobRef, page_index: int, page: InjectedPage, detect_regions: bool) -> PageAnalysis:
+    """Render + injected text (benchmark oracle modes): the benchmark's tokens replace OCR.  With
+    ``detect_regions`` the primary pass's region analysis runs around them, but unexplained ink is not re-read and
+    no token is dropped as a ghost: the injected text is never second-guessed from the page."""
+    try:
+        from mlredact.pipeline.injection import injected_lines
+
+        cfg = _config()
+        rendered = render_page(_document(ref), page_index, cfg.render, cfg.limits, with_words=False)
+        lines = injected_lines(page, rendered.geometry)
+        regions: tuple[Region, ...] = ()
+        unexplained = 0.0
+        if detect_regions and cfg.regions.enabled:
+            dpi = rendered.geometry.dpi
+            visual = _visual_regions(rendered.rgb, page_index, dpi)
+            found = analyse_regions(rendered.rgb, lines, page_index, dpi, cfg.regions, detected=visual, reread=None)
+            if found.illegible and cfg.regions.illegible_action == "quarantine":
+                raise ProcessingError(ReasonCode.PAGE_ILLEGIBLE, page=page_index)
+            regions, unexplained = found.regions, found.unexplained_ink
         return PageAnalysis(
             geometry=rendered.geometry,
             kind=_page_kind(rendered.embedded_char_count, rendered.image_object_count),

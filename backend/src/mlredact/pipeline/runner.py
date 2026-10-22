@@ -2,7 +2,8 @@
 render -> build -> verify.
 
 Release is fail-closed: the PDF is returned only when every verification check passes.  On request
-a job also returns its trace (what every stage saw and decided) for the benchmark adapter.
+a job also returns its trace (what every stage saw and decided) for the benchmark adapter, and takes the
+benchmark's injected stage inputs (``mlredact.pipeline.injection``).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mlredact import __version__
 from mlredact.config.loader import config_hash
@@ -34,7 +35,14 @@ from mlredact.pdfout.textlayer import page_text_layer, text_layer_items
 from mlredact.pipeline.pool import WorkerPool
 from mlredact.pipeline.requirements import required_model_ids
 from mlredact.pipeline.shared import SharedBlob
-from mlredact.pipeline.workers import RedactedPage, task_analyse, task_convert_image, task_inspect, task_redact
+from mlredact.pipeline.workers import (
+    RedactedPage,
+    task_analyse,
+    task_analyse_injected,
+    task_convert_image,
+    task_inspect,
+    task_redact,
+)
 from mlredact.policy.engine import Decision, decide, split_kept_places
 from mlredact.registry.models import load_registry, models_dir, resolve
 from mlredact.render.label import NOTICE_REMOVED, NOTICE_SURROGATE
@@ -53,6 +61,9 @@ from mlredact.surrogate.labels import assign_labels
 from mlredact.verify.checks import CheckResult, check_integrity, check_structure, check_text_leak
 from mlredact.verify.residual import find_residuals, residual_ops, residual_result
 from mlredact.verify.surrogates import check_surrogates
+
+if TYPE_CHECKING:
+    from mlredact.pipeline.injection import InjectReport, StageInputs
 
 _log = get_logger("mlredact.pipeline")
 IMAGE_FORMATS = frozenset({"tiff", "png", "jpeg"})
@@ -76,7 +87,8 @@ class JobTrace:
     manifest, and only the adapter writes it out, into the evaluator's run folder.  ``pdf``, ``ops``
     and ``erased`` belong together: the last output the pipeline built (released or not, also when a
     later step failed), the render operations it was drawn from (after verification re-plans) and the
-    boxes those operations actually erased, keyed like the manifest's ``erased_px``."""
+    boxes those operations actually erased, keyed like the manifest's ``erased_px``.  ``injected``: the
+    report of the job's injected stage inputs (benchmark oracle modes), None without them."""
 
     pdf: bytes | None = field(repr=False)
     pages: tuple[PageAnalysis, ...] = field(repr=False)
@@ -86,6 +98,7 @@ class JobTrace:
     ops: Mapping[int, tuple[RenderOp, ...]] = field(repr=False)
     erased: Mapping[tuple[str, BBox], BBox]
     regions: tuple[RegionDecision, ...]
+    injected: InjectReport | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -150,6 +163,7 @@ class Redactor:
         sensitive_to: bytes | None = None,
         keep_held_back: bool = False,
         trace: bool = False,
+        inject: StageInputs | None = None,
     ) -> JobResult:
         """Redact ``data``.  ``scope_id`` (e.g. a matter/claim identifier) makes surrogates consistent
         across all documents of that scope; by default the scope is the document itself.
@@ -158,7 +172,11 @@ class Redactor:
         ``keep_held_back``: when the job is quarantined after its output was built, return that output
         as ``held_back_pdf`` (testing and review only; ``pdf`` stays None).
         ``trace``: also return the job's :class:`JobTrace` (document text included) for the benchmark
-        adapter.  Everything else in the result is the same with or without it."""
+        adapter.  Everything else in the result is the same with or without it.
+        ``inject``: the benchmark's injected stage inputs (``mlredact bench`` oracle modes only; they need
+        ``trace``).  Without them every stage is the pipeline's own."""
+        if inject is not None and not trace:
+            raise ValueError("injected stage inputs are for the benchmark adapter: they need trace=True")
         cfg = self.config
         job_id = f"job-{uuid.uuid4().hex}"
         input_sha = sha256_hex(data)
@@ -195,19 +213,30 @@ class Redactor:
                 n = inspection.page_count
 
                 t0 = time.perf_counter()
-                pages = self._pool.map(task_analyse, [(blob.ref, i, "primary") for i in range(n)])
+                if inject is None:
+                    pages = self._pool.map(task_analyse, [(blob.ref, i, "primary") for i in range(n)])
+                else:
+                    pages = self._pool.map(
+                        task_analyse_injected,
+                        [(blob.ref, i, page, inject.detect_regions) for i, page in enumerate(inject.pages(n))],
+                    )
                 lap("analyse_ms", t0)
 
                 t0 = time.perf_counter()
-                detection = detect_document(pages, cfg, input_sha, seeds, self._detectors)
-                professionals = (
-                    professional_mentions(detection.persons, detection.mentions, detection.line_view)
-                    if cfg.policy.keep_professionals
-                    else frozenset()
-                )
-                tokens = {t.token_id: t for p in pages for t in p.tokens()}
-                mentions = split_kept_places(detection.mentions, tokens, cfg.policy)
-                decisions = decide(mentions, cfg.policy, professionals)
+                staged = inject.stage(pages, cfg, input_sha) if inject is not None else None
+                if staged is None:
+                    detection = detect_document(pages, cfg, input_sha, seeds, self._detectors)
+                    professionals = (
+                        professional_mentions(detection.persons, detection.mentions, detection.line_view)
+                        if cfg.policy.keep_professionals
+                        else frozenset()
+                    )
+                    tokens = {t.token_id: t for p in pages for t in p.tokens()}
+                    mentions = split_kept_places(detection.mentions, tokens, cfg.policy)
+                    decisions = decide(mentions, cfg.policy, professionals)
+                else:
+                    pages, detection, decisions = list(staged.pages), staged.detection, list(staged.decisions)
+                    tokens = {t.token_id: t for p in pages for t in p.tokens()}
                 removed = [d.mention for d in decisions if d.action is not ActionKind.KEEP]
                 geoms = {p.geometry.index: p.geometry for p in pages}
                 originals = forbidden_keys(removed, detection.persons)
@@ -219,8 +248,24 @@ class Redactor:
                     surrogates = assign_labels(decisions, detection.persons)
                 all_lines = [line for p in pages for line in p.lines]
                 rotated = rotated_token_ids(all_lines)
-                ops = plan_ops(decisions, tokens, geoms, cfg.redaction, surrogates, rotated, all_lines)
-                ops = self._with_region_ops(ops, pages)
+                planned = (
+                    inject.plan(
+                        decisions=decisions,
+                        surrogates=surrogates,
+                        tokens=tokens,
+                        pages=pages,
+                        region_actions={d.region.region_id: d.action for p in pages for d in self._region_decisions(p)},
+                        rotated=rotated,
+                        config=cfg,
+                    )
+                    if inject is not None
+                    else None
+                )
+                if planned is None:
+                    ops = plan_ops(decisions, tokens, geoms, cfg.redaction, surrogates, rotated, all_lines)
+                    ops = self._with_region_ops(ops, pages)
+                else:
+                    ops = planned
                 lap("detect_ms", t0)
                 notice = None
                 if cfg.output.notice:
@@ -267,10 +312,12 @@ class Redactor:
                                 self._kept_regions(decisions, tokens, geoms),
                             )
                         lap(f"verify_ms_{replans}", t0)
-                        if hits and replans < cfg.verification.max_replans:
+                        # Injected stage inputs may re-plan fewer hits; every hit still counts for the verdict.
+                        replan = hits if inject is None else inject.replan_hits(hits)
+                        if replan and replans < cfg.verification.max_replans:
                             replans += 1
-                            ops = self._merge_ops(ops, residual_ops(hits, input_sha, replans), geoms, cfg)
-                            _log.warning("verify.replan", job=job_id, iteration=replans, tokens=len(hits))
+                            ops = self._merge_ops(ops, residual_ops(replan, input_sha, replans), geoms, cfg)
+                            _log.warning("verify.replan", job=job_id, iteration=replans, tokens=len(replan))
                             continue
                         checks = [v1, v2, v3, residual_result(hits, replans), v5, v6]
                         break
@@ -337,7 +384,20 @@ class Redactor:
             )
         _log.info("job.done", job=job_id, status=status, pages=len(pages), duration_ms=timings["total_ms"])
         held_back = pdf if keep_held_back and not released else None
-        job_trace = self._trace(pages, decisions, detection, surrogates, built, ops, redacted) if trace else None
+        job_trace = (
+            self._trace(
+                pages,
+                decisions,
+                detection,
+                surrogates,
+                built,
+                ops,
+                redacted,
+                injected=inject.report() if inject is not None else None,
+            )
+            if trace
+            else None
+        )
         return JobResult(status, pdf if released else None, manifest, run_record, sensitive, held_back, job_trace)
 
     # ------------------------------------------------------------------------------- helpers
@@ -402,6 +462,7 @@ class Redactor:
         built: _Built | None,
         ops: Mapping[int, tuple[RenderOp, ...]],
         redacted: Sequence[RedactedPage],
+        injected: InjectReport | None = None,
     ) -> JobTrace:
         """The job's trace.  When an output was built, the ops and erased boxes are the ones it was
         drawn from (a step that failed after it may already have planned more)."""
@@ -417,6 +478,7 @@ class Redactor:
             ops=dict(ops),
             erased={(a.ref_id, a.planned): a.erased for r in redacted for a in r.applied},
             regions=tuple(d for p in pages for d in self._region_decisions(p)),
+            injected=injected,
         )
 
     def _kept_regions(
