@@ -76,7 +76,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tools", "tests"]
+# tests/unit: its in-process runs of the pipeline (test_bench_runner, test_bench_oracle) serve the other test folders.
+pythonpath = ["tools", "tests", "tests/unit"]
 addopts = "-ra --strict-markers"
 markers = [
     "slow: end-to-end tests that load OCR models",

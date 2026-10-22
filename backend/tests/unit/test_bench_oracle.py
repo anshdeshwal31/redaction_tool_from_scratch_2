@@ -116,9 +116,11 @@ def bench(
     config: Mapping[str, Any] = CONFIG,
     pool: InProcessPool | None = None,
     ghost: bool = False,
+    options: Sequence[str] = (),
 ) -> Bench:
     """``mlredact bench --mode <mode>`` with ``docs`` injected, as tests/unit/test_bench_runner.py runs bench.
-    ``ghost``: region analysis also takes the page's first token for show-through."""
+    ``ghost``: region analysis also takes the page's first token for show-through; ``options``: more command-line
+    options."""
     pool = pool or InProcessPool()
     calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
     detections: list[int] = []
@@ -156,7 +158,7 @@ def bench(
         src.write_bytes(pdf)
         inject = write_inject_dir(folder / "inject", mode, docs)
         args = ["bench", "--input", str(src), "--workdir", str(out), "--config", str(cfg)]
-        result = CliRunner().invoke(app, [*args, "--mode", mode, "--inject-dir", str(inject)])
+        result = CliRunner().invoke(app, [*args, "--mode", mode, "--inject-dir", str(inject), *options])
         state = frozenset(workers_module._STATE)
     return Bench(mode, docs, result, out, len(pool.builds), state, calls, len(detections), ner)
 
