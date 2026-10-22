@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from mlredact.core.model import Candidate, Evidence, Mention, Token
@@ -252,6 +252,32 @@ def resolve_persons(mentions: Sequence[Mention], view: TextView) -> PersonResolu
             members[cid].append(mid)
         out[mid] = ParsedMention(mid, tuple(tokens), title, gender, cid)
     # Gender per cluster (majority of explicit cues), propagated to its members' given names.
+    given_votes: dict[str, Counter[Gender]] = defaultdict(Counter)
+    for mids in members.values():
+        g = _majority([out[member].gender for member in mids])
+        for member in mids:
+            for t in out[member].tokens:
+                if t.role is Role.GIVEN:
+                    given_votes[t.key][g] += 1
+    for pm in out.values():
+        if pm.cluster is None:
+            for t in pm.tokens:
+                if t.role is Role.GIVEN:
+                    given_votes[t.key][pm.gender] += 1
+    given_gender = {k: _majority(list(v.elements())) for k, v in sorted(given_votes.items())}
+    return PersonResolution(out, given_gender, {c: tuple(sorted(v)) for c, v in sorted(members.items())})
+
+
+def with_clusters(resolution: PersonResolution, clusters: Mapping[str, str]) -> PersonResolution:
+    """``resolution`` with given clusters instead of the resolver's own (the benchmark's injected clusters):
+    ``clusters`` maps a person mention id to its cluster id; a mention it does not name belongs to no cluster.
+    Names, roles and each mention's own gender cue are kept, and the gender of each given name is voted again as
+    :func:`resolve_persons` votes it, over the given clusters."""
+    out = {mid: replace(pm, cluster=clusters.get(mid) or None) for mid, pm in sorted(resolution.mentions.items())}
+    members: dict[str, list[str]] = defaultdict(list)
+    for mid, pm in out.items():
+        if pm.cluster:
+            members[pm.cluster].append(mid)
     given_votes: dict[str, Counter[Gender]] = defaultdict(Counter)
     for mids in members.values():
         g = _majority([out[member].gender for member in mids])

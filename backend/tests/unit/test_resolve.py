@@ -5,12 +5,22 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 
+import pytest
+
 from mlredact.config.loader import load_config
 from mlredact.core.types import ActionKind, EntityType
 from mlredact.detect.engine import detect_document
 from mlredact.policy.engine import decide
-from mlredact.resolve.persons import Gender, Role, parse_name
-from mlredact.surrogate.assign import SurrogateAssigner, forbidden_keys
+from mlredact.resolve.persons import (
+    Gender,
+    NameToken,
+    ParsedMention,
+    PersonResolution,
+    Role,
+    parse_name,
+    with_clusters,
+)
+from mlredact.surrogate.assign import MentionSurrogate, SurrogateAssigner, forbidden_keys
 from mlredact.surrogate.drbg import Chooser
 from mlredact.surrogate.generators import SurrogateFactory
 from mlredact.surrogate.labels import assign_labels
@@ -153,3 +163,73 @@ class TestProfessionalRoles:
     def test_broad_never_keeps_people(self) -> None:
         kept, _replaced = self._kept_and_replaced("broad")
         assert kept == set()
+
+
+# The lines of tests/determinism/test_hash_seed.py's script.
+HASH_SEED_LINES = (
+    "Re: Mr John Andrew SMITH DOB: 14/03/1978 Claim No: WC1234567",
+    "Address: 42 Wattle Grove Road, Penrith NSW 2750 Phone 0412 345 678",
+    "Mr Smith attended with his wife Mrs Mary Smith. J. Smith signed; John was anxious.",
+    "Dr Peter Brown FRACS, Medicare 2953 70150 1, email john.smith78@bigpond.com",
+    "Tinel's sign was positive. Smith's fracture was excluded.",
+)
+
+
+def _person(mid: str, given: str, surname: str, gender: Gender) -> ParsedMention:
+    tokens = (NameToken("", given, "", Role.GIVEN), NameToken("", surname, "", Role.SURNAME))
+    return ParsedMention(mid, tokens, None, gender, None)
+
+
+class TestInjectedClusters:
+    """``with_clusters``: the benchmark's injected clusters in place of the resolver's own."""
+
+    @pytest.mark.parametrize("lines", [TestResolution.LINES, TestProfessionalRoles.LINES, HASH_SEED_LINES])
+    def test_the_resolvers_own_clusters_change_nothing(self, lines: Sequence[str]) -> None:
+        resolution = _detect(lines)[0].persons
+        own = {m: p.cluster for m, p in resolution.mentions.items() if p.cluster}
+        assert own
+        assert with_clusters(resolution, own) == resolution
+
+    def test_an_initial_follows_the_given_name_of_its_injected_cluster(self) -> None:
+        result, tokens = _detect(["Re: Mr John Smith and his sister Ms Jane Smith", "J. Smith signed the form."])
+        ids = {m.value: m.mention_id for m in result.mentions}
+        john, jane, initial = ids["John Smith"], ids["Jane Smith"], ids["J. Smith"]
+        own = {m: p.cluster for m, p in result.persons.mentions.items() if p.cluster}
+        assert initial not in own  # two given names start with J: the resolver cannot tell
+
+        def first_letters(clusters: dict[str, str]) -> tuple[str, str, str]:
+            persons = with_clusters(result.persons, clusters)
+            decisions = decide(result.mentions, CFG.policy)
+            factory = SurrogateFactory(Chooser(hashlib.sha256(b"s").digest()), forbidden_keys([], persons))
+            sur: dict[str, MentionSurrogate] = SurrogateAssigner(factory, persons, tokens).assign(decisions)
+            return sur[initial].tokens[0][0], sur[jane].tokens[0][0], sur[john].tokens[0][0]
+
+        mark, jane_fake, john_fake = first_letters(own)
+        assert jane_fake != john_fake and mark not in (jane_fake, john_fake)
+        assert first_letters({**own, initial: own[jane]})[0] == jane_fake
+        assert first_letters({**own, initial: own[john]})[0] == john_fake
+
+    def test_given_names_take_the_gender_of_their_injected_cluster(self) -> None:
+        mentions = {
+            "a": _person("a", "Sam", "Taylor", Gender.MALE),
+            "b": _person("b", "Sam", "Jones", Gender.FEMALE),
+            "c": _person("c", "Sam", "Jones", Gender.UNKNOWN),
+        }
+        resolution = PersonResolution(mentions, {}, {})
+        with_male = with_clusters(resolution, {"a": "e1", "c": "e1", "b": "e2"})
+        with_female = with_clusters(resolution, {"a": "e1", "b": "e2", "c": "e2"})
+        assert with_male.clusters == {"e1": ("a", "c"), "e2": ("b",)}
+        assert with_male.given_gender == {"sam": Gender.MALE}  # two votes for e1 (male), one for e2
+        assert with_female.given_gender == {"sam": Gender.FEMALE}
+        assert [p.gender for p in with_male.mentions.values()] == [Gender.MALE, Gender.FEMALE, Gender.UNKNOWN]
+
+    def test_mentions_without_an_injected_cluster_belong_to_none(self) -> None:
+        resolution = _detect(TestResolution.LINES)[0].persons
+        some = sorted(resolution.mentions)[0]
+        alone = with_clusters(resolution, {some: "e1", "not-a-mention": "e2"})
+        assert alone.clusters == {"e1": (some,)}
+        assert [m for m, p in alone.mentions.items() if p.cluster] == [some]
+        none = with_clusters(resolution, {})
+        assert none.clusters == {} and all(p.cluster is None for p in none.mentions.values())
+        # Each mention then votes alone: Mr Smith's John and Mrs Mary Smith's Mary keep their own cue.
+        assert none.given_gender[match_key("Mary")] is Gender.FEMALE
