@@ -1096,6 +1096,35 @@ def test_a_region_over_two_lines_is_applied_line_by_line(tmp_path: Path) -> None
     assert p.echoes["peter-0"].ops == tuple((op.ref_id, op.box) for op in p.page_ops)
 
 
+def test_plan_json_repeats_each_applied_region_with_what_was_done(tmp_path: Path) -> None:
+    tokens = layout("Dr Peter", "Brown", "Ms Jane Citizen")
+    signature = poly(60, 400, 200, 440)
+    mentions = [
+        mention("peter", "PERSON_NAME", tokens=["t0.1", "t1.0"]),
+        mention("jane", "PERSON_NAME", tokens=["t2.1", "t2.2"]),
+        mention("sig", "SIGNATURE", regions=[{"page": 0, "poly": signature}]),
+    ]
+    regions = [
+        plan_region("peter-0", poly(72, 98, 110, 133), "peter", "ghost"),  # "ghost" is not a mention
+        plan_region("jane-0", tokens[4]["poly"], "jane", replacement=CANARY),
+        plan_region("jane-1", tokens[5]["poly"], "jane", action="remove"),
+        plan_region("sig-0", signature, "sig"),
+        plan_region("sig-1", signature, "sig", page=3),  # beyond the last page
+    ]
+    p = planned(tmp_path, tokens, mentions, regions)
+    plan = files_of(p.staged, p.page_ops, {})["plan.json"]
+    assert (plan["schema"], plan["frame"]) == ("rb.plan/0.1", "display_pt")
+    assert [(r["id"], r["page"], r["action"], r["mentions"], r.get("replacement")) for r in plan["regions"]] == [
+        ("jane-0", 0, "replace", ["jane"], "jANE"),  # the fake drawn, never the injected replacement
+        ("jane-1", 0, "remove", ["jane"], None),
+        ("peter-0", 0, "replace", ["peter"], "pETER bROWN"),  # both of its lines' operations
+        ("sig-0", 0, "replace", ["sig"], None),  # a stand-in is drawn, no text
+    ]
+    by_id = {r["id"]: r["poly"] for r in regions}
+    assert all(r["poly"] == by_id[r["id"]] for r in plan["regions"])  # as injected
+    assert "1 beyond the last page" in p.note and CANARY not in " ".join(p.report.notes)
+
+
 def test_the_plan_does_not_depend_on_the_file_order(tmp_path: Path) -> None:
     tokens = layout("Smith & Partners Lawyers", "Jane Citizen and Peter Brown met", "Dr Peter", "Brown")
     mentions = [

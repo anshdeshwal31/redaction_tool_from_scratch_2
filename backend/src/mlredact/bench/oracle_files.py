@@ -3,8 +3,9 @@
 From ``oracle_mentions`` on, the stage files report the injected mentions under their injected ids, as tool 2
 redacted them (``JobTrace.injected``): ``mentions.json`` lists every one that was placed on tool 2's tokens or became
 a region, mentions inside another included; ``entities.json``, ``plan.json`` and ``pseudonyms.json`` name those ids,
-so the benchmark can follow each injected mention through every stage.  ``text.json`` is written as in ``e2e``,
-with the injected text's source.  Like every stage file these hold document text; nothing here is logged.
+so the benchmark can follow each injected mention through every stage.  In ``oracle_regions`` ``plan.json`` repeats
+the injected plan regions, with what was done to each.  ``text.json`` is written as in ``e2e``, with the injected
+text's source.  Like every stage file these hold document text; nothing here is logged.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Any
 
 from mlredact.bench.artifacts import _TYPESET_KINDS, FRAME, display_poly, plan_action
 from mlredact.core.types import EntityType
-from mlredact.pipeline.injection import InjectReport, ReportedMention
+from mlredact.pipeline.injection import InjectReport, PlanEcho, ReportedMention
 from mlredact.pipeline.runner import JobTrace
 
 
@@ -85,6 +86,31 @@ def plan_artifact(trace: JobTrace, aliases: Mapping[str, Sequence[str]], listed:
     return {"schema": "rb.plan/0.1", "frame": FRAME, "regions": regions}
 
 
+def plan_echo_artifact(trace: JobTrace, echoes: Sequence[PlanEcho]) -> dict[str, Any]:
+    """``rb.plan/0.1`` in ``oracle_regions``: every injected plan region that was applied, as injected (id, page,
+    polygon), with what was done there (``replace`` where every operation that applied it put something new in,
+    otherwise ``remove``) and the text drawn, naming the injected mentions ``mentions.json`` lists."""
+    ops = {(op.ref_id, op.box): op for page_ops in trace.ops.values() for op in page_ops}
+    regions = []
+    for echo in sorted(echoes, key=lambda e: (e.page, e.region_id)):
+        applied = [ops[key] for key in echo.ops if key in ops]
+        if not applied:
+            continue
+        actions = {plan_action(op.kind) for op in applied}
+        entry: dict[str, Any] = {
+            "id": echo.region_id,
+            "page": echo.page,
+            "poly": [[x, y] for x, y in echo.poly],
+            "action": "replace" if actions == {"replace"} else "remove",
+            "mentions": list(echo.mentions),
+        }
+        replacement = " ".join(op.text for op in applied if op.text)
+        if replacement:
+            entry["replacement"] = replacement
+        regions.append(entry)
+    return {"schema": "rb.plan/0.1", "frame": FRAME, "regions": regions}
+
+
 def pseudonyms_artifact(trace: JobTrace, mentions: Sequence[ReportedMention]) -> dict[str, Any]:
     """``rb.pseudonyms/0.1``: the replacement drawn for each injected mention that owns its tokens, the surrogate
     pieces at its own tokens.  A mention inside another has none of its own (its pixels show the owner's), and a
@@ -113,14 +139,20 @@ def pseudonyms_artifact(trace: JobTrace, mentions: Sequence[ReportedMention]) ->
 
 
 def stage_files(trace: JobTrace, report: InjectReport, text: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Every stage file by file name, from the injected mentions ``report`` lists; ``text``: ``text.json``."""
+    """Every stage file by file name, from the injected mentions ``report`` lists (and the injected plan's regions,
+    when they were applied); ``text``: ``text.json``."""
     mentions = report.mentions or ()
     listed = frozenset(m.mention_id for m in mentions)
     persons = frozenset(m.mention_id for m in mentions if m.label == EntityType.PERSON.value)
+    plan = (
+        plan_echo_artifact(trace, report.plan)
+        if report.plan is not None
+        else plan_artifact(trace, report.aliases, listed)
+    )
     return {
         "text.json": text,
         "mentions.json": mentions_artifact(trace, mentions),
         "entities.json": entities_artifact(trace, report, persons),
-        "plan.json": plan_artifact(trace, report.aliases, listed),
+        "plan.json": plan,
         "pseudonyms.json": pseudonyms_artifact(trace, mentions),
     }
