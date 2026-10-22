@@ -16,7 +16,7 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
@@ -29,6 +29,9 @@ from mlredact.security.exceptions import install_excepthook, sanitize
 from mlredact.security.logging import configure_logging
 from mlredact.security.sensitive import Sensitive
 
+if TYPE_CHECKING:
+    from mlredact.bench.oracle import OracleInputs
+
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Local, deterministic PII redaction.")
 models_app = typer.Typer(no_args_is_help=True, help="Model artefacts (development / image build).")
 app.add_typer(models_app, name="models")
@@ -40,8 +43,10 @@ app.add_typer(sensitive_app, name="sensitive")
 # The redacted copy of a quarantined document: it failed verification, so its name must never
 # pass for a release.
 HELD_BACK_PDF = "held-back.NOT-RELEASED.pdf"
-# Benchmark modes ``bench`` runs.  The oracle modes (injected stage inputs) come in the next phase.
-BENCH_MODES = ("e2e",)
+# Benchmark modes ``bench`` runs: end to end, and the oracle modes that take injected stage inputs.
+BENCH_MODES = ("e2e", "oracle_text", "oracle_mentions", "oracle_entities")
+# Oracle modes whose mentions are injected: detection does not run, so neither does NER.
+_INJECTED_MENTIONS = ("oracle_mentions", "oracle_entities")
 
 
 def _fail(exc: BaseException) -> None:
@@ -176,8 +181,12 @@ _BENCH_HELP = (
     "document is not released, quarantine.json.  Output the tool does not release (held back by its "
     "verification, or built before a later step failed) is still written as output.pdf, and run_info.json "
     "records the verdict.\n\n"
-    "Exit codes: 0 output.pdf written (released or not), 1 no output (nothing was built, or the files could not "
-    "be written), 2 usage error, 3 unsupported mode."
+    "Modes: e2e runs every stage.  The oracle modes take stage inputs from --inject-dir instead of running tool "
+    "2's own stages: oracle_text the text (text.json); oracle_mentions also the mentions to redact, all of them "
+    "(mentions.json); oracle_entities also their clusters (entities.json).\n\n"
+    "Exit codes: 0 output.pdf written (released or not), 1 no output (nothing was built, the injected inputs "
+    "could not be read, or the files could not be written), 2 usage error (also an oracle mode without a folder "
+    "of injected inputs), 3 unsupported mode."
 )
 
 
@@ -187,9 +196,14 @@ def bench(
         Path, typer.Option("--input", exists=True, dir_okay=False, readable=True, help="The benchmark's input.pdf")
     ],
     workdir: Annotated[Path, typer.Option("--workdir", file_okay=False, help="Empty folder for the outputs")],
-    mode: Annotated[str, typer.Option(help="Benchmark mode (only e2e so far)")] = "e2e",
+    mode: Annotated[str, typer.Option(help=f"Benchmark mode: {', '.join(BENCH_MODES)}")] = "e2e",
     inject_dir: Annotated[
-        str, typer.Option("--inject-dir", help="Injected stage inputs (oracle modes); empty for none")
+        str,
+        typer.Option(
+            "--inject-dir",
+            help="Folder of injected stage inputs, display_pt (oracle modes: text.json, mentions.json, entities.json, "
+            "as the mode injects them); empty for e2e",
+        ),
     ] = "",
     seed: Annotated[int | None, typer.Option(help="Benchmark seed (recorded only: runs are deterministic)")] = None,
     scope_id: Annotated[
@@ -207,10 +221,13 @@ def bench(
 ) -> None:
     """Benchmark adapter for the evaluator (see ``_BENCH_HELP``); production uses ``run``."""
     if mode not in BENCH_MODES:
-        typer.echo(f"error: mode {mode} is not supported yet: the oracle modes come in the next phase", err=True)
+        typer.echo(f"error: mode {mode} is not supported", err=True)
         raise typer.Exit(3)
-    if inject_dir:
+    oracle = mode != "e2e"
+    if not oracle and inject_dir:
         raise typer.BadParameter("mode e2e takes no injected inputs", param_hint="--inject-dir")
+    if oracle and not (inject_dir and Path(inject_dir).is_dir()):
+        raise typer.BadParameter(f"mode {mode} needs the folder of injected inputs", param_hint="--inject-dir")
     from mlredact.bench.environment import CONFIG_ENV, env_config_files
 
     env_files = env_config_files()
@@ -227,9 +244,17 @@ def bench(
     overrides: dict[str, Any] = {"surrogate": {"allow_development_key": True}}
     if workers:
         overrides["runtime"] = {"workers": workers}
-    settings: dict[str, Any] = {"profile": profile}
+    injected: dict[str, Any] = {}  # run_info's record of the oracle mode
+    if oracle:
+        from mlredact.bench.inject import MODE_FILES
+
+        injected = {"mode": mode, "injected": sorted(f.kind for f in MODE_FILES[mode])}
+    if mode in _INJECTED_MENTIONS:  # the mentions are injected: the NER models would load for nothing
+        overrides["detection"] = {"ner": {"gliner": {"enabled": False}, "privacy_filter": {"enabled": False}}}
+    settings: dict[str, Any] = {"profile": profile, **injected}
     models: list[dict[str, Any]] = []
     notes: list[str] = []
+    inputs: OracleInputs | None = None
 
     def finish(released: bool, reasons: list[str], *outcome: str) -> None:
         info = run_info(
@@ -262,14 +287,24 @@ def bench(
             "workers": cfg.runtime.workers,
             "engine_b_enabled": cfg.ocr.engine_b.enabled,
         }
+        if oracle:
+            ner = cfg.detection.ner
+            settings |= {**injected, "ner_enabled": ner.gliner.enabled or ner.privacy_filter.enabled}
         key = surrogate_key_source(cfg)
         if key == "development":
             notes.append("public development surrogate key: no MLREDACT_SURROGATE_KEY or key file is configured")
         elif key is not None:
             notes.append(f"configured surrogate key ({key})")
+        if oracle:
+            from mlredact.bench.inject import load_injection
+            from mlredact.bench.oracle import OracleInputs, check_region_actions
+
+            if mode in _INJECTED_MENTIONS:
+                check_region_actions(cfg)
+            inputs = OracleInputs(load_injection(mode, Path(inject_dir)))
         data = input_path.read_bytes()
         with Redactor(cfg, log_level=log_level) as redactor:
-            result = redactor.run(data, scope_id=scope_id or None, trace=True)
+            result = redactor.run(data, scope_id=scope_id or None, trace=True, inject=inputs)
     except Exception as exc:  # whatever stopped the job, the evaluator still gets run_info.json
         finish(False, [sanitize(exc).code.value])
         _fail(exc)
@@ -278,6 +313,9 @@ def bench(
     reasons = [] if released else list(result.manifest["reasons"])
     models = list(result.manifest["provenance"]["models"])
     trace = result.trace
+    if inputs is not None:  # what the injection did, and what verification found and re-planned (counts only)
+        report = trace.injected if trace is not None and trace.injected is not None else inputs.report()
+        notes.extend([*report.notes, inputs.residual_note(result.manifest)])
     output = result.pdf if result.pdf is not None else (trace.pdf if trace is not None else None)
     handed_over = False
     try:

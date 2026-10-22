@@ -154,17 +154,19 @@ runs it once per document and grades what it writes.
 
 ```bash
 uv run mlredact bench --input input.pdf --workdir out/ [--scope-id MATTER-123] [--seed 0] [--config x.yaml]
+uv run mlredact bench --mode oracle_mentions --inject-dir inject/ --input input.pdf --workdir out/
 uv run mlredact bench-version            # 0.1.0+g<commit>, with .dirty when backend/ has uncommitted changes
 ```
 
-It runs the normal pipeline (default profile `client`) with a trace and writes, into `--workdir`:
+It runs the normal pipeline (default profile `client`) with a trace and writes, into `--workdir` (the stage files
+as `e2e` and `oracle_text` write them; the other oracle modes report the injected mentions, see **Modes**):
 
 | file | content |
 |---|---|
 | `output.pdf` | the redacted PDF, **also when the tool does not release it**: held back by its verification, or built before a later step failed (the notes in run_info.json say which) |
 | `run_info.json` | version, configuration, model ids, seed, times, notes, and `release`: the tool's own verdict (`released`, `checks_failed` reason codes) |
 | `text.json` | every token: text, box, confidence, line, reading order |
-| `mentions.json` | what the tool decided to replace or remove: text mentions (with tokens and token boxes) and PII regions (signature, face, photo, handwriting, barcode, logo, stamp, illegible).  Values the policy keeps (dates, places under `client`) are left out |
+| `mentions.json` | what the tool decided to replace or remove: text mentions (with tokens and token boxes) and PII regions (signature, face, photo, handwriting, barcode, logo, stamp, illegible).  Values the policy keeps (dates, places under `client`) are left out (from `oracle_mentions` on: every injected mention) |
 | `entities.json` | one cluster per resolved person |
 | `plan.json` | one region per final render operation, with the box it actually erased (`replace` or `remove`; faint-ink suppression is not listed) |
 | `pseudonyms.json` | every replacement text drawn, per mention and as original -> replacement (a surrogate whose mention was blacked out instead, e.g. on a sideways line, is not listed) |
@@ -176,11 +178,40 @@ is printed or logged.  Boxes are in `display_pt` (points of the page as displaye
 raster is the displayed page, so a pixel box converts with its page's own dpi, pt = px * 72 / dpi.
 `run` and the HTTP API are unchanged and stay fail-closed.
 
-Only mode `e2e` exists so far; the oracle modes (injected stage inputs) come in the next phase.
+**Modes.**  `e2e` (the default) runs every stage.  The oracle modes take perfect upstream input from the
+benchmark (its ground truth, or another tool's stage files) in `--inject-dir`, in the stage-file formats above
+and in `display_pt`, and use it instead of tool 2's own stages.  Each mode injects one file more than the one
+before it:
 
-Exit codes: `0` output.pdf written (released or not), `1` no output: nothing was built, or the files could
-not be written (run_info.json still says why), `2` usage error, `3` unsupported mode.  output.pdf is written
-last, so it exists only together with every other file.
+| mode | reads | instead of tool 2's | still tool 2's own |
+|---|---|---|---|
+| `oracle_text` | `text.json` | OCR: the injected tokens, in their reading order and lines, are the text | region detection (signatures, stamps, barcodes, ...) around that text, detection, the policy (with its keeps), name clustering, surrogates, planning |
+| `oracle_mentions` | + `mentions.json` | region detection, detection and the policy: exactly the injected mentions are redacted | name parsing and clustering, surrogates, planning |
+| `oracle_entities` | + `entities.json` | person clustering: the injected clusters decide the given-name gender vote and how initials are filled; surname and given-name fakes stay keyed by the name as written (as in `e2e`) | name parsing, surrogates, planning |
+
+Rendering, the PDF build and checks V1-V6 run in every mode and give the verdict as in `e2e`.  In every oracle
+mode run_info.json records `mode`, `injected` and `ner_enabled`.  A `dpi` given with the injected files is not
+used: they are in display points.
+
+- From `oracle_mentions` on every injected mention is acted on: where the profile would keep its type (dates
+  and places under `client`) it gets a surrogate.  A mention becomes tool 2's mentions over whole words; a
+  signature, handwriting or an image, and an anchor its words do not explain (a logo around a name), become
+  regions, which the profile's region actions replace with a stand-in or remove.  A profile that keeps a kind
+  of region injected mentions become (signature, handwriting, photo, face, logo, barcode, stamp, illegible) is
+  refused (exit 1, `E_CONFIG_INVALID`).  NER is switched off (it would load for nothing).
+- Verification counts every residual hit against the release, but re-plans fewer of them: all of them in
+  `oracle_text` (as in `e2e`), only removed values that are still readable in `oracle_mentions` and
+  `oracle_entities` (anything else it finds was not injected).
+- Ids: `text.json` lists tool 2's own token ids in every mode (the manifest's schema requires them).  From
+  `oracle_mentions` on, `mentions.json`, `entities.json`, `plan.json` and `pseudonyms.json` name the injected
+  mention ids (a mention inside another keeps its own entry); from `oracle_entities` on the clusters are the
+  injected ones, under their ids.  The notes in run_info.json count what was injected and what could not be
+  used, never text.
+
+Exit codes: `0` output.pdf written (released or not), `1` no output: nothing was built, the injected inputs
+could not be read (`E_CONFIG_INVALID`), or the files could not be written (run_info.json still says why),
+`2` usage error (also an oracle mode without a folder of injected inputs, or `e2e` with one), `3` unsupported
+mode.  output.pdf is written last, so it exists only together with every other file.
 
 | Environment | Effect |
 |---|---|

@@ -29,6 +29,7 @@ from mlredact.bench.artifacts import (
     text_artifact,
     unreleased_note,
 )
+from mlredact.bench.oracle import OracleInputs
 from mlredact.cli.main import app
 from mlredact.config.loader import load_config
 from mlredact.config.schema import AppConfig
@@ -521,10 +522,115 @@ def test_a_job_that_cannot_start_still_records_why(tmp_path: Path, stub: type[_S
     assert _json(out / "run_info.json")["release"] == {"released": False, "checks_failed": ["E_MODEL_MISSING"]}
 
 
-def test_oracle_modes_are_not_supported_yet(tmp_path: Path, stub: type[_StubRedactor]) -> None:
-    code, out = _bench(tmp_path, "--mode", "oracle_text", "--inject-dir", str(tmp_path))
+CANARY = "Zelphinia Quarrington"
+
+
+def _inject_dir(folder: Path, **replaced: Any) -> Path:
+    """A folder of injected stage inputs (one fictitious name), every file any mode reads; ``replaced``: files by
+    stem, as JSON values or raw ``bytes`` (None leaves the file out)."""
+    box = [[60, 100], [90, 100], [90, 111], [60, 111]]
+    files: dict[str, Any] = {
+        "text": {"schema": "rb.text/0.1", "source": "text_layer", "pages": [{"index": 0, "tokens": []}]},
+        "mentions": {"schema": "rb.mentions/0.1", "mentions": [{"id": "m1", "label": "PERSON_NAME", "tokens": ["w0"]}]},
+        "entities": {"schema": "rb.entities/0.1", "clusters": [{"id": "e1", "mentions": ["m1"]}]},
+        "plan": {
+            "schema": "rb.plan/0.1",
+            "regions": [{"id": "m1-0", "page": 0, "poly": box, "action": "replace", "mentions": ["m1"]}],
+        },
+    }
+    files["text"]["pages"][0]["tokens"] = [{"id": "w0", "text": "Ann", "poly": box, "line": "l0", "order": 0}]
+    files.update(replaced)
+    folder.mkdir(parents=True, exist_ok=True)
+    for stem, content in files.items():
+        if content is not None:
+            data = content if isinstance(content, bytes) else json.dumps(content).encode("utf-8")
+            (folder / f"{stem}.json").write_bytes(data)
+    return folder
+
+
+@pytest.mark.parametrize(
+    ("mode", "injected"),
+    [
+        ("oracle_text", ["text"]),
+        ("oracle_mentions", ["mentions", "text"]),
+        ("oracle_entities", ["entities", "mentions", "text"]),
+    ],
+)
+def test_oracle_modes_run_with_the_injected_inputs(
+    tmp_path: Path, stub: type[_StubRedactor], mode: str, injected: list[str]
+) -> None:
+    code, out = _bench(tmp_path, "--mode", mode, "--inject-dir", str(_inject_dir(tmp_path / "inject")))
+    assert code == 0 and (out / "output.pdf").read_bytes() == PDF
+    (call,) = stub.calls
+    assert call["trace"] is True and isinstance(call["inject"], OracleInputs) and call["inject"].mode == mode
+    # NER finds mentions: where they are injected it is switched off (the configuration hash records it).
+    ner = stub.configs[0].detection.ner
+    ner_on = mode == "oracle_text"
+    assert (ner.gliner.enabled, ner.privacy_filter.enabled) == (ner_on, ner_on)
+    info = _json(out / "run_info.json")
+    assert {k: info["config"][k] for k in ("mode", "injected", "ner_enabled")} == {
+        "mode": mode,
+        "injected": injected,
+        "ner_enabled": ner_on,
+    }
+    assert "injected text: 1 tokens" in info["notes"] and "V4 residual check not run" in info["notes"]
+
+
+def test_e2e_has_no_injection_and_records_no_mode(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    code, out = _bench(tmp_path)
+    assert code == 0 and stub.calls[0]["inject"] is None
+    assert not {"mode", "injected", "ner_enabled"} & set(_json(out / "run_info.json")["config"])
+    assert stub.configs[0].detection.ner.gliner.enabled  # NER is not touched
+
+
+@pytest.mark.parametrize("inject_dir", [None, "", "missing", "a file"])
+def test_an_oracle_mode_needs_a_folder_of_injected_inputs(
+    tmp_path: Path, stub: type[_StubRedactor], inject_dir: str | None
+) -> None:
+    (tmp_path / "a file").write_text("{}", "utf-8")
+    extra = [] if inject_dir is None else ["--inject-dir", str(tmp_path / inject_dir) if inject_dir else ""]
+    code, out = _bench(tmp_path, "--mode", "oracle_mentions", *extra)
+    assert code == 2 and not out.exists() and stub.calls == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "replaced"),
+    [
+        ("oracle_text", {"text": {"schema": "rb.text/0.1", "source": CANARY, "pages": []}}),
+        ("oracle_mentions", {"mentions": None}),
+        ("oracle_entities", {"entities": b"{not json " + CANARY.encode()}),
+    ],
+)
+def test_unreadable_injected_inputs_leave_only_run_info(
+    tmp_path: Path, stub: type[_StubRedactor], mode: str, replaced: dict[str, Any]
+) -> None:
+    res = _invoke(tmp_path, "--mode", mode, "--inject-dir", str(_inject_dir(tmp_path / "inject", **replaced)))
+    out = tmp_path / "out"
+    assert res.exit_code == 1 and CANARY not in res.output
+    assert sorted(p.name for p in out.iterdir()) == ["run_info.json"] and stub.calls == []
+    info = _json(out / "run_info.json")
+    assert info["release"] == {"released": False, "checks_failed": ["E_CONFIG_INVALID"]}
+    assert info["config"]["mode"] == mode and CANARY not in json.dumps(info)
+
+
+@pytest.mark.parametrize("mode", ["e2e2", "oracle_plan", "ORACLE_REGIONS"])
+def test_unsupported_modes_exit_3(tmp_path: Path, stub: type[_StubRedactor], mode: str) -> None:
+    code, out = _bench(tmp_path, "--mode", mode, "--inject-dir", str(_inject_dir(tmp_path / "inject")))
     assert code == 3
     assert not out.exists() and stub.calls == []
+
+
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities"])
+def test_a_profile_that_keeps_injected_regions_is_refused(tmp_path: Path, stub: type[_StubRedactor], mode: str) -> None:
+    keeps = tmp_path / "keeps.yaml"
+    keeps.write_text("policy:\n  region_actions:\n    signature: keep\n", "utf-8")
+    inject = str(_inject_dir(tmp_path / "inject"))
+    code, out = _bench(tmp_path, "--mode", mode, "--inject-dir", inject, "--config", str(keeps))
+    assert code == 1 and stub.calls == []
+    assert _json(out / "run_info.json")["release"]["checks_failed"] == ["E_CONFIG_INVALID"]
+    # Tool 2 detects the regions itself in oracle_text: the profile is its own business there.
+    code, _out = _bench(tmp_path, "--mode", "oracle_text", "--inject-dir", inject, "--config", str(keeps))
+    assert code == 0
 
 
 def test_e2e_takes_no_injected_inputs(tmp_path: Path, stub: type[_StubRedactor]) -> None:
