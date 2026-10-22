@@ -146,6 +146,49 @@ uv run mlredact sensitive open out/sensitive-manifest.sealed.json --key keys/eva
 ```  The schema's
 enumerations are tested against the code, and every integration-test manifest is validated against it.
 
+### Benchmark adapter
+
+`mlredact bench` connects mlredact to the redaction benchmark (`redaction_benchmark`, candidate manifest
+`candidates/mlredact-client.yaml`).  It is for the evaluator only, never for production: the benchmark
+runs it once per document and grades what it writes.
+
+```bash
+uv run mlredact bench --input input.pdf --workdir out/ [--scope-id MATTER-123] [--seed 0] [--config x.yaml]
+uv run mlredact bench-version            # 0.1.0+g<commit>, with .dirty when backend/ has uncommitted changes
+```
+
+It runs the normal pipeline (default profile `client`) with a trace and writes, into `--workdir`:
+
+| file | content |
+|---|---|
+| `output.pdf` | the redacted PDF, **also when the tool does not release it**: held back by its verification, or built before a later step failed (the notes in run_info.json say which) |
+| `run_info.json` | version, configuration, model ids, seed, times, notes, and `release`: the tool's own verdict (`released`, `checks_failed` reason codes) |
+| `text.json` | every token: text, box, confidence, line, reading order |
+| `mentions.json` | what the tool decided to replace or remove: text mentions (with tokens and token boxes) and PII regions (signature, face, photo, handwriting, barcode, logo, stamp, illegible).  Values the policy keeps (dates, places under `client`) are left out |
+| `entities.json` | one cluster per resolved person |
+| `plan.json` | one region per final render operation, with the box it actually erased (`replace` or `remove`; faint-ink suppression is not listed) |
+| `pseudonyms.json` | every replacement text drawn, per mention and as original -> replacement (a surrogate whose mention was blacked out instead, e.g. on a sideways line, is not listed) |
+| `manifest.json`, `run.json`, `quarantine.json` | as for `run` |
+
+Unlike the manifest, these stage files **contain document text** (the benchmark scores OCR and detection
+against its ground truth): they belong only in the benchmark's git-ignored run folder.  No document text
+is printed or logged.  Boxes are in `display_pt` (points of the page as displayed, origin top-left): the canonical
+raster is the displayed page, so a pixel box converts with its page's own dpi, pt = px * 72 / dpi.
+`run` and the HTTP API are unchanged and stay fail-closed.
+
+Only mode `e2e` exists so far; the oracle modes (injected stage inputs) come in the next phase.
+
+Exit codes: `0` output.pdf written (released or not), `1` no output: nothing was built, or the files could
+not be written (run_info.json still says why), `2` usage error, `3` unsupported mode.  output.pdf is written
+last, so it exists only together with every other file.
+
+| Environment | Effect |
+|---|---|
+| `MLREDACT_CONFIG` | deployment YAMLs (path-separator separated), applied before `--config` |
+| `MLREDACT_SURROGATE_KEY` | the surrogate key (or `surrogate.key_file`); without one the public development key is used and run_info.json says so |
+| `MLREDACT_MODELS_DIR` | models folder; when unset and the configured `.models` is not in the current folder (the benchmark starts the adapter from its run folder), the backend's own `.models` is used |
+| `RB_MLREDACT_PYTHON` | benchmark side: this backend's Python, used by the candidate manifest |
+
 ## Tests
 
 ```bash
@@ -185,7 +228,7 @@ src/mlredact/
   pipeline/    worker pool (spawned processes), shared-memory blobs, job runner
   api/         HTTP API for the frontend: jobs, queue, signed links (FastAPI)
   bench/       benchmark adapter: stage files from a job trace (evaluator only)
-  cli/         Typer CLI (run, serve, selfcheck, ...)
+  cli/         Typer CLI (run, bench, serve, selfcheck, ...)
 tools/synthdocs/  synthetic test documents
 docs/adr/         architecture decision records
 ```

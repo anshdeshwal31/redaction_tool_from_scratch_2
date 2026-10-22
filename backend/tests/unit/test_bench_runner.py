@@ -7,15 +7,21 @@ models are needed.  The letter is synthetic (``tools/synthdocs``).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
 
 import pytest
+import yaml
 from synthdocs import make_ime_letter
+from typer.testing import CliRunner
 
+import mlredact.bench.environment as bench_env
 import mlredact.pipeline.runner as runner_module
 import mlredact.pipeline.workers as workers_module
+from mlredact.cli.main import app
 from mlredact.config.loader import load_config
 from mlredact.config.schema import AppConfig
 from mlredact.core.canonical import canonical_json
@@ -226,3 +232,42 @@ def test_run_keeps_only_what_verification_held_back(jobs: Jobs) -> None:
     assert held.trace is not None and failed.trace is not None
     assert held.pdf is None and held.held_back_pdf == held.trace.pdf
     assert failed.held_back_pdf is None and failed.trace.pdf is not None
+
+
+# ------------------------------------------------------------------------------ the command
+@pytest.mark.parametrize(
+    ("name", "note"),
+    [
+        ("held back after a re-plan", "held back by the tool's own verification"),
+        ("re-read failed", "a step failed after the output was built (E_OCR_FAILED)"),
+        ("nothing built", "the pipeline built no output"),
+    ],
+)
+def test_bench_hands_over_the_last_output_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, note: str
+) -> None:
+    case = CASES[name]
+    pool = InProcessPool(**case.pool)
+    pool.install(monkeypatch)
+    monkeypatch.setattr(bench_env, "candidate_version", lambda root=None: "0.1.0+gtest")
+    monkeypatch.delenv("MLREDACT_CONFIG", raising=False)
+    monkeypatch.setenv("MLREDACT_MODELS_DIR", str(tmp_path))  # never read: model files are not resolved
+    monkeypatch.chdir(tmp_path)
+    config, src, out = tmp_path / "no-models.yaml", tmp_path / "input.pdf", tmp_path / "out"
+    config.write_text(yaml.safe_dump(NO_MODELS), "utf-8")
+    src.write_bytes(LETTER)
+    res = CliRunner().invoke(app, ["bench", "--input", str(src), "--workdir", str(out), "--config", str(config)])
+    assert res.exit_code == (0 if case.builds else 1), res.output
+    info = json.loads((out / "run_info.json").read_text("utf-8"))
+    assert info["release"] == {"released": False, "checks_failed": case.reasons}
+    assert note in info["notes"]
+    assert ("verification" in info["notes"]) is (name == "held back after a re-plan")
+    if not pool.builds:
+        assert not (out / "output.pdf").exists()
+        return
+    last = pool.builds[-1]
+    assert (out / "output.pdf").read_bytes() == last.pdf
+    # plan.json describes the operations output.pdf was drawn from, a re-plan's included.
+    plan = json.loads((out / "plan.json").read_text("utf-8"))["regions"]
+    assert {r["id"].rsplit(".", 1)[0] for r in plan} == {op.ref_id for ops in last.ops.values() for op in ops}
+    assert any(r["id"].startswith("R-") for r in plan) is case.replanned

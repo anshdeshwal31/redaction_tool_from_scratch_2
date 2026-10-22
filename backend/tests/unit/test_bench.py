@@ -1,17 +1,22 @@
-"""Benchmark adapter: stage files from a job trace.
+"""Benchmark adapter: stage files from a job trace, and the ``bench`` command (the pipeline is stubbed).
 
 All text is fictitious.  The schemas themselves belong to the benchmark and are checked there.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
+from click.testing import Result
+from typer.testing import CliRunner
 
+import mlredact.bench.artifacts as bench_artifacts
 import mlredact.bench.environment as bench_env
+import mlredact.pipeline.runner as runner_module
 from mlredact import __version__
 from mlredact.bench.artifacts import (
     LABELS,
@@ -24,7 +29,10 @@ from mlredact.bench.artifacts import (
     text_artifact,
     unreleased_note,
 )
+from mlredact.cli.main import app
 from mlredact.config.loader import load_config
+from mlredact.config.schema import AppConfig
+from mlredact.core.errors import EnvironmentErrorMl, ReasonCode
 from mlredact.core.geometry import BBox
 from mlredact.core.model import Evidence, Line, Mention, PageAnalysis, PageGeometry, Region, RenderOp, Token
 from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, JobStatus, PageKind, RegionKind
@@ -385,3 +393,213 @@ def test_version_is_the_plain_version_without_git_or_a_checkout(
     (tmp_path / "pyproject.toml").write_text("", "utf-8")
     monkeypatch.setattr(bench_env.shutil, "which", lambda _name: None)
     assert bench_env.candidate_version(tmp_path) == __version__
+
+
+# ------------------------------------------------------------------------------ the command
+MODELS = [{"id": "ppocrv6_det_small", "version": "v6", "license": "Apache-2.0", "files": []}]
+
+
+def _manifest(reasons: list[str]) -> dict[str, Any]:
+    return {"reasons": reasons, "job": {"input_sha256": "0" * 64}, "provenance": {"models": MODELS}}
+
+
+class _StubRedactor:
+    configs: ClassVar[list[AppConfig]] = []
+    calls: ClassVar[list[dict[str, Any]]] = []
+    outcome: ClassVar[str] = "released"
+    failure: ClassVar[Exception | None] = None
+
+    def __init__(self, config: AppConfig, **_: Any) -> None:
+        if self.failure is not None:
+            raise self.failure
+        self.configs.append(config)
+
+    def __enter__(self) -> _StubRedactor:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def run(self, data: bytes, **kwargs: Any) -> JobResult:
+        self.calls.append(kwargs)
+        if self.outcome == "released":
+            return JobResult(JobStatus.RELEASED, PDF, _manifest([]), {"workers": 1}, trace=make_trace(PDF))
+        if self.outcome == "held":
+            held = b"%PDF-1.7 held back"
+            return JobResult(JobStatus.QUARANTINED, None, _manifest(["V4_RESIDUAL"]), {}, trace=make_trace(held))
+        return JobResult(JobStatus.QUARANTINED, None, _manifest(["E_RENDER_FAILED"]), {}, trace=make_trace(None))
+
+
+@pytest.fixture
+def stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> type[_StubRedactor]:
+    _StubRedactor.configs, _StubRedactor.calls = [], []
+    _StubRedactor.outcome, _StubRedactor.failure = "released", None
+    monkeypatch.setattr(runner_module, "Redactor", _StubRedactor)
+    monkeypatch.setattr(bench_env, "candidate_version", lambda root=None: "0.1.0+gtest")
+    for name in ("MLREDACT_CONFIG", "MLREDACT_MODELS_DIR", "MLREDACT_SURROGATE_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    return _StubRedactor
+
+
+def _invoke(tmp_path: Path, *extra: str) -> Result:
+    src = tmp_path / "input.pdf"
+    src.write_bytes(b"%PDF-1.7 stub input")
+    return CliRunner().invoke(app, ["bench", "--input", str(src), "--workdir", str(tmp_path / "out"), *extra])
+
+
+def _bench(tmp_path: Path, *extra: str) -> tuple[int, Path]:
+    return _invoke(tmp_path, *extra).exit_code, tmp_path / "out"
+
+
+def _json(path: Path) -> Any:
+    return json.loads(path.read_text("utf-8"))
+
+
+STAGE_FILES = ["entities.json", "mentions.json", "plan.json", "pseudonyms.json", "text.json"]
+
+
+def test_released_job_writes_output_and_every_stage_file(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    code, out = _bench(tmp_path, "--seed", "4")
+    assert code == 0
+    assert sorted(p.name for p in out.iterdir()) == sorted(
+        ["manifest.json", "output.pdf", "run.json", "run_info.json", *STAGE_FILES]
+    )
+    assert (out / "output.pdf").read_bytes() == PDF
+    info = _json(out / "run_info.json")
+    assert info["release"] == {"released": True, "checks_failed": []}
+    assert info["seed"] == 4 and info["candidate_version"] == "0.1.0+gtest"
+    assert info["models"] == [{"name": "ppocrv6_det_small", "version": "v6"}]
+    assert info["config"]["profile"] == "client" and info["config"]["scope"] == "document"
+    assert len(info["config"]["config_hash"]) == 64
+    assert _json(out / "mentions.json") == mentions_artifact(make_trace())
+    assert stub.calls[0]["trace"] is True and stub.calls[0]["scope_id"] is None
+
+
+def test_held_back_output_is_handed_over_with_the_tools_verdict(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    stub.outcome = "held"
+    code, out = _bench(tmp_path)
+    assert code == 0
+    assert (out / "output.pdf").read_bytes() == b"%PDF-1.7 held back"
+    info = _json(out / "run_info.json")
+    assert info["release"] == {"released": False, "checks_failed": ["V4_RESIDUAL"]}
+    assert "held back by the tool's own verification" in info["notes"]
+    assert _json(out / "quarantine.json")["reasons"] == ["V4_RESIDUAL"]
+    assert all((out / name).is_file() for name in STAGE_FILES)
+
+
+def test_a_failure_while_writing_the_files_leaves_no_output_and_says_why(
+    tmp_path: Path, stub: type[_StubRedactor], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise KeyError("Ann Example")  # an exception's text never reaches the console
+
+    monkeypatch.setattr(bench_artifacts, "stage_files", broken)
+    stub.outcome = "held"
+    res = _invoke(tmp_path)
+    out = tmp_path / "out"
+    assert res.exit_code == 1 and "Ann" not in res.output
+    assert sorted(p.name for p in out.iterdir()) == ["manifest.json", "quarantine.json", "run.json", "run_info.json"]
+    info = _json(out / "run_info.json")
+    assert info["release"] == {"released": False, "checks_failed": ["E_INTERNAL", "V4_RESIDUAL"]}
+    assert "no output.pdf" in info["notes"] and "held back" not in info["notes"]
+
+
+def test_no_output_exits_1_with_run_info_only(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    stub.outcome = "failed"
+    code, out = _bench(tmp_path)
+    assert code == 1
+    assert sorted(p.name for p in out.iterdir()) == ["manifest.json", "quarantine.json", "run.json", "run_info.json"]
+    assert _json(out / "run_info.json")["release"] == {"released": False, "checks_failed": ["E_RENDER_FAILED"]}
+
+
+def test_a_job_that_cannot_start_still_records_why(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    stub.failure = EnvironmentErrorMl(ReasonCode.MODEL_MISSING)
+    code, out = _bench(tmp_path)
+    assert code == 1
+    assert sorted(p.name for p in out.iterdir()) == ["run_info.json"]
+    assert _json(out / "run_info.json")["release"] == {"released": False, "checks_failed": ["E_MODEL_MISSING"]}
+
+
+def test_oracle_modes_are_not_supported_yet(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    code, out = _bench(tmp_path, "--mode", "oracle_text", "--inject-dir", str(tmp_path))
+    assert code == 3
+    assert not out.exists() and stub.calls == []
+
+
+def test_e2e_takes_no_injected_inputs(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    code, _out = _bench(tmp_path, "--inject-dir", str(tmp_path))
+    assert code == 2 and stub.calls == []
+
+
+def test_scope_id_is_passed_only_when_given(tmp_path: Path, stub: type[_StubRedactor]) -> None:
+    _bench(tmp_path, "--scope-id", "")
+    code, out = _bench(tmp_path, "--scope-id", "MATTER-7")
+    assert code == 0
+    assert [c["scope_id"] for c in stub.calls] == [None, "MATTER-7"]
+    assert _json(out / "run_info.json")["config"]["scope"] == "caller"
+
+
+def test_env_configs_apply_before_config_options(
+    tmp_path: Path, stub: type[_StubRedactor], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_a, env_b, cli = tmp_path / "a.yaml", tmp_path / "b.yaml", tmp_path / "cli.yaml"
+    env_a.write_text("ocr:\n  engine_b:\n    enabled: false\n", "utf-8")
+    env_b.write_text("runtime:\n  workers: 2\n", "utf-8")
+    cli.write_text("runtime:\n  workers: 3\n", "utf-8")
+    monkeypatch.setenv("MLREDACT_CONFIG", f"{env_a}{bench_env.os.pathsep}{env_b}")
+    code, out = _bench(tmp_path, "--config", str(cli))
+    assert code == 0
+    cfg = stub.configs[0]
+    assert cfg.ocr.engine_b.enabled is False and cfg.runtime.workers == 3
+    assert _json(out / "run_info.json")["config"] | {"config_hash": ""} == {
+        "profile": "client",
+        "render_style": "surrogate",
+        "config_hash": "",
+        "scope": "document",
+        "workers": 3,
+        "engine_b_enabled": False,
+    }
+
+
+def test_a_missing_env_config_is_a_usage_error(
+    tmp_path: Path, stub: type[_StubRedactor], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MLREDACT_CONFIG", str(tmp_path / "missing.yaml"))
+    code, _out = _bench(tmp_path)
+    assert code == 2 and stub.calls == []
+
+
+def test_models_fall_back_to_the_backends_own_folder(
+    tmp_path: Path, stub: type[_StubRedactor], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = tmp_path / "backend"
+    (backend / ".models").mkdir(parents=True)
+    monkeypatch.setattr(bench_env, "backend_root", lambda: backend)
+    code, out = _bench(tmp_path)  # the current folder (tmp_path) has no .models
+    assert code == 0
+    assert stub.configs[-1].runtime.models_dir == str(backend / ".models")
+    assert "models from the backend's own .models folder" in _json(out / "run_info.json")["notes"]
+    monkeypatch.setenv("MLREDACT_MODELS_DIR", str(tmp_path))  # an explicit folder always wins
+    _bench(tmp_path)
+    monkeypatch.delenv("MLREDACT_MODELS_DIR")
+    (tmp_path / ".models").mkdir()  # so does a configured folder that exists here
+    _bench(tmp_path)
+    assert [c.runtime.models_dir for c in stub.configs[1:]] == [".models", ".models"]
+
+
+def test_run_info_says_which_surrogate_key_was_used(
+    tmp_path: Path, stub: type[_StubRedactor], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _code, out = _bench(tmp_path)
+    assert "public development surrogate key" in _json(out / "run_info.json")["notes"]
+    assert stub.configs[0].surrogate.allow_development_key is True
+    monkeypatch.setenv("MLREDACT_SURROGATE_KEY", "ab" * 32)
+    _code, out = _bench(tmp_path)
+    notes = _json(out / "run_info.json")["notes"]
+    assert "configured surrogate key (env)" in notes and "development" not in notes
+
+
+def test_bench_version_prints_the_candidate_version(stub: type[_StubRedactor]) -> None:
+    res = CliRunner().invoke(app, ["bench-version"])
+    assert res.exit_code == 0 and res.stdout.strip() == "0.1.0+gtest"
