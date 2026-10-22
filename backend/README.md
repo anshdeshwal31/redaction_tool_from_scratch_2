@@ -230,7 +230,7 @@ src/mlredact/
   manifest/    non-sensitive manifest; sealed sensitive manifest
   pipeline/    worker pool (spawned processes), shared-memory blobs, job runner
   api/         HTTP API for the frontend: jobs, queue, signed links (FastAPI)
-  bench/       benchmark adapter: stage files from a job trace (evaluator only)
+  bench/       benchmark adapter: stage files from a job trace, injected stage inputs (evaluator only)
   cli/         Typer CLI (run, bench, serve, selfcheck, ...)
 tools/synthdocs/  synthetic test documents
 docs/adr/         architecture decision records
