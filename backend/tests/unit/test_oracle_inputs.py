@@ -281,6 +281,25 @@ def test_a_box_inside_a_word_is_the_word(tmp_path: Path) -> None:
     assert (op.kind, op.ref_id, op.box) == (ActionKind.SURROGATE, p.staged.internal(p.words[1].text), p.words[1].bbox)
 
 
+def test_anchors_and_plan_regions_off_their_page_are_not_placed(tmp_path: Path) -> None:
+    tokens = layout("Ms Jane Citizen")
+    off = poly(600, 100, 660, 120)  # right of the page (A4: 595 points wide)
+    mentions = [
+        mention("sig", "SIGNATURE", regions=[{"page": 0, "poly": off}]),
+        mention("person", "PERSON_NAME", tokens=["t0.1"], regions=[*polys(tokens, "t0.1"), {"page": 0, "poly": off}]),
+    ]
+    s = stage(tmp_path / "stage", tokens, mentions)
+    # Not a sliver at the page's edge: the signature is not placed, and the name is its word.
+    assert set(s.reported) == {"person"} and s.regions == ()
+    note = s.note("injected mentions")
+    assert "1 placed by token ids, 0 by span, 0 by region anchors, 1 not placed" in note
+    assert "2 anchors off their page" in note
+    # Nor is a plan region: nothing is applied there, and plan.json does not say it was.
+    p = planned(tmp_path / "plan", tokens, mentions, [*word_regions(tokens, "person", "t0.1"), plan_region("off", off)])
+    assert set(p.echoes) == {"person-0"} and [op.ref_id for op in p.page_ops] == [p.staged.internal("Jane")]
+    assert "1 applied by 1 operations" in p.note and "1 off their page" in p.note
+
+
 # ----------------------------------------------------------------------------------- shared tokens
 def test_a_name_inside_an_organisation_is_redacted_with_it(tmp_path: Path) -> None:
     tokens = layout("Smith & Partners Lawyers")

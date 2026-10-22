@@ -50,7 +50,7 @@ from mlredact.core.model import Candidate, Evidence, Mention, PageAnalysis, Regi
 from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, RegionKind, VerificationCheck
 from mlredact.detect.engine import DetectionResult, default_detectors
 from mlredact.detect.fusion import TYPE_PRIORITY
-from mlredact.pipeline.injection import InjectedPage, InjectedStage, InjectReport, ReportedMention, pt_box
+from mlredact.pipeline.injection import InjectedPage, InjectedStage, InjectReport, ReportedMention, on_page, pt_box
 from mlredact.policy.engine import Decision, decide, decide_injected
 from mlredact.resolve.persons import resolve_persons, with_clusters
 from mlredact.surrogate.assign import MentionSurrogate
@@ -330,6 +330,9 @@ class _Stager:
             if geometry is None:
                 self.counts["anchors_beyond"] += 1
                 continue
+            if not on_page(a.poly, geometry):
+                self.counts["anchors_off_page"] += 1
+                continue
             out.append((a.page, pt_box(a.poly, geometry)))
         return out
 
@@ -483,7 +486,7 @@ class _Stager:
             f"{c['nested']} sharing tokens another one owns, {c['split']} split into runs, "
             f"{c['location_split']} locations split into locality and postcode, {c['kept_acted']} of a kept type "
             f"redacted, {c['fallback']} labels taken as other_id, {c['extra_regions']} anchors not explained by "
-            "their tokens"
+            f"their tokens, {c['anchors_off_page']} anchors off their page"
         )
 
     def _cluster_note(self) -> str:

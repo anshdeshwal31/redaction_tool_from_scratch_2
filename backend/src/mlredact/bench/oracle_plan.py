@@ -36,7 +36,7 @@ from mlredact.core.canonical import content_id
 from mlredact.core.geometry import BBox, union_all
 from mlredact.core.model import PageAnalysis, Region, RenderOp, Token
 from mlredact.core.types import ActionKind, RegionKind
-from mlredact.pipeline.injection import PlanEcho, ReportedMention, pt_box
+from mlredact.pipeline.injection import PlanEcho, ReportedMention, on_page, pt_box
 from mlredact.policy.engine import Decision
 from mlredact.render.plan import _DESCENDERS, _TEXT_KINDS, effective_kind
 from mlredact.surrogate.assign import MentionSurrogate
@@ -145,6 +145,9 @@ class _Planner:
             geometry = self.geoms.get(r.page)
             if geometry is None:
                 self.counts["beyond"] += 1
+                continue
+            if not on_page(r.poly, geometry):
+                self.counts["off_page"] += 1
                 continue
             placed.append((r, pt_box(r.poly, geometry)))
         placed.sort(key=lambda p: (p[0].page, p[1].y0, p[1].x0, p[1].y1, p[1].x1, p[0].id))
@@ -338,7 +341,8 @@ class _Planner:
             f"{applied} applied by {ops} operations ({c['joined']} joining regions of a mention on a line, "
             f"{c['merged']} the same as another), {c['regions']} applied as non-text regions, {c['mixed']} over "
             f"several mentions or other words, {c['illegible']} over no mention's word removed as illegible, "
-            f"{c['beyond']} beyond the last page, {c['replacements']} replacement texts not used"
+            f"{c['beyond']} beyond the last page, {c['replacements']} replacement texts not used, {c['off_page']} "
+            "off their page"
         )
 
 

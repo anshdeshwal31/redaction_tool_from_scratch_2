@@ -79,6 +79,13 @@ def pt_box(points: Sequence[tuple[float, float]], geometry: PageGeometry) -> BBo
     return BBox(x0, y0, x1, y1)
 
 
+def on_page(points: Sequence[tuple[float, float]], geometry: PageGeometry) -> bool:
+    """Some of the polygon (display points) lies on the page.  :func:`pt_box` clips one that does not to a sliver at
+    the page's edge."""
+    box = BBox.from_points((_px(x, geometry.dpi), _px(y, geometry.dpi)) for x, y in points)
+    return box.x1 > 0 and box.y1 > 0 and box.x0 < geometry.width_px and box.y0 < geometry.height_px
+
+
 def _quad(first: InjectedToken, last: InjectedToken, box: BBox, dpi: int) -> Quad:
     """A line's corners in pixels: the first token's left edge and the last token's right edge when both polygons
     are quadrilaterals (so a sideways line stays sideways for planning), otherwise the line's box."""
