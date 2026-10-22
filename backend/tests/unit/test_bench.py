@@ -646,6 +646,36 @@ def test_a_profile_that_keeps_injected_regions_is_refused(tmp_path: Path, stub: 
     assert code == 0
 
 
+@pytest.mark.parametrize(
+    ("replaced", "profile", "note"),
+    [
+        ({"mentions": None}, "", "injected file not usable: mentions.json, 1 errors"),
+        (
+            {"plan": {"schema": "rb.plan/0.1", "regions": [{"id": CANARY, "page": 0, "poly": [], "action": "blur"}]}},
+            "",
+            "injected file not usable: plan.json, 2 errors",
+        ),
+        (
+            {},
+            "policy:\n  region_actions:\n    logo: keep\n",
+            "the profile keeps a kind of region injected mentions become: logo",
+        ),
+    ],
+)
+def test_run_info_says_which_injected_input_could_not_be_used(
+    tmp_path: Path, stub: type[_StubRedactor], replaced: dict[str, Any], profile: str, note: str
+) -> None:
+    options = ["--mode", "oracle_regions", "--inject-dir", str(_inject_dir(tmp_path / "inject", **replaced))]
+    if profile:
+        (tmp_path / "profile.yaml").write_text(profile, "utf-8")
+        options += ["--config", str(tmp_path / "profile.yaml")]
+    code, out = _bench(tmp_path, *options)
+    assert code == 1 and stub.calls == []
+    info = _json(out / "run_info.json")
+    assert info["release"]["checks_failed"] == ["E_CONFIG_INVALID"]
+    assert info["notes"].endswith(note) and CANARY not in json.dumps(info)
+
+
 def test_e2e_takes_no_injected_inputs(tmp_path: Path, stub: type[_StubRedactor]) -> None:
     code, _out = _bench(tmp_path, "--inject-dir", str(tmp_path))
     assert code == 2 and stub.calls == []

@@ -165,6 +165,19 @@ def _utc_now() -> str:
     return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _unusable_injection(exc: Exception) -> list[str]:
+    """``bench``'s note on injected inputs it could not use: the file and its error count, or the kind of region the
+    profile would keep (an error's parameters are enum members and numbers, never content)."""
+    params = exc.params if isinstance(exc, EnvironmentErrorMl) else {}
+    if not params.get("inject"):
+        return []
+    if "kept_region" in params:
+        return [f"the profile keeps a kind of region injected mentions become: {params['kept_region']}"]
+    if "file" in params:
+        return [f"injected file not usable: {params['file']}, {params.get('errors')} errors"]
+    return []
+
+
 @app.command("bench-version")
 def bench_version() -> None:
     """Print the version the benchmark records for bench: mlredact's version and commit."""
@@ -307,7 +320,7 @@ def bench(
         with Redactor(cfg, log_level=log_level) as redactor:
             result = redactor.run(data, scope_id=scope_id or None, trace=True, inject=inputs)
     except Exception as exc:  # whatever stopped the job, the evaluator still gets run_info.json
-        finish(False, [sanitize(exc).code.value])
+        finish(False, [sanitize(exc).code.value], *_unusable_injection(exc))
         _fail(exc)
         return
     released = result.status is JobStatus.RELEASED
