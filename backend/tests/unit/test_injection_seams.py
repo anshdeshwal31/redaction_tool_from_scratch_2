@@ -9,16 +9,19 @@ text is fictitious.
 from __future__ import annotations
 
 import ast
+import io
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import pikepdf
 import pytest
 from test_bench_runner import LETTER, NO_MODELS, RESIDUAL, InProcessPool
 
 import mlredact.pipeline.workers as workers_module
+from inject_support import letter_words
 from mlredact.config.loader import load_config
 from mlredact.config.schema import AppConfig
 from mlredact.core.canonical import content_id
@@ -39,6 +42,7 @@ from mlredact.pipeline.injection import (
 from mlredact.pipeline.runner import JobResult, Redactor, RegionDecision
 from mlredact.pipeline.shared import SharedBlob
 from mlredact.policy.engine import Decision
+from mlredact.render.plan import rotated_token_ids
 from mlredact.resolve.persons import resolve_persons
 from mlredact.surrogate.assign import MentionSurrogate
 from mlredact.text.views import build_line_view
@@ -390,6 +394,80 @@ def test_injected_analysis_without_region_detection(monkeypatch: pytest.MonkeyPa
     analysis, spy = _analyse(monkeypatch, PERSON, False, PageRegions((SIGNATURE,), ()))
     assert spy.calls == [] and (analysis.regions, analysis.unexplained_ink) == ((), 0.0)
     assert [t.text for t in analysis.tokens()] == [t.text for t in PERSON.tokens]
+
+
+def test_region_analysis_sees_sideways_words_boxed_as_ocr_boxes_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Under the injected line, words reading down the page (the tops of their letters facing right), 11 pt across.
+    down = []
+    y = 540.0
+    for i, word in enumerate("Seen by Dr Peter Brown".split()):
+        length = 5.5 * len(word)
+        down.append(InjectedToken(1, i, ((80.0, y), (80.0, y + length), (69.0, y + length), (69.0, y)), 1.0, word))
+        y += length + 3.0
+    page = InjectedPage(0, (*PERSON.tokens, *down))
+    analysis, spy = _analyse(monkeypatch, page, True, PageRegions((), ()))
+    ((seen, _kwargs),) = spy.calls
+    # The page keeps each word's own box; region analysis sees a sideways line's words in the line's box, as tool 2's
+    # OCR reads a vertical line, and a line across the page as it is.
+    assert analysis.lines == injected_lines(page, analysis.geometry)
+    across, sideways = analysis.lines
+    assert rotated_token_ids(analysis.lines) == {t.token_id for t in sideways.tokens}
+    assert len({t.bbox for t in sideways.tokens}) == len(down)
+    assert seen[0] == across and seen[1] == replace(
+        sideways, tokens=tuple(replace(t, bbox=sideways.bbox) for t in sideways.tokens)
+    )
+
+
+def _turned(pdf: bytes, angle: int) -> bytes:
+    """The PDF with its pages shown turned ``angle`` degrees clockwise (``/Rotate``)."""
+    with pikepdf.open(io.BytesIO(pdf)) as doc:
+        for page in doc.pages:
+            page.obj.Rotate = angle
+        out = io.BytesIO()
+        doc.save(out, deterministic_id=True)
+    return out.getvalue()
+
+
+def _read_along(pdf: bytes, angle: int) -> InjectedPage:
+    """The words of the first page's text layer as a perfect reader injects them: each word's own box, its corners
+    in display points with the top edge first in reading direction (down the page when the page is turned 90
+    degrees, up it at 270)."""
+    geometry, words = letter_words(pdf, A4.dpi)
+    s = 72 / geometry.dpi
+    tokens = []
+    numbers: dict[int, int] = {}
+    for w in words:
+        x0, y0, x1, y1 = (v * s for v in w.box.as_tuple())
+        corners = {
+            0: ((x0, y0), (x1, y0), (x1, y1), (x0, y1)),
+            90: ((x1, y0), (x1, y1), (x0, y1), (x0, y0)),
+            270: ((x0, y1), (x0, y0), (x1, y0), (x1, y1)),
+        }[angle]
+        numbers[w.line] = numbers.get(w.line, -1) + 1
+        tokens.append(InjectedToken(w.line, numbers[w.line], corners, 1.0, w.text))
+    return InjectedPage(0, tuple(tokens))
+
+
+@pytest.mark.parametrize("angle", [0, 90, 270])
+def test_sideways_injected_text_explains_its_own_ink(monkeypatch: pytest.MonkeyPatch, angle: int) -> None:
+    """The letter (text only) shown upright or turned, its words injected each in its own box: region analysis
+    finds nothing, as over tool 2's own reading of the page.  (Measured by their heights down the page, the longer
+    sideways words would not pass for text, and their ink would become handwriting and signatures.)"""
+    pdf = _turned(LETTER, angle) if angle else LETTER
+    page = _read_along(pdf, angle)
+    config = load_config("client", (), {**NO_MODELS, "regions": {"faces": False}})
+    state: dict[str, Any] = {"config": config}
+    monkeypatch.setattr(workers_module, "_STATE", state)
+    try:
+        with SharedBlob(pdf) as blob:
+            analysis = workers_module.task_analyse_injected(blob.ref, 0, page, True)
+    finally:
+        cached = state.pop("doc", None)
+        if cached is not None:
+            cached[1].close()
+    assert len(rotated_token_ids(analysis.lines)) == (len(page.tokens) if angle else 0)
+    assert (analysis.regions, analysis.unexplained_ink) == ((), 0.0)
+    assert analysis.lines == injected_lines(page, analysis.geometry)
 
 
 def test_an_illegible_page_still_stops_the_job_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
 from mlredact.core.geometry import BBox, Quad, union_all
@@ -135,6 +135,19 @@ def injected_lines(page: InjectedPage, geometry: PageGeometry) -> tuple[Line, ..
             Line(f"p{page.index:04d}.l{line_no:04d}", page.index, line_no, bbox, quad, conf, INJECTED_ENGINE, tokens)
         )
     return tuple(lines)
+
+
+def ocr_shaped(lines: Sequence[Line], sideways: AbstractSet[str]) -> tuple[Line, ...]:
+    """The lines with their tokens boxed as tool 2's OCR boxes them: every token of a sideways line (``sideways``:
+    the ids of those tokens) carries its whole line's box, as OCR gives the words of a vertical line
+    (``mlredact.ocr.ppocr``).  Region analysis tells text from other ink by its tokens' height down the page, so
+    injected text shaped like this explains the ink tool 2's own reading of it would, and no more or less."""
+    return tuple(
+        replace(line, tokens=tuple(replace(t, bbox=line.bbox) for t in line.tokens))
+        if any(t.token_id in sideways for t in line.tokens)
+        else line
+        for line in lines
+    )
 
 
 @dataclass(frozen=True, slots=True)

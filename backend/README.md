@@ -194,6 +194,9 @@ Rendering, the PDF build and checks V1-V6 run in every mode and give the verdict
 mode run_info.json records `mode`, `injected` and `ner_enabled`.  A `dpi` given with the injected files is not
 used: they are in display points.
 
+- In `oracle_text` region detection sees the words of a sideways line in the line's box, as tool 2's OCR reports
+  them (it tells text from other ink by its height down the page); planning and the stage files keep each word's
+  own box.
 - From `oracle_mentions` on every injected mention is acted on: where the profile would keep its type (dates
   and places under `client`) it gets a surrogate.  A mention becomes tool 2's mentions over whole words; a
   signature, handwriting or an image, and an anchor its words do not explain (a logo around a name), become

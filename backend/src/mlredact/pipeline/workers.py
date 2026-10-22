@@ -218,9 +218,12 @@ def task_analyse(ref: BlobRef, page_index: int, ocr_profile: str = "primary") ->
 def task_analyse_injected(ref: BlobRef, page_index: int, page: InjectedPage, detect_regions: bool) -> PageAnalysis:
     """Render + injected text (benchmark oracle modes): the benchmark's tokens replace OCR.  With
     ``detect_regions`` the primary pass's region analysis runs around them, but unexplained ink is not re-read and
-    no token is dropped as a ghost: the injected text is never second-guessed from the page."""
+    no token is dropped as a ghost: the injected text is never second-guessed from the page.  Region analysis sees
+    the tokens boxed as OCR boxes them (each word of a sideways line in its line's box); the page keeps the injected
+    boxes."""
     try:
-        from mlredact.pipeline.injection import injected_lines
+        from mlredact.pipeline.injection import injected_lines, ocr_shaped
+        from mlredact.render.plan import rotated_token_ids
 
         cfg = _config()
         rendered = render_page(_document(ref), page_index, cfg.render, cfg.limits, with_words=False)
@@ -230,7 +233,8 @@ def task_analyse_injected(ref: BlobRef, page_index: int, page: InjectedPage, det
         if detect_regions and cfg.regions.enabled:
             dpi = rendered.geometry.dpi
             visual = _visual_regions(rendered.rgb, page_index, dpi)
-            found = analyse_regions(rendered.rgb, lines, page_index, dpi, cfg.regions, detected=visual, reread=None)
+            read = ocr_shaped(lines, rotated_token_ids(lines))
+            found = analyse_regions(rendered.rgb, read, page_index, dpi, cfg.regions, detected=visual, reread=None)
             if found.illegible and cfg.regions.illegible_action == "quarantine":
                 raise ProcessingError(ReasonCode.PAGE_ILLEGIBLE, page=page_index)
             regions, unexplained = found.regions, found.unexplained_ink
