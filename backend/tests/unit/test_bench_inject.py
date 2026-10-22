@@ -1,5 +1,5 @@
 """Injected stage inputs of the benchmark's oracle modes: reading the files, reading order and lines, points to
-pixels, and tool 2's lines from injected tokens.
+pixels, tool 2's lines from injected tokens, and benchmark labels.
 
 The files are written here in the benchmark's own format (no benchmark import).  All text is fictitious.
 """
@@ -14,18 +14,38 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
+from synthdocs.generator import medicare_number, provider_number
 
-from mlredact.bench.artifacts import display_poly
+from mlredact.bench.artifacts import LABELS, PII_REGION_KINDS, display_poly
 from mlredact.bench.inject import MODE_FILES, InjectedFile, Injection, TextArtifact, load_injection
+from mlredact.bench.labels import (
+    FALLBACK,
+    FAMILIES,
+    LABEL_MAP,
+    REGION_KINDS_USED,
+    Family,
+    family_of,
+    refine,
+    split_location,
+)
+from mlredact.config.loader import builtin_profiles, load_config
 from mlredact.core.errors import EnvironmentErrorMl, ReasonCode
 from mlredact.core.geometry import BBox
-from mlredact.core.model import PageGeometry
+from mlredact.core.model import Candidate, Evidence, PageGeometry
+from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, RegionKind, ViewKind
+from mlredact.detect.engine import default_detectors
 from mlredact.pipeline.injection import INJECTED_ENGINE, InjectedPage, InjectedToken, injected_lines, pt_box
 from mlredact.render.plan import rotated_token_ids
 from mlredact.security.exceptions import sanitize
+from mlredact.text.views import build_views
+from support import pages_from_lines
 
+E = EntityType
 CANARY = "Zelphinia Quarrington"
+# The benchmark's candidate manifest for tool 2, when the benchmark sits next to tool 2.
+CANDIDATE_MANIFEST = Path(__file__).resolve().parents[4] / "redaction_benchmark" / "candidates" / "mlredact-client.yaml"
 # A4 at 150 dpi.
 GEOM = PageGeometry(0, 595.276, 841.89, 150, 1240, 1754)
 Box = tuple[float, float, float, float]
@@ -537,3 +557,151 @@ def test_injected_pages_travel_to_workers_and_show_no_text() -> None:
     page = InjectedPage(0, (InjectedToken(0, 0, ((1.0, 2.0), (3.0, 2.0), (3.0, 4.0)), 1.0, CANARY),))
     assert pickle.loads(pickle.dumps(page)) == page
     assert CANARY not in repr(page) + repr(page.tokens[0])
+
+
+# --------------------------------------------------------------------------------------- labels
+def family(default: EntityType | RegionKind, region_kind: RegionKind = RegionKind.HANDWRITING) -> tuple[str, str]:
+    """(default type or region kind, region kind) of a family, as values."""
+    return default.value, region_kind.value
+
+
+EXPECTED_FAMILIES = {
+    "PERSON_NAME": family(E.PERSON),
+    "SIGNATURE": family(RegionKind.SIGNATURE, RegionKind.SIGNATURE),
+    "HANDWRITTEN_MARK": family(RegionKind.HANDWRITING),
+    "IMAGE_PII": family(RegionKind.PHOTO, RegionKind.PHOTO),
+    "ADDRESS": family(E.STREET_ADDRESS),
+    "LOCATION": family(E.LOCALITY),
+    "PHONE": family(E.PHONE),
+    "EMAIL": family(E.EMAIL),
+    "URL": family(E.URL),
+    "DATE": family(E.DATE_OF_BIRTH),
+    "AGE": family(E.AGE),
+    "ID_CLAIM": family(E.REFERENCE),
+    "ID_LEGAL_REF": family(E.COURT_FILE),
+    "ID_PROVIDER": family(E.PROVIDER_NUMBER),
+    "ID_GOVERNMENT": family(E.DRIVER_LICENCE),
+    "ID_BUSINESS": family(E.ABN),
+    "ID_FINANCIAL": family(E.BANK_ACCOUNT),
+    "ID_OTHER": family(E.OTHER_ID, RegionKind.BARCODE),
+    "FILE_PATH": family(E.FILE_PATH),
+    "ORGANISATION": family(E.ORGANISATION, RegionKind.LOGO),
+    "QUASI_IDENTIFIER": family(E.OTHER_ID),
+    "NOT_A_TYPE": family(E.OTHER_ID),
+    # Tool 2's own labels are taken as themselves; others are unknown labels.
+    "medicare": family(E.MEDICARE),
+    "organisation": family(E.ORGANISATION, RegionKind.LOGO),
+    "stamp": family(RegionKind.STAMP, RegionKind.STAMP),
+    "faint_ink": family(E.OTHER_ID),
+}
+
+
+@pytest.mark.parametrize("label", EXPECTED_FAMILIES)
+def test_every_benchmark_type_has_a_family(label: str) -> None:
+    f = family_of(label)
+    assert (f.reported, f.region_kind.value) == EXPECTED_FAMILIES[label]
+    assert (f is FALLBACK) is (label in ("QUASI_IDENTIFIER", "NOT_A_TYPE", "faint_ink"))
+    assert f.location is (label == "LOCATION")
+    assert f.ambiguous is (label.startswith("ID_") and len(f.types) > 1)
+
+
+def test_every_reported_label_maps_back_to_its_benchmark_type() -> None:
+    assert set(FAMILIES) == {k for k in EXPECTED_FAMILIES if k.isupper()} - {"QUASI_IDENTIFIER", "NOT_A_TYPE"}
+    for benchmark_type, f in FAMILIES.items():
+        assert {LABEL_MAP[t.value] for t in f.types} | {LABEL_MAP[f.reported]} == {benchmark_type}
+        assert f.types or LABEL_MAP[f.region_kind.value] == benchmark_type
+    # Every member of a benchmark type's family is one of its labels, and every label of it is in the family.
+    for label, benchmark_type in LABEL_MAP.items():
+        in_family = label in {t.value for t in FAMILIES[benchmark_type].types} | {FAMILIES[benchmark_type].reported}
+        assert in_family or label in {k.value for k in RegionKind}
+        assert family_of(label).reported == label
+
+
+def test_the_label_map_is_the_one_the_benchmark_publishes() -> None:
+    assert set(LABEL_MAP) == set(LABELS)
+    if not CANDIDATE_MANIFEST.is_file():
+        pytest.skip("the benchmark is not next to tool 2")
+    published = yaml.safe_load(CANDIDATE_MANIFEST.read_text("utf-8"))["label_map"]
+    assert list(published.items()) == list(LABEL_MAP.items())
+
+
+def test_no_packaged_profile_keeps_a_region_kind_injected_mentions_become() -> None:
+    assert {RegionKind.SIGNATURE, RegionKind.HANDWRITING, RegionKind.PHOTO, RegionKind.LOGO, RegionKind.BARCODE} <= (
+        REGION_KINDS_USED
+    )
+    assert REGION_KINDS_USED <= PII_REGION_KINDS
+    for profile in builtin_profiles():
+        actions = load_config(profile).policy.region_actions
+        assert all(actions[kind] is not ActionKind.KEEP for kind in REGION_KINDS_USED), profile
+
+
+def hits(line: str) -> tuple[int, list[tuple[range, Candidate]]]:
+    """Token count and the rule detectors' hits (with their token indices) on one line."""
+    views = build_views(pages_from_lines([line]))
+    found = [(views[c.view].token_range(c.start, c.end), c) for d in default_detectors() for c in d.detect(views)]
+    return len(views[ViewKind.LINE].tokens), found
+
+
+@pytest.mark.parametrize(
+    ("benchmark_type", "line", "value_from", "expected"),
+    [
+        ("ID_GOVERNMENT", medicare_number("29537015", 1), 0, E.MEDICARE),
+        ("ID_GOVERNMENT", "2123 45670 1", 0, E.MEDICARE),  # a valid Medicare checksum, no label
+        ("ID_PROVIDER", provider_number("212345", "A"), 0, E.PROVIDER_NUMBER),
+        ("ID_BUSINESS", "ABN 51 824 753 556", 1, E.ABN),
+        ("ID_BUSINESS", "ACN 004 085 616", 1, E.ACN),
+        ("ID_GOVERNMENT", "Licence XK 1234", 1, E.DRIVER_LICENCE),  # nothing recognised: the default
+        ("ID_PROVIDER", "Ref 99 1234", 1, E.PROVIDER_NUMBER),
+    ],
+)
+def test_rule_detectors_choose_the_identifier_type(
+    benchmark_type: str, line: str, value_from: int, expected: EntityType
+) -> None:
+    count, found = hits(line)
+    assert refine(FAMILIES[benchmark_type], range(value_from, count), found) is expected
+
+
+def test_only_the_family_s_own_overlapping_hits_choose_its_type() -> None:
+    count, found = hits(f"Medicare No: {medicare_number('29537015', 1)} ACN 004 085 616")
+    medicare = range(2, 5)
+    assert refine(FAMILIES["ID_GOVERNMENT"], medicare, found) is E.MEDICARE
+    assert refine(FAMILIES["ID_BUSINESS"], medicare, found) is E.ABN  # the ACN hit is elsewhere on the line
+    assert refine(FAMILIES["ID_BUSINESS"], range(6, count), found) is E.ACN
+    # Families with a single meaning keep their default whatever the rules say.
+    assert refine(FAMILIES["DATE"], range(count), found) is E.DATE_OF_BIRTH
+    assert refine(FAMILIES["ID_CLAIM"], range(count), found) is E.REFERENCE
+    with pytest.raises(ValueError, match="region"):
+        refine(FAMILIES["SIGNATURE"], range(count), found)
+
+
+def test_the_type_is_chosen_as_fusion_chooses_it() -> None:
+    """Strongest evidence first, then type priority (a passport before a driver licence, Medicare before a TFN)."""
+
+    def hit(etype: EntityType, strength: EvidenceStrength, rule: str, tokens: range = range(2, 5)) -> Any:
+        return (tokens, Candidate(etype, ViewKind.LINE, 0, 1, Evidence("rules", "1", rule, strength, 1.0)))
+
+    government, mention = FAMILIES["ID_GOVERNMENT"], range(2, 5)
+    weak_medicare = hit(E.MEDICARE, EvidenceStrength.WEAK, "a")
+    strong_licence = hit(E.DRIVER_LICENCE, EvidenceStrength.STRONG, "z")
+    strong_passport = hit(E.PASSPORT, EvidenceStrength.STRONG, "a")
+    assert refine(government, mention, [weak_medicare, strong_licence]) is E.DRIVER_LICENCE
+    assert refine(government, mention, [strong_licence, strong_passport]) is E.PASSPORT
+    assert refine(government, mention, [weak_medicare, hit(E.TFN, EvidenceStrength.WEAK, "a")]) is E.MEDICARE
+    # Only hits that overlap the mention count, and only of the family's types.
+    assert refine(government, mention, [hit(E.MEDICARE, EvidenceStrength.STRONG, "a", range(5, 7))]) is E.DRIVER_LICENCE
+    assert refine(government, mention, [hit(E.ABN, EvidenceStrength.STRONG, "a"), strong_passport]) is E.PASSPORT
+
+
+def test_a_trailing_postcode_is_split_off_a_location() -> None:
+    L, P = E.LOCALITY, E.POSTCODE
+    assert split_location(["Penrith", "NSW", "2750"]) == [(L, 0, 2), (P, 2, 3)]
+    assert split_location(["Sydney", "NSW", "2000,"]) == [(L, 0, 2), (P, 2, 3)]  # a capital city too
+    assert split_location(["2000"]) == [(P, 0, 1)]
+    assert split_location(["Penrith"]) == [(L, 0, 1)]
+    assert split_location(["2750", "Penrith"]) == [(L, 0, 2)]
+    assert split_location([]) == []
+
+
+def test_a_family_reports_its_default_or_its_region_kind() -> None:
+    assert Family((E.LOCALITY, E.POSTCODE), RegionKind.HANDWRITING).reported == "locality"
+    assert Family((), RegionKind.SIGNATURE).default is None and Family((), RegionKind.SIGNATURE).reported == "signature"
