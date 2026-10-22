@@ -1,5 +1,5 @@
-"""``mlredact bench`` in the oracle modes (``oracle_text``, ``oracle_mentions``, ``oracle_entities``): the real
-runner, fed the benchmark's injected stage inputs for the synthetic letter.
+"""``mlredact bench`` in the oracle modes (``oracle_text``, ``oracle_mentions``, ``oracle_entities``,
+``oracle_regions``): the real runner, fed the benchmark's injected stage inputs for the synthetic letter.
 
 Jobs run as in tests/unit/test_bench_runner.py: its in-process worker pool and its configuration without models, so
 the verification re-read reads the output's own text layer.  The injected files are written in the benchmark's own
@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -28,22 +29,30 @@ import mlredact.bench.environment as bench_env
 import mlredact.pipeline.runner as runner_module
 import mlredact.pipeline.workers as workers_module
 from inject_support import (
+    APPLIED,
     LETTER_CLUSTERS,
     LETTER_MENTIONS,
+    PARTIAL,
+    SIGNATURE_BOX,
     Docs,
     add_line,
+    changed_shares,
     keep_mentions,
     letter_docs,
     mention,
+    poly,
     token_polys,
     without_mentions,
+    without_regions,
     write_inject_dir,
 )
 from mlredact.bench.artifacts import display_poly
 from mlredact.bench.inject import MODE_FILES
 from mlredact.bench.labels import LABEL_MAP
 from mlredact.cli.main import app
+from mlredact.core.geometry import BBox, union_all
 from mlredact.core.model import PageGeometry
+from mlredact.pipeline.injection import pt_box
 from mlredact.surrogate.pools import load_pools
 from mlredact.text.normalize import digits_only
 from mlredact.verify.checks import extract_all_text
@@ -55,12 +64,13 @@ CONFIG: dict[str, Any] = {**NO_MODELS, "regions": {"faces": False}, "output": {"
 # The same with NER on, as the client profile has it: the modes that inject mentions switch it off (without models a
 # Redactor with NER on could not even start).
 WITH_NER = {k: v for k, v in CONFIG.items() if k != "detection"}
-MODES = ("oracle_text", "oracle_mentions", "oracle_entities")
+MODES = ("oracle_text", "oracle_mentions", "oracle_entities", "oracle_regions")
 STAGE_FILES = ("entities.json", "mentions.json", "plan.json", "pseudonyms.json", "text.json")
 CHANGED = ("constant", "persistent")  # a word of the letter, injected as another word (oracle_text)
-# A mention left out of the injection (oracle_mentions).
+# A mention left out of the injection (oracle_mentions), or out of the plan only (oracle_regions).
 LEFT_OUT = "phone-mobile"
 CC = "person-cc"  # "J. Smith", injected on a line of its own (oracle_entities)
+LOGO = "org-harbourside-3"  # the plan region of the letterhead's logo
 
 
 @dataclass
@@ -223,6 +233,21 @@ RUNS: dict[str, Callable[[Path], Bench]] = {
     "oracle_entities": lambda d: bench(d, "oracle_entities", with_cc("ent-john"), config=WITH_NER),
     "oracle_entities again": lambda d: bench(d, "oracle_entities", with_cc("ent-john"), config=WITH_NER),
     "oracle_entities, J. Smith is Jane": lambda d: bench(d, "oracle_entities", with_cc("ent-jane"), config=WITH_NER),
+    # The mobile number's regions are left out of the plan; a residual barcode on the first re-read.
+    "oracle_regions": lambda d: bench(
+        d,
+        "oracle_regions",
+        without_regions(letter(), {LEFT_OUT}),
+        config=WITH_NER,
+        pool=InProcessPool(residuals=(RESIDUAL,)),
+    ),
+    "oracle_regions again": lambda d: bench(
+        d,
+        "oracle_regions",
+        without_regions(letter(), {LEFT_OUT}),
+        config=WITH_NER,
+        pool=InProcessPool(residuals=(RESIDUAL,)),
+    ),
 }
 RELEASE = {
     "oracle_text": {"released": True, "checks_failed": []},
@@ -230,6 +255,8 @@ RELEASE = {
     # digits of a whole line, and the line's digits (0412345678) hold the injected claim number's (WC1234567).
     "oracle_mentions": {"released": False, "checks_failed": ["V2_TEXT_LEAK", "V4_RESIDUAL"]},
     "oracle_entities": {"released": True, "checks_failed": []},
+    # The mobile number is injected but not in the plan: it stays, which both checks see, and nothing is re-planned.
+    "oracle_regions": {"released": False, "checks_failed": ["V2_TEXT_LEAK", "V4_RESIDUAL"]},
 }
 
 
@@ -282,6 +309,7 @@ def test_the_output_and_every_stage_file_are_handed_over(runs: Runs, mode: str) 
         "oracle_text": ["injected text"],
         "oracle_mentions": ["injected text", "injected mentions"],
         "oracle_entities": ["injected text", "injected mentions", "injected clusters"],
+        "oracle_regions": ["injected text", "injected mentions", "injected clusters", "injected plan"],
     }[mode]
     assert [n for n in notes if n.startswith("injected ")] == injected
     assert notes[len(notes) - (1 if info["release"]["released"] else 2)] == "V4 residual hits"
@@ -372,7 +400,7 @@ def test_the_regions_of_a_scanned_page_are_found_around_the_injected_words(runs:
 
 
 # -------------------------------------------------------------------------------------- oracle_mentions
-@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities"])
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities", "oracle_regions"])
 def test_the_injection_replaces_detection_and_region_analysis(runs: Runs, mode: str) -> None:
     run = runs[mode]
     assert (run.detections, run.regions) == (0, [])
@@ -381,7 +409,7 @@ def test_the_injection_replaces_detection_and_region_analysis(runs: Runs, mode: 
     assert detectors == [{"id": "bench.inject", "version": "1"}, {"id": "resolve.persons", "version": "1"}]
 
 
-@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities"])
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities", "oracle_regions"])
 def test_the_injected_mentions_are_reported_under_their_ids(runs: Runs, mode: str) -> None:
     run = runs[mode]
     injected = {m["id"]: m for m in run.docs["mentions.json"]["mentions"]}
@@ -472,3 +500,80 @@ def test_pseudonyms_name_the_injected_clusters(runs: Runs) -> None:
     assert by_original["John Andrew SMITH"] == by_original["J. Smith"] == "ent-john"
     assert by_original["Jane Citizen"] == "ent-jane" and by_original["0412 345 678"] is None
     assert {e["cluster"] for e in entries} <= {c["id"] for c in run.docs["entities.json"]["clusters"]} | {None}
+
+
+# -------------------------------------------------------------------------------------- oracle_regions
+def _geometry(run: Bench) -> PageGeometry:
+    page = run.json("manifest.json")["pages"][0]
+    keys = ("index", "width_pt", "height_pt", "dpi", "width_px", "height_px")
+    return PageGeometry(*(page[k] for k in keys))
+
+
+def _px(points: Sequence[Sequence[float]], geometry: PageGeometry) -> list[int]:
+    """A display-point polygon as tool 2's pixel box, as the manifest writes it."""
+    return list(pt_box([(x, y) for x, y in points], geometry).as_tuple())
+
+
+def test_each_mention_is_drawn_once_per_line_over_its_words(runs: Runs) -> None:
+    run = runs["oracle_regions"]
+    geometry, manifest = _geometry(run), run.json("manifest.json")
+    words = {t["id"]: pt_box(t["poly"], geometry) for t in run.json("text.json")["pages"][0]["tokens"]}
+    left_out = run.mentions()[LEFT_OUT]["tokens"]
+    for m in manifest["mentions"]:
+        lines: dict[str, list[BBox]] = defaultdict(list)
+        for token in m["token_ids"]:
+            lines[token.rsplit(".", 1)[0]].append(words[token])
+        if m["token_ids"] == left_out:
+            assert (m["render"], m["boxes"]) == ([], [])  # none of its regions is in the plan
+            continue
+        # One operation per line, over the line's words and nothing more: the regions are the words' boxes, or
+        # characters inside one (the e-mail address's name).
+        assert m["render"] == ["surrogate"]
+        assert sorted(b["px"] for b in m["boxes"]) == sorted(list(union_all(b).as_tuple()) for b in lines.values())
+    regions = {r["kind"]: (r["action"], r["box"]["px"]) for r in manifest["regions"]}
+    (logo,) = [r["poly"] for r in run.docs["plan.json"]["regions"] if r["id"] == LOGO]
+    assert regions == {
+        "logo": ("remove", _px(logo, geometry)),
+        "signature": ("synthesise", _px(poly(SIGNATURE_BOX), geometry)),
+    }
+    assert manifest["residual_boxes"] == []  # nothing re-planned, nothing left unresolved
+
+
+def test_plan_json_repeats_the_injected_plan_with_what_was_done(runs: Runs) -> None:
+    run = runs["oracle_regions"]
+    injected = {r["id"]: r for r in run.docs["plan.json"]["regions"]}
+    plan = run.plan()
+    assert [r["id"] for r in plan] == sorted(injected)  # every region (all on page 0), by id
+    assert all((r["poly"], r["mentions"]) == (injected[r["id"]]["poly"], injected[r["id"]]["mentions"]) for r in plan)
+    done = {r["id"]: (r["action"], "replacement" in r) for r in plan}
+    # The letterhead's logo is removed, as the client removes logos; the signature gets a stand-in, which is no text.
+    assert (done.pop(LOGO), done.pop("signature-0")) == (("remove", False), ("replace", False))
+    assert set(done.values()) == {("replace", True)}
+    # The organisation's words are joined: each of their regions names the one fake drawn over all of them.
+    firm = {r["replacement"] for r in plan if r["mentions"] == ["org-firm"]}
+    assert len(firm) == 1 and firm != {"Smith & Partners Lawyers"}
+    n, notes = len(injected), run.json("run_info.json")["notes"]
+    assert f"injected plan: {n} regions read (0 with a repeated id), {n} applied by " in notes
+
+
+def test_every_region_in_the_plan_is_applied_to_the_page(runs: Runs) -> None:
+    """A fake drawn where a word was changes the word's strokes, not the paper between them, so the benchmark rates
+    a replaced word "partial" or "applied"; the removed logo turns grey all over; regions left out stay as they were."""
+    run = runs["oracle_regions"]
+    left_out = [r for r in letter()["plan.json"]["regions"] if r["mentions"] == [LEFT_OUT]]
+    shares = changed_shares(LETTER, run.read("output.pdf"), [*run.plan(), *left_out])
+    applied = [shares[r["id"]] for r in run.plan()]
+    assert len(applied) == len(run.docs["plan.json"]["regions"]) and min(applied) >= PARTIAL
+    assert shares[LOGO] >= APPLIED
+    assert left_out and all(shares[r["id"]] < PARTIAL for r in left_out)
+
+
+def test_a_mention_left_out_of_the_plan_stays_and_holds_the_document_back(runs: Runs) -> None:
+    run = runs["oracle_regions"]
+    assert "0412345678" in digits_only(extract_all_text(run.read("output.pdf")))
+    # Still injected and reported: only its regions were left out, so no fake of it was drawn.
+    assert LEFT_OUT in run.mentions() and not any(LEFT_OUT in r["mentions"] for r in run.plan())
+    assert LEFT_OUT not in {m["mention"] for m in run.json("pseudonyms.json")["mentions"]}
+    # Verification holds the document back (RELEASE) and counts the residual barcode, but re-plans nothing.
+    assert run.builds == 1
+    assert "1 regions) after 0 re-plans (re-plans from: none)" in run.json("run_info.json")["notes"]

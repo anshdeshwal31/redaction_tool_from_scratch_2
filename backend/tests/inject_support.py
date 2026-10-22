@@ -3,6 +3,8 @@
 builds them from ground truth (its ``benchmark/runner/oracle.py``): the words with their line and reading order, the
 required mentions anchored by their words' ids and boxes, the clusters, and one plan region per mention anchor.
 
+Also how the benchmark measures that a plan region was applied (:func:`changed_shares`).
+
 All text is fictitious.
 """
 
@@ -15,6 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
+import numpy.typing as npt
+import pypdfium2 as pdfium
 from synthdocs.generator import medicare_number, provider_number
 
 from mlredact.bench.artifacts import display_poly
@@ -209,6 +215,14 @@ def without_mentions(docs: Docs, ids: Collection[str]) -> Docs:
     return keep_mentions(docs, every - set(ids))
 
 
+def without_regions(docs: Docs, ids: Collection[str]) -> Docs:
+    """A copy whose plan leaves out the regions of the mentions ``ids``: they are still injected, but not to be
+    applied."""
+    out = copy.deepcopy(docs)
+    out["plan.json"]["regions"] = [r for r in out["plan.json"]["regions"] if not set(r["mentions"]) & set(ids)]
+    return out
+
+
 def add_line(docs: Docs, line_id: str, text: str, origin: tuple[float, float]) -> list[str]:
     """Inject a line of words where the page is blank (``origin``: its top-left corner in display points), 11 pt
     high; the words' ids, in order."""
@@ -237,3 +251,38 @@ def write_inject_dir(folder: Path, mode: str, docs: Mapping[str, Any]) -> Path:
     for name in MODE_FILES[mode]:
         (folder / name.value).write_text(json.dumps(docs[name.value]), "utf-8")
     return folder
+
+
+# ------------------------------------------------------------------------------------------- plan fidelity
+# How the benchmark measures that a plan region was applied (its ``plan_fidelity``): pixels of a 100 dpi grey
+# rendering that change by more than 40 after a 3x3 box blur, as a share of the region.  A region is "applied" from
+# 50%, "partial" from 10%, otherwise "not applied".
+FIDELITY_DPI = 100
+APPLIED, PARTIAL = 0.5, 0.1
+
+
+def changed_shares(before: bytes, after: bytes, regions: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+    """The share of each ``rb.plan/0.1`` region, by id, whose pixels changed from the PDF ``before`` to the PDF
+    ``after`` (those whose centre lies inside the region), as the benchmark counts them."""
+    pages = sorted({r["page"] for r in regions})
+    changed = {p: np.abs(_blurred(before, p) - _blurred(after, p)) > 40 for p in pages}
+    return {r["id"]: _changed_share(changed[r["page"]], r["poly"]) for r in regions}
+
+
+def _blurred(pdf: bytes, page: int) -> npt.NDArray[np.int16]:
+    """A page rendered in grey at the benchmark's resolution, and blurred."""
+    doc = pdfium.PdfDocument(pdf)
+    try:
+        image = doc[page].render(scale=FIDELITY_DPI / 72, grayscale=True).to_pil().convert("L")
+    finally:
+        doc.close()
+    return cv2.blur(np.asarray(image, dtype=np.uint8), (3, 3)).astype(np.int16)
+
+
+def _changed_share(changed: npt.NDArray[np.bool_], points: Sequence[Sequence[float]]) -> float:
+    s = FIDELITY_DPI / 72
+    xs, ys = [p[0] * s for p in points], [p[1] * s for p in points]
+    c0, c1 = (int(np.ceil(v - 0.5)) for v in (min(xs), max(xs)))
+    r0, r1 = (int(np.ceil(v - 0.5)) for v in (min(ys), max(ys)))
+    area = (c1 - c0) * (r1 - r0)
+    return float(changed[r0:r1, c0:c1].sum()) / area if area > 0 else 0.0
