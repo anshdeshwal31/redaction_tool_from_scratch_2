@@ -1,0 +1,7 @@
+Source: Australian Bureau of Statistics (ABS), Australian Statistical Geography Standard (ASGS) Edition 3, July 2021 - June 2026 (allocation files SAL_2021_AUST, SA2_2021_AUST, GCCSA_2021_AUST; correspondences CG_SAL_2021_POA_2021, CG_SAL_2021_SA2_2021, CG_LOCALITY_2021_POA_2021, CG_LOCALITY_2021_SA2_2021) and Census of Population and Housing: Mesh Block Counts, 2021, accessed 22 October 2026. © Commonwealth of Australia, licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Modified: ABS name suffixes removed, non-places and Other Territories removed, tables combined, official localities missing from the Suburbs and Localities list added, and derived columns added (population, class, capital share, primary, range flag, fake_pool, display_name, source); the alias and cross-border lists are derived from the same data.
+
+Licensed material:
+- ASGS Edition 3 allocation files: https://www.abs.gov.au/statistics/standards/australian-statistical-geography-standard-asgs/edition-3-july-2021-june-2026/access-and-downloads/allocation-files
+- ASGS Geographic Correspondences (2021) Edition 3: https://data.gov.au/data/dataset/asgs-edition-3-2021-correspondences
+- Census of Population and Housing: Mesh Block Counts, 2021: https://www.abs.gov.au/census/guide-census-data/mesh-block-counts/2021
+Licence: https://creativecommons.org/licenses/by/4.0/
