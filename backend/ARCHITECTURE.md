@@ -40,7 +40,7 @@ flowchart LR
   subgraph host["Host with no network egress"]
     mlr["mlredact"]
     models[("Pinned models<br/>SHA-256 verified")]
-    res[("Pinned resources<br/>fonts, surrogate pools, allowlists")]
+    res[("Pinned resources<br/>fonts, surrogate pools, allowlists,<br/>suburb list (ABS, CC BY 4.0)")]
     tess["Tesseract 5 binary<br/>(OCR engine B, optional)"]
   end
   caller -- "PDF / TIFF / PNG / JPEG<br/>profile, scope id, seeds" --> mlr
@@ -195,7 +195,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   pages["All page analyses"] --> views["Text views over one token sequence<br/>line, title-cased, OCR-digit-normalised<br/>(length-preserving: the same offsets map to the same tokens)"]
-  views --> rules["Rule detectors<br/>AU identifiers with checksums, contact details,<br/>dates, label to value (form geometry),<br/>person cues, addresses, generic IDs, ages"]
+  views --> rules["Rule detectors<br/>AU identifiers with checksums, contact details,<br/>dates, label to value (form geometry),<br/>person cues, addresses (the shared grammar), generic IDs, ages"]
   views --> nerd["NER ensemble<br/>Privacy Filter (exact windowing, own Viterbi decoder)<br/>GLiNER-PII"]
   nerd --> allow["Contextual allowlist<br/>(statistical evidence only)"]
   seeds["Job seeds"] --> sp["Seed search"]
@@ -211,6 +211,7 @@ flowchart TD
   prop -- "new hits: fuse again<br/>(until nothing new, at most 4 rounds)" --> fuse
   men -- "after the fixpoint" --> ext["Neighbour rule<br/>absorb adjacent uncertain tokens on the same line"]
   ext --> persons["Person resolution<br/>name parsing, clustering, gender, roles"]
+  persons --> join["Address join<br/>mentions + the grammar's units become<br/>whole-address units; places on their own recorded"]
 ```
 
 - **Evidence is strong or weak.** Labels, valid checksums, seeds and propagation give strong
@@ -224,6 +225,21 @@ flowchart TD
   matches only minimal windows within one line, so it cannot absorb neighbouring label words.
 - **Person resolution never decides whether a mention is redacted under Broad.** It decides
   surrogate consistency and, under claimant-focused, professional roles.
+- **One grammar reads addresses for every stage** (`text/address/`, pure, no models). It reads a place from its end
+  (country, postcode, state, suburb), the street line before it (building and property names, designators, house
+  number, street name and type, corner forms, box kinds, DX), and the lines around it by geometry (a block, a page
+  break, a form's boxes with compound or colon-less labels). A place anchors only when its postcode lies in the state's
+  Australia Post ranges and its suburb is a locality of the state in the suburb list
+  (`text/gazetteer.py`, `resources/gazetteer/`, ABS data, CC BY 4.0). The rule detectors (`detect/rules/address.py`,
+  `labels.py`) turn what the grammar reads into candidates; the policy, the fakes, verification and the benchmark's
+  reporting read the same units.
+- **The join turns addresses into units** (`policy/addresses.py`, `addresses: whole`). Each unit is one STREET_ADDRESS
+  mention (a form's boxes are one mention each, one unit): it absorbs the LOCALITY and POSTCODE mentions inside it and
+  the state and country words nobody owns, never a person, organisation, contact or identifier word (their own rule
+  replaces those). It finds repeats of a found address (a footer) and records the places that are on their own
+  (prose, after a birth, injury, accident, incident or declaration phrase), which stay as the profile says. Its result
+  carries the layouts for the fakes, the verification targets and the exempt positions. Under `addresses: parts` it
+  returns the earlier per-part split instead.
 
 ## 7. From mentions to drawing operations
 
@@ -231,12 +247,20 @@ flowchart TD
 
 | Profile | How it differs from Broad |
 |---|---|
-| `broad` (default) | Replaces every person, identifier, contact detail, DOB/DoD, address part and linked organisation. Keeps clinical content and other dates |
+| `broad` (default) | Replaces every person, identifier, contact detail, DOB/DoD, every address (whole) and linked organisation, and suburbs and postcodes on their own (capital cities on their own stay). Keeps clinical content and other dates |
 | `claimant_focused` | Keeps professionals' names, provider/AHPRA/HPI numbers and organisations visible, under a one-sided rule ([ADR 0003](docs/adr/0003-profile-transformations.md)) |
 | `maximal` | Shifts all dates by one keyed offset, top-codes ages of 90 and over to "90+", and re-typesets every line that contains a replacement |
 
 Every profile removes non-text regions. Faint ink (show-through) is suppressed to paper colour
 instead of being boxed.
+
+`client` is not in this table because its action table is the client's own (`client.yaml`): addresses are replaced
+whole like the other profiles, but places on their own, ages and every date are kept.
+
+Every profile sets `addresses: whole`: units, roles, structure words, look-alikes and same-fake groups hold in all of
+them, while each profile keeps its own action for a place on its own (`locality`, `postcode`). `address_state: keep`
+(default) writes the original state word; `replace` moves all addresses of one state to one other state
+([ADR 0006](docs/adr/0006-whole-addresses.md)).
 
 ### How a mention's action is settled
 
@@ -278,7 +302,7 @@ and so becomes a blackout.
 flowchart LR
   km["Master key<br/>(only its key id is recorded)"] --> ks["Scope key = HMAC of the master key and scope id<br/>scope = matter id if given,<br/>else the input's SHA-256"]
   ks --> ch["Keyed chooser<br/>HMAC of domain, canonical original value, attempt"]
-  ch --> gen["Type-specific generator<br/>names by gender, same-state locality and postcode,<br/>ACMA fictional phone ranges, reserved domains,<br/>IDs with a deliberately invalid check digit"]
+  ch --> gen["Type-specific generator<br/>names by gender, whole-address fakes (same state),<br/>ACMA fictional phone ranges, reserved domains,<br/>IDs with a deliberately invalid check digit"]
   gen --> col{"Equal or near any<br/>original in the document?"}
   col -- "yes: next attempt" --> ch
   col -- "no" --> sur["Surrogate"]
@@ -288,7 +312,15 @@ flowchart LR
   surrogate, so all documents of one matter stay consistent.
 - **Names map per component** (surname, given name). "John Smith", "Mr Smith", "J. Smith" and
   "SMITH, John" therefore stay consistent, and family members share a surrogate surname.
-- **Exhausted attempts raise an error,** which the orchestrator turns into quarantine.
+- **Exhausted attempts raise an error,** which the orchestrator turns into quarantine. Address parts never run out:
+  an empty choice widens (class, then state) instead of raising.
+- **An address has one fake, chosen from its canonical key** (house number, street name, canonical type, unit and
+  level; or box kind and number; or the suburb and state), under the scope key and not from the rest of the document.
+  `St` and `Street`, case, commas, line breaks and OCR forms give one fake, a street line seen without its place gets
+  the same street line, and one address gets the same fake in every document of a matter. Two different addresses in
+  one suburb get independent fake suburbs. The suburb comes from the suburb list's fake pool (real localities with
+  their own postcodes, ABS data) in the same state and class; a postcode keeps its digit count, differs from the
+  original at every digit after those the state fixes, and lies in the state's ranges.
 
 ### Rendering and PDF construction
 
@@ -325,10 +357,10 @@ stateDiagram-v2
 | Check | What the code verifies | Independent of the renderer? |
 |---|---|---|
 | V1 Structure | The output contains only allowlisted keys and objects, has one revision and the right page and image counts, and also opens in PDFium | Yes: parses the output bytes |
-| V2 Text leak | No removed value (normalised, and digits-only for IDs) appears in extracted text, in string operands of any stream, or in info values | Yes |
+| V2 Text leak | No removed value (normalised, and digits-only for IDs) appears in extracted text, in string operands of any stream, or in info values. An address unit is searched by its verification targets (its text, its lines, the street line, number and street name, suburb with state and postcode, `label value` of form parts, and the suburb, street-name and building words as whole tokens); every occurrence must lie on an exempt position (this run's drawn fakes, places recorded as on their own, tokens of kept mentions) | Yes |
 | V3 Pixels | Fills are uniform. Surrogate boxes contain nothing but the drawn glyphs. Suppressed areas hold only paper or strong ink | **No**: computed by the raster editor while drawing |
-| V4 Residual | On the re-rendered, re-OCR'd output, outside the erased boxes: no removed value (exact, alternate or fuzzy match), no new strong hit from the rule detectors (NER is not re-run), no barcode or face | Yes: shares only normalisers and rule detectors |
-| V5 Surrogates | No surrogate equals or nearly equals an original. IDs fail their checksums, phones are in ACMA ranges, domains are reserved. Every date moves by one common offset, and no age of 90 or over remains | Re-checked separately from the generators |
+| V4 Residual | On the re-rendered, re-OCR'd output, outside the erased boxes: no removed value (exact, alternate or fuzzy match; for an address, its verification targets), no new strong hit from the rule detectors (NER is not re-run), no address unit or anchored place whose words are not this run's fakes (the join runs again on the output), no barcode or face. A residual that repeats a found address is re-planned with that address's fake | Yes: shares only normalisers, rule detectors and the grammar |
+| V5 Surrogates | No surrogate equals or nearly equals an original. IDs fail their checksums, phones are in ACMA ranges, domains are reserved. Every date moves by one common offset, and no age of 90 or over remains. Every word and number of an address fake differs from every identifying word and number of every address of the document, the postcode lies in the state's ranges and differs from the original at every digit after the state's own, and no two different addresses share a whole fake | Re-checked separately from the generators |
 | V6 Integrity | Page count and page sizes match. The number of planned ops equals the number applied | Partly: the applied count is reported by the worker |
 
 **Limit:** verification shows that planned removals happened. It cannot find PII that every
@@ -355,7 +387,12 @@ erDiagram
   view, and fusion converts them to token ranges. Planning converts tokens to pixel boxes. Views are
   length-preserving, so no realignment is ever needed.
 - **The removal set is used four times.** The values of removed mentions are forbidden as
-  surrogates, are V2's search needles, are V4's probe targets, and form the log scrub list.
+  surrogates, are V2's search needles, are V4's probe targets, and form the log scrub list. For an address the
+  values are the unit's verification targets, not its parts.
+- **An address unit is identified by position.** Its id is a content id of its first and last token, a unit
+  mention's id of the unit and the mention's tokens, so reruns agree. The job trace (in memory, for the benchmark
+  adapter) carries the layouts, the units, the places kept on their own and the fakes drawn; the manifest and the run
+  record hold no original address text (the manifest lists the fakes, which are visible in the PDF).
 - **Identifiers come from positions** (page, line, word, input hash), never from values or
   randomness. Manifests from reruns therefore diff cleanly and reveal nothing.
 - **Document text is hidden from `repr`.** Standalone values such as seeds use a `Sensitive`
@@ -405,7 +442,9 @@ In place:
   production runtime profile is pinned.
 - **Container.** The Compose sketch runs with no network, a read-only root filesystem, a non-root
   user, dropped capabilities, no core dumps and a RAM-backed `/tmp`.
-- **Licences.** A CI licence gate blocks copyleft and non-commercial dependencies.
+- **Licences.** A CI licence gate blocks copyleft and non-commercial dependencies. The suburb list is ABS data under
+  CC BY 4.0; its attribution is in [README.md](README.md) (Third-party data) and next to the list
+  (`src/mlredact/resources/gazetteer/ATTRIBUTION.txt`).
 
 Planned but not built ([PLAN.md](PLAN.md) §14, §17):
 
@@ -560,7 +599,8 @@ flowchart LR
   - Windows is not a determinism target.
   - Engine B has not yet been validated on Linux ([ADR 0005](docs/adr/0005-second-readers-and-orientation.md)).
 - **Small curated resources.**
-  - Surrogate name pools are small: about 160 surnames and 180 given names.
+  - Surrogate name pools are small: about 160 surnames and 180 given names. Address fakes draw suburbs from the suburb
+    list's fake pool (about 6,900 localities with their own postcodes), but street names come from a short list (about 60).
   - The interim drug allowlist has 48 entries.
   - Variety and allowlist coverage are therefore limited.
 - **Heuristic regions.** Figures, body charts and unreadable print are removed, which costs
@@ -585,7 +625,7 @@ flowchart LR
 - These planned items do not exist in the code yet:
   - VLM second reader, LLM sweep (P5);
   - API, queue, observability (P6);
-  - gazetteers;
+  - name gazetteers (the suburb list exists);
   - a trained layout model;
   - nickname tables, née/aka linking.
 

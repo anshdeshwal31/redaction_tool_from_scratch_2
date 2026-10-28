@@ -1,7 +1,10 @@
 # Broad (default) profile - plan section 7.1.
 # Every person (claimant, relatives, clinicians, lawyers, insurer/employer staff), every identifier
-# and contact detail, DOB/DoD, street + suburb + postcode, employer and claimant-linked
-# organisations are replaced with surrogates.  Clinical content and other dates are kept.
+# and contact detail, DOB/DoD, every address (replaced whole, from the building or house number to the postcode, with
+# one same-shape fake), suburbs and postcodes mentioned on their own, employer and claimant-linked
+# organisations are replaced with surrogates.  Capital cities, states and countries mentioned on their own stay (the
+# allowlist covers a place on its own only: inside an address the capital is replaced with the rest).  Clinical
+# content and other dates are kept.
 policy:
   profile_id: broad
   addresses: whole

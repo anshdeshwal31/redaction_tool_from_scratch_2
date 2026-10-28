@@ -1,16 +1,18 @@
-# Client profile (default) - the client's policy decisions of 2026-10-18.
+# Client profile (default) - the client's policy decisions of 2026-10-18, as amended for addresses (below).
 # Every person (claimant, family, witnesses, staff, clinicians, examining experts, lawyers, insurer
 # and administrative staff), every organisation and its contact details, every identifier (claim,
-# court, provider, ABN, file paths and names) and street lines are replaced with surrogates.
-# Kept as they are: every date (including dates of birth and death), ages, suburbs, towns and places of birth,
-# postcodes, and clinical content.  Role words ("the claimant") and other personal details
-# (nationality, occupation, ...) are not detected and so stay.
+# court, provider, ABN, file paths and names) and every postal or street address are replaced with surrogates.
+# Kept as they are: every date (including dates of birth and death), ages, places mentioned on their own
+# (suburbs, towns, places of birth, a postcode alone), and clinical content.  Role words ("the claimant") and other
+# personal details (nationality, occupation, ...) are not detected and so stay.
 # Addresses: the owner's decision of 2026-10-22 is to replace every postal or street address WHOLE (building
 # or property name, unit and level words, house number, street, suburb, state, postcode), as one unit with one
-# same-shape fake.  This departs from the client's literal answer to Q4 (street line replaced, suburb and
-# postcode kept).  `locality: keep` and `postcode: keep` now cover places mentioned on their own only ("she
-# moved to Penrith", "born in Dubbo NSW 2830", "postcode 2750"), which stay as written.  `addresses: parts`
-# (a job override) restores the client's literal answer.
+# same-shape fake in the same state.  This departs from the client's literal answer to Q4 (street line replaced,
+# suburb and postcode kept).  `locality: keep` and `postcode: keep` now cover places mentioned on their own only ("she
+# moved to Penrith", "born in Dubbo NSW 2830", "postcode 2750"), which stay as written.  `addresses: parts` (a job
+# override) restores the client's literal answer; `address_state: replace` also moves each address to another state.
+# The suburb list behind the address rules and the fakes is ABS data (CC BY 4.0): see
+# src/mlredact/resources/gazetteer/ATTRIBUTION.txt.
 # Signatures and photos are replaced with synthetic stand-ins rather than grey boxes; figures and
 # body charts stay (losing clinical content fails a document).
 policy:

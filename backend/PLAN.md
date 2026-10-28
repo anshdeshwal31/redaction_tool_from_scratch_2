@@ -203,8 +203,8 @@ The per-job workspace is encrypted, and every stage writes **content-addressed a
 | PERSON | Full or partial names, initials, nicknames, maiden names and aliases, for **every role**: claimant, relatives/associates, clinicians, lawyers, insurer/employer staff, witnesses | SURROGATE |
 | SIGNATURE / HANDWRITTEN INITIALS | Image regions | REMOVE |
 | DOB / DATE OF DEATH | Any format: "D.O.B.", dots, 2-digit years, written months | SURROGATE (DOB keeps its year; day and month are derived from the key) |
-| STREET ADDRESS | Unit, number, street, lot, RMB, PO Box, Locked Bag, property names, c/- lines | SURROGATE |
-| LOCALITY + POSTCODE | Suburbs and towns (outside an allowlist of capitals and major cities) and postcodes | SURROGATE (a real locality + postcode pair in the **same state**) |
+| ADDRESS (whole) | A postal or street address as **one unit**, from its first word (building or property name, floor or unit words, house number, corner form, street, or box kind and number) to its last (suburb, state, postcode, country): unit, number, street, lot, RMB, PO Box, Locked Bag, DX, property names. Court, hospital and public-body names, citations, Traditional Place lines and c/- lines stay outside the unit | SURROGATE (one same-shape fake per address; the suburb is a real locality with its own postcode in the **same state**; see §7.4) |
+| LOCALITY + POSTCODE (on their own) | Suburbs and towns (outside an allowlist of capitals and major cities) and postcodes mentioned **outside an address** | SURROGATE under Broad; kept by the client profile, which also keeps a place after a birth, injury, accident, incident or declaration phrase |
 | CONTACT | Phone/mobile/fax, email, personal URLs, social handles, IP addresses | SURROGATE (ACMA fictitious number ranges; `example.com`) |
 | GOVERNMENT IDs | Medicare (+IRN), IHI, DVA file number, Centrelink CRN, TFN, NDIS, driver licence and card numbers, passport, visa/ImmiCard | SURROGATE (format-preserving, **check digit deliberately invalid**) |
 | CLINICAL IDs | MRN/UR/URN, episode/admission numbers, pathology/imaging accession numbers, implant serials | SURROGATE |
@@ -235,11 +235,11 @@ Every detector implements one `Detector` interface: pure, deterministic, version
 | R1 | **AU structured IDs** (regex + check-digit + context). Covers: Medicare (weights 1,3,7,9, mod 10; IRN), IHI/HPI-I/HPI-O (16 digits, prefixes 800360/1/2, Luhn), Medicare provider number (stem + location char + check char), DVA (state + war code + digits), CRN, TFN (mod 11), ABN (mod 89), ACN, NDIS, AHPRA, passport, state licence/card formats, BSB/account, cards (Luhn). Candidates are normalised for OCR confusions (O→0, l/I→1, S→5…) before validation | **Strong** if the checksum is valid *or* a label is present. **A failed checksum never suppresses a match when a label is present** (OCR damage) |
 | R2 | **Contact / date / plate patterns.** AU phone formats (+61, 04xx, (0x), 13/1300/1800), email, URL, IP. Dates are parsed **day-first** by default, plus DOB/DoD cues. Plates and VINs need vehicle context | Strong with context, otherwise weak |
 | R3 | **Label→value extractor**, layout-aware. A lexicon of AU form labels ("Name", "Surname", "Given names", "Patient", "Claimant", "Injured worker", "Re:", "DOB", "UR No", "MRN", "Claim No", "Our ref", "Medicare No", "NOK", "Employer", "Signed"…) marks the value region **regardless of NER**: to the right of the label, below it, or in the same table row or cell. Handwritten values cause the whole value region to be removed | Strong |
-| R4 | **AU address grammar** plus ABS SAL / G-NAF gazetteer validation (CC BY 4.0) | Strong if validated |
+| R4 | **AU address grammar** (`text/address/`, one grammar for detection, policy, fakes, verification and the benchmark) plus validation against the ABS suburb list (CC BY 4.0; postcode ranges, locality of the state) and the address join (§7.4) | Strong if validated |
 | N1 | **OpenAI Privacy Filter**, run on ONNX Runtime with our own constrained Viterbi decoder; its 6 transition biases are set in config at a recall-biased operating point. Windowing is exact: 8 layers × 128-token band means a ±1024-token receptive field, so we stitch logits from windows with ≥1024-token overlap and run **one** Viterbi pass over the whole document. Later fine-tuned to our taxonomy | Strong ≥ τ_high, weak ≥ τ_low |
 | N2 | **GLiNER-PII** (Knowledgator, Apache-2.0) on ONNX Runtime, with a label set matched to the taxonomy (person, organisation, hospital, employer, address…); fixed windows with overlap | Strong / weak |
 | N3 | Reserved slot: an **in-house AU medico-legal de-identification model** (ModernBERT or DeBERTa-v3 student, from the model repo, Phase 7) | Strong / weak |
-| G1 | **Gazetteers:** given names and surnames, localities and postcodes, healthcare facilities, honorifics and post-nominals, and (optionally) business names from the ABN bulk extract | Weak (corroborating) |
+| G1 | **Gazetteers:** given names and surnames, localities and postcodes (the ABS suburb list ships; see §7.4), healthcare facilities, honorifics and post-nominals, and (optionally) business names from the ABN bulk extract | Weak (corroborating) |
 | S1 | **Seeds:** known identifiers supplied with the job (claimant name, DOB, address, claim number, family names) | Strong |
 | P1 | **Propagation:** every surface variant of a resolved entity is searched across all views *and* OCR alternates (§8–9) | Strong |
 | L1 | **LLM recall sweep** (tier). Each chunk is shown with existing detections marked, and the model is asked for remaining identifying spans "copied exactly" as grammar-constrained JSON. **Proposals are accepted only if they match the source text verbatim or with OCR-tolerant fuzzy matching (≥ 0.9)**. Add-only | Strong if grounded |
@@ -273,6 +273,31 @@ The cheap detectors (R*, G1, P1, N1) run on all views. N2 runs on the fused pros
   The verifier uses the **same** allowlist rules (shared module), so policy and verification can't disagree.
 - **Thresholds** are set per detector × type in versioned config. They start recall-first and are tuned from the external evaluator's results.
 
+### 7.4 Whole addresses (the owner's decision of 2026-10-22, built 2026-10-24)
+
+An address is replaced as one unit with one fake in every profile (`addresses: whole`; `parts` restores the per-part
+behaviour, which with the client's `locality: keep` is the client's literal answer to Q4; `address_state: keep | replace`
+chooses whether the fake stays in the original's state). [ADR 0006](docs/adr/0006-whole-addresses.md) holds the decision.
+
+- **Grammar** (`text/address/`). Reads a place from its end (country, postcode, state, suburb), the street line before it
+  and the lines around it by geometry. A place anchors only when its postcode lies in the state's Australia Post ranges
+  and its suburb is a locality of the state; months, weekdays, measure words, clinical and legal-record nouns and box
+  kinds in the wrong case or context never make a street.
+- **Join** (`policy/addresses.py`). Replaces `split_kept_places`: one unit per address, found on one line, over the lines
+  of a block, across a page break, in form boxes and again wherever it repeats; place-only units; places on their own
+  recorded with their positions. It also builds the verification targets and the exempt positions, and takes the explicit
+  ADDRESS-LOCATION pairs of the oracle modes.
+- **Fakes.** One per unit from its canonical key; street line, unit and level numbers, suburb and postcode, state per
+  `address_state`; an empty choice widens instead of raising.
+- **Verification.** V2 searches for the unit's targets and accounts for each occurrence by an exempt position; V4 joins
+  the re-read output again; V5 checks the fakes against every identifying word and number.
+- **Benchmark.** A unit is reported as a street entry and a `<id>.place` locality entry; the oracle modes (perfect
+  text, mentions, entities, regions) build the same units from the injected ADDRESS and LOCATION mentions, so their
+  fakes equal the end-to-end fakes.
+- **Closed risk.** The perfect-input build's LOCATION split (the suburb fake in the first slot, the state slot blank, a
+  suburb from any state) and the open question attached to it are gone: an injected LOCATION is joined to the injected
+  ADDRESS before it as one unit, or is a place-only unit by itself.
+
 ---
 
 ## 8. Entity resolution strategy
@@ -285,7 +310,7 @@ The cheap detectors (R*, G1, P1, N1) run on all views. N2 runs on the fused pros
     - Partial mentions attach only if compatible: surname equal or OCR-equivalent, given name or initial compatible, title gender compatible, role compatible.
     - Ambiguous partial mentions (e.g. "Mr Smith" when there are two Smiths) attach to a **surname group** rather than to an individual. They are still redacted; only the choice of surrogate depends on the grouping.
   - Each cluster's canonical spelling is the strongest variant: seed, then digital text, then highest OCR confidence, then frequency, then lexicographic order.
-- **Addresses:** street types, unit notation and postcode are normalised. Locality-only mentions link to address clusters in the same locality.
+- **Addresses:** street types, unit notation and postcode are normalised, and each address has a canonical key (house number, street name, canonical type, unit and level, or box kind and number; plus suburb and state), so `St` and `Street`, case, commas and line breaks name one address and get one fake. A place-only unit links to the person or organisation heading its block.
 - **Organisations:** legal suffixes (Pty Ltd, P/L, Limited) and punctuation are normalised. Acronyms and head nouns are linked ("Bunnings Warehouse" ↔ "Bunnings").
 - **Dates:** parsed to ISO (day-first, windowed 2-digit years). The same date in different formats is the same entity.
 - **IDs:** separators are stripped, OCR confusions are canonicalised in digit contexts, and equivalence is check-digit aware.
@@ -343,7 +368,7 @@ The cheap detectors (R*, G1, P1, N1) run on all views. N2 runs on the fused pros
 - Each component is drawn by HMAC-DRBG rejection sampling from **pinned, versioned pools**:
   - given names by gender (from title or name-lexicon cues), from state baby-name lists (CC BY);
   - surnames from public-domain and CC0 sources;
-  - real AU localities and postcodes from the same state (ABS SAL);
+  - real AU localities and postcodes from the same state (ABS suburb list, CC BY 4.0; the rows flagged as the fake pool), one whole fake per address (§7.4);
   - fictional organisation and street names.
 - The draw is filtered to the original's length bucket for visual fit; the box width already reveals that much.
 - **Collision rules:** a surrogate is never equal or fuzzy-near any original value in the document, and is unique per entity. Collisions are redrawn deterministically.

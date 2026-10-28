@@ -14,7 +14,7 @@ quarantined with PII-free reason codes.
 | P0 Foundations: types, config/profiles, determinism controls, PII-safe logging, model registry | done |
 | P1 Safe minimal pipeline: intake, PDFium render, PP-OCRv6 OCR, rule detectors, propagation, PDF rebuild, verification V1-V4/V6, manifest, CLI | done |
 | P2 OCR robustness and layout: region detectors (barcodes, faces, signatures, stamps, handwriting, show-through), ink accounting with re-reading, legibility gate, embedded text (engine D), Tesseract (engine B), form geometry (values below / beside labels) | done (engine B awaits validation on the Linux instance; a trained layout model is optional future work) |
-| P3 Detection ensemble: OpenAI Privacy Filter (own Viterbi, exact windowing) + GLiNER-PII, contextual allowlist, seeds | done (gazetteers pending) |
+| P3 Detection ensemble: OpenAI Privacy Filter (own Viterbi, exact windowing) + GLiNER-PII, contextual allowlist, seeds | done (the suburb list ships; name gazetteers pending) |
 | P4 Resolution and surrogates: name parser, clustering, aliases, keyed surrogates, erase + typeset, labels, text layer, notice, V5; claimant-focused roles; Maximal date shift + age top-coding; line re-typesetting (PII-dense blocks, positional hardening) | done (nickname table and née/aka linking pending) |
 | P5 Generative tiers: VLM second reader, LLM sweep | planned |
 | P6 Productionisation: API, queue, images, observability | planned |
@@ -24,10 +24,45 @@ The default render style is `surrogate` (realistic replacements derived from a k
 
 | profile | what is replaced |
 |---|---|
-| `client` (default) | the client's policy decisions: every person (professionals included), organisation, contact detail, identifier, file path or file name and street line; every date (DOB/DoD included), age, suburb/town/place of birth and postcode kept; signatures, faces and photos replaced by synthetic stand-ins (pen strokes, a silhouette); figures and body charts kept |
-| `broad` | every person, identifier, contact detail, file path, DOB/DoD, street/suburb/postcode, linked organisation; clinical content and other dates kept |
+| `client` (default) | the client's policy decisions: every person (professionals included), organisation, contact detail, identifier, file path or file name and **every postal or street address, whole** (see Addresses below); every date (DOB/DoD included), age, and **places mentioned on their own** (suburb, town, place of birth, a postcode alone) kept; signatures, faces and photos replaced by synthetic stand-ins (pen strokes, a silhouette); figures and body charts kept |
+| `broad` | every person, identifier, contact detail, file path, DOB/DoD, linked organisation, **every address whole** and the suburbs and postcodes mentioned on their own; capital cities and other places at state level and above stay when mentioned on their own (the capital rule covers a place on its own only: inside an address the capital is replaced with the rest); clinical content and other dates kept |
 | `claimant_focused` | as broad, but people resolved as professionals (explicit title/post-nominal/role, no subject cue, surname not shared with the claimant's family) and their provider identifiers stay visible |
 | `maximal` | as broad, plus every date shifted by one keyed offset per scope (intervals preserved, layout kept) and ages of 90+ top-coded to "90+" |
+
+### Addresses
+
+Every profile replaces each postal or street address as **one unit**, from its first word (a building or property
+name, floor or unit words, the house number, a corner form, the street, or a box kind and number) to its last (suburb,
+state, postcode, country), with **one same-shape fake**: the house, unit and level numbers keep their digit count and
+every digit changes, the street name and type change, the suburb is a real locality of the same state and class with
+its own postcode (no digit after the state's own matches the original's), glued forms such as `NSW2750` stay glued,
+and the state word stays. An address is found on one line, over the lines of its block, across a page break, in form
+boxes, in letterheads, footers and prose, and again wherever it repeats. Overseas addresses are replaced whole too (the
+country word stays, the fake keeps the shape).
+
+Places mentioned **on their own** follow each profile's own rule for `locality` and `postcode`. The client profile
+keeps them ("she moved to Penrith", "born in Dubbo NSW 2830", "postcode 2750", "injured on Victoria Road, Ryde") and
+records their positions so that verification does not count them as left-over address words. A suburb, state and
+postcode right after a place-of-birth, injury, accident, incident or declaration phrase is such a place; the same
+after a court's or hospital's name is an address (the name stays outside the unit and is replaced by the organisation
+rule). A street named without a house number in running text is kept. Citations, public bodies and clinical phrases
+are never part of an address.
+
+Two policy settings (a deployment YAML or a job override; the built-in profiles set `addresses: whole`):
+
+| setting | values | meaning |
+|---|---|---|
+| `policy.addresses` | `whole` (default), `parts` | `whole`: one unit, one fake. `parts`: each part follows its own type's action (the street line is replaced; with the client's `locality: keep` the suburb and postcode stay, the client's literal answer to Q4). `whole` is refused when `street_address` is `keep` |
+| `policy.address_state` | `keep` (default), `replace` | `keep`: the fake is in the original's state and the state word is written as before. `replace`: every address of one state moves to one other state |
+
+```yaml
+# deployment YAML (--config): the client profile with the literal Q4 answer
+policy:
+  addresses: parts
+```
+
+The address rules (grammar, join, fakes, verification targets) read one shared list of Australian suburbs, shipped in
+`src/mlredact/resources/gazetteer/` with its provenance and licence (see Third-party data).
 
 ## Quick start (development)
 
@@ -245,6 +280,12 @@ make lint licences      # ruff, mypy --strict, licence gate
 
 All fixtures are synthetic (`tools/synthdocs`).  Real documents never enter the repository.
 
+The synthetic letters and the corpus mark which suburbs and postcodes are part of an address (`Planted.in_address`,
+`address_locality` / `address_postcode` in the corpus markup): those take the `street_address` action in the answer
+key and must not be readable in the output; a place on its own is kept and must be. `make_places_letter` plants
+places on their own (after a place-of-birth and an injury phrase, in prose, a capital city, a postcode alone) beside
+one address.
+
 ## Layout
 
 ```
@@ -254,19 +295,19 @@ src/mlredact/
   config/      pydantic schema, layered loader, built-in profiles (client, broad, claimant_focused, maximal)
   runtime/     determinism settings, runtime-profile detection
   registry/    pinned model registry (SHA-256), fetch/resolve
-  resources/   pinned fonts (Liberation, OFL), surrogate pools, allowlists + SHA256SUMS
+  resources/   pinned fonts (Liberation, OFL), surrogate pools, allowlists, the suburb list (ABS, CC BY 4.0) + SHA256SUMS
   ingest/      sandboxed inspection (pikepdf), canonical rasterisation (PDFium), embedded text, image inputs
   ocr/         PP-OCRv6 engine A, Tesseract engine B, fusion with the PDF text layer (engine D)
-  text/        text views with exact offset->token maps, normalisation
+  text/        text views with exact offset->token maps, normalisation; address/ (the address grammar), gazetteer.py (the suburb list)
   detect/      rule detectors, NER (Privacy Filter, GLiNER), allowlist, fusion, propagation
   resolve/     name parsing, person clustering, roles/gender
   surrogate/   keyed HMAC-DRBG, pools, format-preserving generators, assignment, labels, date shift
   layout/      barcodes (zxing-cpp), faces (YuNet), ink accounting and region classification
   imaging/     ink masks against a local background
-  policy/      profile -> actions
+  policy/      profile -> actions; addresses.py (the join: whole-address units, places on their own, verification targets)
   render/      render planning + raster operations
   pdfout/      deterministic encoding + from-scratch PDF builder
-  verify/      V1 structure, V2 text leak, V3 pixels, V4 residual re-OCR, V5 surrogates, V6 integrity
+  verify/      V1 structure, V2 text leak (with address targets), V3 pixels, V4 residual re-OCR, V5 surrogates, V6 integrity
   manifest/    non-sensitive manifest; sealed sensitive manifest
   pipeline/    worker pool (spawned processes), shared-memory blobs, job runner
   api/         HTTP API for the frontend: jobs, queue, signed links (FastAPI)
@@ -282,3 +323,26 @@ Outputs are byte-identical for the same input, configuration, models, software a
 profile** (e.g. `linux-x86_64-v3`).  Pin `runtime.expected_profile` in production; workers refuse to
 start on a mismatch.  Thread counts are fixed per process, batch sizes are fixed (1), IDs are
 derived from positions, and every collection is emitted in canonical order.
+
+## Third-party data
+
+The suburb list (`src/mlredact/resources/gazetteer/`: `au_localities.csv`, `aliases.csv`, `cross_border.csv`) is built
+from Australian Bureau of Statistics (ABS) data and is licensed under CC BY 4.0, which requires this attribution:
+
+- Source: Australian Bureau of Statistics (ABS), Australian Statistical Geography Standard (ASGS) Edition 3, July
+  2021 - June 2026 (allocation files SAL_2021_AUST, SA2_2021_AUST, GCCSA_2021_AUST; correspondences
+  CG_SAL_2021_POA_2021, CG_SAL_2021_SA2_2021, CG_LOCALITY_2021_POA_2021, CG_LOCALITY_2021_SA2_2021) and Census of
+  Population and Housing: Mesh Block Counts, 2021, accessed 22 October 2026.
+- (c) Commonwealth of Australia, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- Modified: ABS name suffixes removed, non-places and Other Territories removed, tables combined, official localities
+  missing from the Suburbs and Localities list added, and derived columns added (population, class, capital share,
+  primary, range flag, fake_pool, display_name, source); the alias and cross-border lists are derived from the same
+  data.
+- Licensed material:
+  [ASGS Edition 3 allocation files](https://www.abs.gov.au/statistics/standards/australian-statistical-geography-standard-asgs/edition-3-july-2021-june-2026/access-and-downloads/allocation-files),
+  [ASGS Geographic Correspondences (2021) Edition 3](https://data.gov.au/data/dataset/asgs-edition-3-2021-correspondences),
+  [Census of Population and Housing: Mesh Block Counts, 2021](https://www.abs.gov.au/census/guide-census-data/mesh-block-counts/2021).
+
+The same text, with the file hashes and the build, is in `src/mlredact/resources/gazetteer/ATTRIBUTION.txt` and
+`PROVENANCE.md`; keep both with the list wherever it is copied. The fonts (Liberation, OFL) and the models
+([MODELS.md](MODELS.md)) carry their own licences.
