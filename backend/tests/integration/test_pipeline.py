@@ -12,7 +12,7 @@ from typing import Any
 import pypdfium2 as pdfium
 import pytest
 from jsonschema import Draft202012Validator
-from synthdocs import combine, encrypted, make_ime_letter
+from synthdocs import combine, encrypted, make_ime_letter, make_places_letter
 
 import mlredact.pipeline.runner as runner_module
 from mlredact.core.canonical import canonical_json
@@ -274,20 +274,44 @@ def test_claimant_focused_profile_keeps_the_treating_professional(reader: PPOCRE
     assert leaked == []
 
 
-def test_client_profile_keeps_dates_and_places_and_draws_stand_ins(reader: PPOCREngine) -> None:
+def test_client_profile_keeps_dates_and_replaces_every_address_whole_and_draws_stand_ins(reader: PPOCREngine) -> None:
     cfg = make_config("client", overrides={"surrogate": {"allow_development_key": True}, "runtime": {"workers": 2}})
     doc = make_ime_letter(scanned=True, degrade=True, seed=7, artefacts=True)
     with Redactor(cfg) as r:
         res = r.run(doc.pdf)
     text = match_key(_ocr_text(_assert_released(res), reader))
-    kept = {"date_of_birth", "locality", "postcode"}
+    kept = {"date_of_birth"}
     assert [p.text for p in doc.planted if p.kind in kept and match_key(p.text) not in text] == []
     phase = CURRENT_PHASE if ner_enabled() else 2  # organisations need the NER models
     leaked = [p.kind for p in doc.planted if p.phase <= phase and p.kind not in kept and match_key(p.text) in text]
     assert leaked == []
+    # The letter holds three addresses; their suburbs and postcodes are part of them, so none can be read.
+    places = [p for p in doc.planted if p.in_address]
+    assert {p.text for p in places} == {"Sydney", "2000", "Parramatta", "2150", "Penrith", "2750"}
+    assert [p.text for p in places if match_key(p.text) in text] == []
     regions = {g["kind"]: g["action"] for g in res.manifest["regions"]}
     assert regions["signature"] == "synthesise" and regions["barcode"] == "remove"
     assert res.manifest["job"]["profile"] == "client"
+
+
+def test_client_profile_keeps_places_on_their_own_and_replaces_the_address_beside_them(reader: PPOCREngine) -> None:
+    """The places letter: one address, and a place after a place-of-birth phrase, one after an injury phrase, places
+    in prose, a capital city in prose and a postcode alone."""
+    cfg = make_config("client", overrides={"surrogate": {"allow_development_key": True}, "runtime": {"workers": 2}})
+    doc = make_places_letter(scanned=True, degrade=True, seed=7)
+    with Redactor(cfg) as r:
+        res = r.run(doc.pdf)
+    text = match_key(_ocr_text(_assert_released(res), reader))
+    alone = [p for p in doc.planted if p.kind in ("locality", "postcode") and not p.in_address]
+    assert len(alone) == 8
+    assert [p.text for p in alone if match_key(p.text) not in text] == []
+    for kept in ("Orange NSW 2800", "Bathurst NSW 2795", "3 September 2024"):
+        assert match_key(kept) in text, kept
+    phase = CURRENT_PHASE if ner_enabled() else 2
+    in_address = [p for p in doc.planted if p.in_address]
+    assert {p.text for p in in_address} == {"Wollongong", "2500"}
+    replaced = [p for p in doc.planted if p not in alone and p.kind != "date_of_birth"]
+    assert [p.text for p in replaced if p.phase <= phase and match_key(p.text) in text] == []
 
 
 # ------------------------------------------------------------------- regions and ink accounting

@@ -29,6 +29,9 @@ class Planted:
     kind: str  # EntityType value
     text: str = field(repr=False)
     phase: int = 1  # first phase expected to remove it
+    # A locality or postcode that is part of an address: the address is replaced whole, so the client profile replaces
+    # it too.  A locality or postcode on its own (``in_address`` False) is a place the client profile keeps.
+    in_address: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,9 @@ def _content() -> tuple[list[str], list[Planted]]:
     ]
     planted = [
         Planted("street_address", "123 George Street", 1),
+        Planted("street_address", "Level 4, 123 George Street, Sydney NSW 2000", 2),
+        Planted("locality", "Sydney", 2, in_address=True),
+        Planted("postcode", "2000", 2, in_address=True),
         Planted("phone", "(02) 9876 5432", 1),
         Planted("email", "admin@harbourside-medicolegal.example", 1),
         Planted("person", "Jane Citizen", 1),
@@ -101,15 +107,67 @@ def _content() -> tuple[list[str], list[Planted]]:
         Planted("reference", "WC1234567", 1),
         Planted("medicare", medicare, 1),
         Planted("street_address", "42 Wattle Grove Road", 1),
-        Planted("locality", "Penrith", 1),
-        Planted("postcode", "2750", 1),
+        Planted("street_address", "42 Wattle Grove Road, Penrith NSW 2750", 2),
+        Planted("locality", "Penrith", 1, in_address=True),
+        Planted("postcode", "2750", 1, in_address=True),
         Planted("phone", "0412 345 678", 1),
         Planted("email", "john.smith78@example.org", 1),
         Planted("person", "Peter Brown", 1),
         Planted("provider_number", provider, 1),
         Planted("person", "Smith", 1),  # "Mr Smith": titles are kept, the name is removed
         Planted("organisation", "Smith & Partners Lawyers", 3),
-        Planted("locality", "Parramatta", 1),
+        Planted("locality", "Parramatta", 1, in_address=True),
+        Planted("street_address", "PO Box 123, Parramatta NSW 2150", 2),
+        Planted("postcode", "2150", 2, in_address=True),
+    ]
+    return lines, planted
+
+
+def _places_content() -> tuple[list[str], list[Planted]]:
+    """A letter with one address and, apart from it, places on their own: after a place-of-birth and an injury
+    phrase, in prose, a capital city and a postcode alone.  The client profile replaces the address whole and keeps
+    every one of the others."""
+    lines = [
+        "WILLOW CREEK PHYSIOTHERAPY",
+        "Unit 7, 18 Marsh Street, Wollongong NSW 2500",
+        "Ph: (02) 5550 7321",
+        "",
+        "3 September 2024",
+        "",
+        "Ms Helen Marsden",
+        "",
+        "Re: Mr Peter James ALDRIDGE      DOB: 09/11/1985",
+        "Place of birth: Orange NSW 2800",
+        "",
+        "Dear Ms Marsden,",
+        "",
+        "Mr Aldridge was injured at Bathurst NSW 2795 on 14 May 2023 when a ladder",
+        "slipped under him at work. He grew up near Katoomba and now lives in",
+        "Lithgow. He travelled to Sydney twice for specialist review, and his",
+        "employer's depot serves postcode 2250.",
+        "",
+        "Yours sincerely,",
+        "",
+        "Dr Anne Whitlock",
+    ]
+    planted = [
+        Planted("street_address", "Unit 7, 18 Marsh Street, Wollongong NSW 2500", 2),
+        Planted("street_address", "18 Marsh Street", 1),
+        Planted("locality", "Wollongong", 1, in_address=True),
+        Planted("postcode", "2500", 1, in_address=True),
+        Planted("phone", "(02) 5550 7321", 1),
+        Planted("person", "Helen Marsden", 1),
+        Planted("person", "Peter James ALDRIDGE", 1),
+        Planted("date_of_birth", "09/11/1985", 1),
+        Planted("person", "Anne Whitlock", 1),
+        Planted("locality", "Orange", 1),
+        Planted("postcode", "2800", 1),
+        Planted("locality", "Bathurst", 1),
+        Planted("postcode", "2795", 1),
+        Planted("locality", "Katoomba", 1),
+        Planted("locality", "Lithgow", 1),
+        Planted("locality", "Sydney", 1),
+        Planted("postcode", "2250", 1),
     ]
     return lines, planted
 
@@ -286,12 +344,16 @@ def _image_pdf(img: Image.Image) -> bytes:
     return out.getvalue()
 
 
-def make_ime_letter(
-    *, scanned: bool, degrade: bool = False, seed: int = 0, dpi: int = 300, artefacts: bool = False
+def _render(
+    lines: list[str],
+    planted: list[Planted],
+    *,
+    scanned: bool,
+    degrade: bool,
+    seed: int,
+    dpi: int,
+    artefacts: bool,
 ) -> SynthDoc:
-    """``artefacts`` (scanned only): add a signature, QR code, red stamp, margin handwriting and
-    show-through; their pixel boxes are returned in ``SynthDoc.artefacts``."""
-    lines, planted = _content()
     if not scanned:
         return SynthDoc(pdf=_digital_pdf(lines), planted=tuple(planted), lines=tuple(lines))
     page = _typeset_page(lines, dpi)
@@ -301,6 +363,21 @@ def make_ime_letter(
     if degrade:
         page = _degrade(page, seed)
     return SynthDoc(pdf=_image_pdf(page), planted=tuple(planted), lines=tuple(lines), artefacts=tuple(truth))
+
+
+def make_ime_letter(
+    *, scanned: bool, degrade: bool = False, seed: int = 0, dpi: int = 300, artefacts: bool = False
+) -> SynthDoc:
+    """``artefacts`` (scanned only): add a signature, QR code, red stamp, margin handwriting and
+    show-through; their pixel boxes are returned in ``SynthDoc.artefacts``."""
+    lines, planted = _content()
+    return _render(lines, planted, scanned=scanned, degrade=degrade, seed=seed, dpi=dpi, artefacts=artefacts)
+
+
+def make_places_letter(*, scanned: bool, degrade: bool = False, seed: int = 0, dpi: int = 300) -> SynthDoc:
+    """A short letter with one address and places on their own (see ``_places_content``)."""
+    lines, planted = _places_content()
+    return _render(lines, planted, scanned=scanned, degrade=degrade, seed=seed, dpi=dpi, artefacts=False)
 
 
 def combine(pdfs: list[bytes]) -> bytes:

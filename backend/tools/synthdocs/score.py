@@ -9,7 +9,8 @@ Checked per document:
 * leaks - each value the client profile replaces is looked for in the redacted pages, read back with
   OCR (PP-OCR, and Tesseract when installed); a value either reader still finds is a leak.  Values
   neither reader finds in the *original* cannot be measured and are listed separately.
-* damage - each value that must stay (dates, suburbs, medicines, ...) must still be readable.
+* damage - each value that must stay (dates, suburbs on their own, medicines, ...) must still be readable.  A suburb
+  or postcode inside an address is part of the address and must be replaced with it.
 * hidden text - replaced values must not survive in the output's text layer (copy and paste).
 * picture areas - each signature, stamp, handwriting, barcode, logo, photo or show-through must
   overlap a region the tool's manifest says it handled.
@@ -107,6 +108,7 @@ def _score_values(key: dict, orig: dict[str, _Text], out: dict[str, _Text], laye
     results = []
     for v in key["values"]:
         rec = {k: v[k] for k in ("kind", "text", "action", "count", "pages", "where")}
+        rec["in_address"] = v.get("in_address", False)
         if not _measurable(v["text"]):
             rec["status"] = "too short to check"
             results.append(rec)
@@ -259,6 +261,10 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
+def _kind(value: dict) -> str:
+    return f"{value['kind']} (in an address)" if value.get("in_address") else value["kind"]
+
+
 def _plain_summary(res: dict, t: dict[str, int]) -> str:
     if res["status"] != "released":
         why = ", ".join(res.get("reasons", [])) or "no reason recorded"
@@ -271,14 +277,14 @@ def _plain_summary(res: dict, t: dict[str, int]) -> str:
     ]
     if t["leaked"]:
         leaked = [v for v in res["values"] if v["status"] == "leaked"]
-        shown = ", ".join(f"'{v['text']}' ({v['kind']})" for v in leaked[:5])
+        shown = ", ".join(f"'{v['text']}' ({_kind(v)})" for v in leaked[:5])
         more = f" and {len(leaked) - 5} more" if len(leaked) > 5 else ""
         parts.append(f"{t['leaked']} can still be read in the redacted copy: {shown}{more}.")
     else:
         parts.append("None of them can still be read in the redacted copy.")
     if t["damaged"]:
         damaged = [v for v in res["values"] if v["status"] in ("removed", "partly removed")]
-        shown = ", ".join(f"'{v['text']}' ({v['kind']})" for v in damaged[:5])
+        shown = ", ".join(f"'{v['text']}' ({_kind(v)})" for v in damaged[:5])
         more = f" and {len(damaged) - 5} more" if len(damaged) > 5 else ""
         parts.append(f"It also removed {t['damaged']} detail(s) that should have stayed: {shown}{more}.")
     else:
@@ -305,8 +311,9 @@ def report_markdown(results: list[dict], readers: list[str]) -> str:
         "",
         "- **Replaced** - a personal detail the policy replaces, no longer readable on the redacted pages.",
         "- **Leaked** - still readable after redaction. This is the number that matters most.",
-        "- **Kept / damaged** - details that must stay (dates, suburbs, postcodes, ages, medicines, test names, "
-        "citations); 'damaged' means the tool removed or changed one of them.",
+        "- **Kept / damaged** - details that must stay (dates, suburbs and postcodes on their own, ages, medicines, "
+        "test names, citations); 'damaged' means the tool removed or changed one of them.  A suburb or postcode "
+        "inside an address is replaced with the address.",
         "- **Picture areas** - signatures, stamps, handwriting, barcodes, logos, photos and text showing through "
         "from the back of the sheet; 'handled' means the tool's own record shows it treated that area.",
         "- **Not measurable** - a value the readers could not read even in the original scan (or one too short to "
@@ -344,7 +351,7 @@ def report_markdown(results: list[dict], readers: list[str]) -> str:
             ]
             out += ["|---|---|---|---|---|---|"]
             out += [
-                f"| {_cell(v['text'])} | {v['kind']} | {', '.join(map(str, v['pages']))} | {', '.join(v['where'])} "
+                f"| {_cell(v['text'])} | {_kind(v)} | {', '.join(map(str, v['pages']))} | {', '.join(v['where'])} "
                 f"| {', '.join(v['seen_by'])} | {'yes' if v.get('in_text_layer') else 'no'} |"
                 for v in leaked
             ]
@@ -358,7 +365,7 @@ def report_markdown(results: list[dict], readers: list[str]) -> str:
                 "|---|---|---|---|",
             ]
             out += [
-                f"| {_cell(v['text'])} | {v['kind']} | {', '.join(map(str, v['pages']))} | {v['status']} |"
+                f"| {_cell(v['text'])} | {_kind(v)} | {', '.join(map(str, v['pages']))} | {v['status']} |"
                 for v in damaged
             ]
         if res["regions"]:
@@ -372,10 +379,10 @@ def report_markdown(results: list[dict], readers: list[str]) -> str:
         unmeasured = [v for v in values if v["status"] in ("not readable in the original", "too short to check")]
         if unmeasured:
             out += ["", "### Not measurable", ""]
-            out += [f"- '{v['text']}' ({v['kind']}): {v['status']}" for v in unmeasured]
+            out += [f"- '{v['text']}' ({_kind(v)}): {v['status']}" for v in unmeasured]
         replaced = [v for v in values if v["status"] == "replaced"]
         out += ["", f"<details><summary>Replaced correctly ({len(replaced)})</summary>", ""]
-        out += [f"- {v['text']} ({v['kind']})" for v in replaced]
+        out += [f"- {v['text']} ({_kind(v)})" for v in replaced]
         out += ["", "</details>"]
         if res.get("tool"):
             tool = res["tool"]

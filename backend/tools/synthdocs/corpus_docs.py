@@ -64,18 +64,18 @@ GP_REFERRAL = DocSpec(
             [
                 "@logo 56,40 | NF",
                 "@text 104,44,13,Bold | [Northgate Family Medical Centre](organisation)",
-                "@text 104,62,8.5,Regular | [Shop 4, 210 Pacific Highway](street_address), [Hornsby](locality) NSW [2077](postcode)",
+                "@text 104,62,8.5,Regular | [Shop 4, 210 Pacific Highway](street_address), [Hornsby](address_locality) NSW [2077](address_postcode)",
                 "@text 104,74,8.5,Regular | Ph [(02) 5550 1842](phone)   Fax [(02) 5550 1843](phone)   [reception@northgatefmc.example](email)",
                 "@gap 28",
                 "@rule",
                 "[14 March 2025](date)",
                 "",
                 "Dr [Andrew Whitfield](person), Orthopaedic Surgeon",
-                "[Lakeside Orthopaedics](organisation), [Suite 12, 45 Ocean Street](street_address), [Narrabeen](locality) NSW [2101](postcode)",
+                "[Lakeside Orthopaedics](organisation), [Suite 12, 45 Ocean Street](street_address), [Narrabeen](address_locality) NSW [2101](address_postcode)",
                 "",
                 "@h3 Re: Mr [Michael James Rowe](person)",
                 f"Date of birth: [02/07/1981](date_of_birth)      Medicare: [{_mc_rowe}](medicare) (IRN 2)",
-                "Address: [17 Banksia Crescent](street_address), [Asquith](locality) NSW [2077](postcode)",
+                "Address: [17 Banksia Crescent](street_address), [Asquith](address_locality) NSW [2077](address_postcode)",
                 "Mobile: [0491 570 156](phone)      Workers compensation claim: [WC0425-77811](reference)",
                 "",
                 "Dear Dr [Whitfield](person),",
@@ -137,7 +137,7 @@ RADIOLOGY = DocSpec(
             [
                 "@logo 56,40 | CR",
                 "@text 104,44,14,Bold | [Coastal Radiology Group](organisation)",
-                "@text 104,63,8.5,Regular | [Level 1, 88 Pittwater Road](street_address), [Manly](locality) NSW [2095](postcode)",
+                "@text 104,63,8.5,Regular | [Level 1, 88 Pittwater Road](street_address), [Manly](address_locality) NSW [2095](address_postcode)",
                 "@text 104,75,8.5,Regular | Ph [(02) 5550 4410](phone)   Fax [(02) 5550 4411](phone)   [www.coastalradiology.example](url)",
                 "@gap 28",
                 "@rule",
@@ -199,7 +199,7 @@ SOLICITOR_LETTER = DocSpec(
         Page(
             [
                 "@text 56,40,16,Bold | [BENNETT LOWE LAWYERS](organisation)",
-                f"@text 56,62,8.5,Regular | [Level 9, 88 Albert Street](street_address), [Brisbane](locality) QLD [4000](postcode)   "
+                f"@text 56,62,8.5,Regular | [Level 9, 88 Albert Street](street_address), [Brisbane](address_locality) QLD [4000](address_postcode)   "
                 f"T [(07) 5550 2290](phone)   ABN [{_abn('629017342')}](abn)",
                 "@gap 14",
                 "@rule",
@@ -213,7 +213,7 @@ SOLICITOR_LETTER = DocSpec(
                 "",
                 "Dr [Samuel Okafor](person)",
                 "[Queensland Medicolegal Assessments](organisation)",
-                "[PO Box 5521](street_address), [West End](locality) QLD [4101](postcode)",
+                "[PO Box 5521](street_address), [West End](address_locality) QLD [4101](address_postcode)",
                 "",
                 "Dear Dr [Okafor](person),",
                 "",
@@ -226,7 +226,7 @@ SOLICITOR_LETTER = DocSpec(
                 "",
                 "We confirm that you have agreed to examine Ms [Morgan](person) at your rooms on [6 May 2025](date) at 10.30 am. "
                 "She can be contacted directly on [0491 570 313](phone) if the appointment needs to change. She lives at "
-                "[23 Lomandra Street](street_address), [Chermside](locality) QLD [4032](postcode).",
+                "[23 Lomandra Street](street_address), [Chermside](address_locality) QLD [4032](address_postcode).",
                 "",
                 "@h3 Enclosures",
                 "@li 1. | Clinical notes of Dr [Hannah Lee](person), [Redcliffe Family Practice](organisation), "
@@ -298,7 +298,7 @@ IME_REPORT = DocSpec(
             [
                 "@logo 56,40 | RM",
                 "@text 104,44,13,Bold | [Riverside Medicolegal Services](organisation)",
-                "@text 104,62,8.5,Regular | [Suite 3, 101 Flinders Lane](street_address), [Melbourne](locality) VIC [3000](postcode)",
+                "@text 104,62,8.5,Regular | [Suite 3, 101 Flinders Lane](street_address), [Melbourne](address_locality) VIC [3000](address_postcode)",
                 "@text 104,74,8.5,Regular | T [(03) 5550 7712](phone)   [bookings@riversidemls.example](email)",
                 "@gap 28",
                 "@rule",
@@ -306,7 +306,7 @@ IME_REPORT = DocSpec(
                 "@table 130,353",
                 "Claimant | Mr [Daniel Robert Banks](person)",
                 "Date of birth | [11/09/1978](date_of_birth)",
-                "Address | [6 Pelican Court](street_address), [Werribee](locality) VIC [3030](postcode)",
+                "Address | [6 Pelican Court](street_address), [Werribee](address_locality) VIC [3030](address_postcode)",
                 "Employer | [Coastline Freight Pty Ltd](organisation)",
                 "Claim number | [WC-2291-0456](reference)",
                 "Date of injury | [14 August 2024](date)",
@@ -423,7 +423,7 @@ DISCHARGE = DocSpec(
             [
                 "@logo 56,40 | SB",
                 "@text 104,46,12.5,Bold | [St Brigid's Private Hospital](organisation)",
-                "@text 104,63,8,Regular | [220 Racecourse Road](street_address), [Ascot](locality) QLD [4007](postcode)",
+                "@text 104,63,8,Regular | [220 Racecourse Road](street_address), [Ascot](address_locality) QLD [4007](address_postcode)",
                 "@text 104,74,8,Regular | Ph [(07) 5550 3300](phone)",
                 _STICKER,
                 "@gap 52",
@@ -514,7 +514,7 @@ CERTIFICATE = DocSpec(
                 "letters.>(boilerplate)",
                 "@h3 Part A - Worker details",
                 "@field Worker's full name | ~[Ahmed Karimi](person) ;; Date of birth | ~[17/10/1990](date_of_birth)",
-                "@field Residential address | ~[51 Wentworth Avenue](street_address), [Blacktown](locality) [2148](postcode)",
+                "@field Residential address | ~[51 Wentworth Avenue](street_address), [Blacktown](address_locality) [2148](address_postcode)",
                 f"@field Telephone | ~[0491 572 665](phone) ;; Medicare number | ~[{_mc_karimi}](medicare)",
                 "@field Claim number | ~[WCN-7781-2209](reference) ;; Occupation | ~Personal care worker",
                 "@field Employer | ~[Brightside Aged Care Pty Ltd](organisation) ;; Employer phone | ~[(02) 5550 8820](phone)",
@@ -542,8 +542,8 @@ CERTIFICATE = DocSpec(
                 "@check - | No",
                 "@h3 Part E - Medical practitioner",
                 f"@field Name | ~Dr [Grace Okoye](person) ;; Provider number | [{_prov_okoye}](provider_number)",
-                "@field Practice | [Parkview Medical Centre](organisation), [3/88 Main Street](street_address), [Blacktown](locality) "
-                "NSW [2148](postcode)",
+                "@field Practice | [Parkview Medical Centre](organisation), [3/88 Main Street](street_address), [Blacktown](address_locality) "
+                "NSW [2148](address_postcode)",
                 "@field Phone | [(02) 5550 8711](phone) ;; Email | [admin@parkviewmc.example](email)",
                 "Signature of medical practitioner",
                 "@sig",
@@ -602,13 +602,13 @@ PSYCH = DocSpec(
             [
                 "@center Dr [Anand Venkataraman](person) MBBS FRANZCP",
                 "@center Consultant Psychiatrist   AHPRA [MED0002345678](ahpra)",
-                "@center [Level 2, 15 Hunter Street](street_address), [Newcastle](locality) NSW [2300](postcode)   T [(02) 5550 6610](phone)"
+                "@center [Level 2, 15 Hunter Street](street_address), [Newcastle](address_locality) NSW [2300](address_postcode)   T [(02) 5550 6610](phone)"
                 "   [rooms@drvpsych.example](email)",
                 "@rule",
                 "[20 March 2025](date)",
                 "",
                 "Ms [Renee Walsh](person), Senior Associate, [Carter Webb Lawyers](organisation)",
-                "[PO Box 902](street_address), [Newcastle](locality) NSW [2300](postcode)      Your reference: [RW:24/0917](reference)",
+                "[PO Box 902](street_address), [Newcastle](address_locality) NSW [2300](address_postcode)      Your reference: [RW:24/0917](reference)",
                 "",
                 "Dear Ms [Walsh](person),",
                 "@bold Re: Ms [Kellie-Anne O'Sullivan](person) (nee [Tran](person)), born [08/12/1988](date_of_birth)",
@@ -771,8 +771,8 @@ FAX = DocSpec(
                 "@small <CONFIDENTIALITY NOTICE: This facsimile contains confidential health information intended only for the "
                 "addressee. If you have received it in error, please notify the sender immediately by telephone and destroy all "
                 "copies.>(boilerplate)",
-                f"@small [Wollongong Street Medical](organisation)  -  [41 Keira Street](street_address), [Wollongong](locality) NSW "
-                f"[2500](postcode)  -  ABN [{_abn('118204557')}](abn)",
+                f"@small [Wollongong Street Medical](organisation)  -  [41 Keira Street](street_address), [Wollongong](address_locality) NSW "
+                f"[2500](address_postcode)  -  ABN [{_abn('118204557')}](abn)",
             ]
         ),
         Page(
@@ -780,7 +780,7 @@ FAX = DocSpec(
                 "@size 8.3",
                 "@pre [WOLLONGONG STREET MEDICAL](organisation) - CLINICAL NOTES (printed [17/02/2025](date))",
                 "@pre Patient: Mr [Harpreet Singh GILL](person)    DOB: [30/06/1975](date_of_birth)    Chart: [004417](clinical_id)",
-                "@pre Address: [9/41 Corrimal St](street_address), [Wollongong](locality) [2500](postcode)    Mob: [0491 573 770](phone)",
+                "@pre Address: [9/41 Corrimal St](street_address), [Wollongong](address_locality) [2500](address_postcode)    Mob: [0491 573 770](phone)",
                 f"@pre Medicare: [{_mc_gill}](medicare)    [{_ihi_gill}](ihi)",
                 "@pre " + "-" * 88,
                 "@pre [06/01/2025](date) 09:40   Dr [N Ivanova](person)",
@@ -821,7 +821,7 @@ FAX = DocSpec(
                 "@photo 136,155,80,100",
                 "@text 230,158,9,Bold | [HARPREET SINGH GILL](person)",
                 "@text 230,174,8,Regular | [9/41 CORRIMAL ST](street_address)",
-                "@text 230,185,8,Regular | [WOLLONGONG](locality) NSW [2500](postcode)",
+                "@text 230,185,8,Regular | [WOLLONGONG](address_locality) NSW [2500](address_postcode)",
                 "@text 230,204,7,Regular | Licence No.",
                 "@text 230,213,10,Bold | [18734562](driver_licence)",
                 "@text 340,204,7,Regular | Date of birth",
@@ -881,14 +881,14 @@ CTP = DocSpec(
         Page(
             [
                 "@text 56,40,15,Bold | [MORELAND QUINN LAWYERS](organisation)",
-                "@text 56,60,8.5,Regular | [Level 4, 33 Bridge Street](street_address), [Sydney](locality) NSW [2000](postcode)   "
+                "@text 56,60,8.5,Regular | [Level 4, 33 Bridge Street](street_address), [Sydney](address_locality) NSW [2000](address_postcode)   "
                 "T [(02) 5550 7400](phone)   [mail@morelandquinn.example](email)",
                 "@gap 10",
                 "@rule",
                 "[2 July 2025](date)",
                 "",
                 "Claims Officer, [Austral Mutual CTP](organisation)",
-                "[Locked Bag 4410](street_address), [Parramatta](locality) NSW [2124](postcode)",
+                "[Locked Bag 4410](street_address), [Parramatta](address_locality) NSW [2124](address_postcode)",
                 "Your claim no: [AMC-25-0661930](reference)      Our ref: [MQ/JD/25-2207](reference)",
                 "",
                 "Dear Claims Officer,",
@@ -925,14 +925,14 @@ CTP = DocSpec(
                 "@h1 Application for weekly payments",
                 "@small <Part 2 - Payment and employment details. Complete in block letters.>(boilerplate)",
                 "@field Claimant | ~[Jessica Mae Dunn](person) ;; Claim number | ~[AMC-25-0661930](reference)",
-                "@field Postal address | ~[Unit 7, 19 Tennyson Road](street_address), [Gladesville](locality) [2111](postcode)",
+                "@field Postal address | ~[Unit 7, 19 Tennyson Road](street_address), [Gladesville](address_locality) [2111](address_postcode)",
                 "@field Mobile | ~[0491 574 632](phone) ;; Email | ~[jess.dunn88@example.com](email)",
                 f"@field Tax file number | ~[{_tfn_dunn}](tfn) ;; Centrelink CRN | ~[302 418 557K](crn)",
                 "@h3 Bank account for payments",
                 "@field Account name | ~[J M DUNN](person) ;; BSB | ~[062-948](bank_account) ;; Account number | ~[1048 2276](bank_account)",
                 "@h3 Pre-injury employment",
                 f"@field Employer | ~[Harbour City Cafes Pty Ltd](organisation) ;; ABN | ~[{_abn_cafe}](abn)",
-                "@field Employer address | ~[140 Darling Street](street_address), [Balmain](locality) NSW [2041](postcode)",
+                "@field Employer address | ~[140 Darling Street](street_address), [Balmain](address_locality) NSW [2041](address_postcode)",
                 "@field Position | ~Barista / shift supervisor ;; Employee no. | ~[HCC-0457](employee_id)",
                 "@field Average gross weekly earnings | ~$1,140.00 ;; Hours per week | ~38",
                 "@field Manager | ~[Sophie Leclerc](person) ;; Manager phone | ~[(02) 5550 7522](phone)",
@@ -949,7 +949,7 @@ CTP = DocSpec(
         Page(
             [
                 "@text 56,40,13,Bold | [Gladesville Sports & Spinal Physiotherapy](organisation)",
-                "@text 56,58,8.5,Regular | [2/301 Victoria Road](street_address), [Gladesville](locality) NSW [2111](postcode)   "
+                "@text 56,58,8.5,Regular | [2/301 Victoria Road](street_address), [Gladesville](address_locality) NSW [2111](address_postcode)   "
                 "[(02) 5550 7690](phone)",
                 "@gap 8",
                 "@rule",

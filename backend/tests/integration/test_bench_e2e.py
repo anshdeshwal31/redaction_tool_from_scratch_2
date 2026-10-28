@@ -18,11 +18,14 @@ from synthdocs import SynthDoc, make_ime_letter
 
 from mlredact.bench.artifacts import LABELS
 from mlredact.text.normalize import match_key
+from mlredact.verify.checks import extract_all_text
 from support import EXTRA_CONFIG
 
 pytestmark = [pytest.mark.slow, pytest.mark.models]
 
-KEPT_BY_CLIENT = {"date", "date_of_birth", "date_of_death", "age", "locality", "postcode"}
+# Types the client profile keeps.  A place on its own is kept too (so it is no mention at all); a suburb or postcode
+# inside an address is replaced with the address and reported with it, as a locality entry.
+KEPT_BY_CLIENT = {"date", "date_of_birth", "date_of_death", "age"}
 SCAN_DPI = 300
 
 
@@ -84,6 +87,21 @@ def test_mentions_are_what_the_client_policy_replaces(bench_run: tuple[SynthDoc,
     for p in doc.planted:
         if p.kind in ("person", "phone", "email", "medicare"):
             assert match_key(p.text) in found, p.kind
+
+
+def test_the_address_places_are_replaced_with_their_addresses(bench_run: tuple[SynthDoc, Path]) -> None:
+    """The letter's three addresses are replaced whole: each place is reported as the locality of its address, and
+    none can be read in the output."""
+    doc, out = bench_run
+    mentions = _json(out / "mentions.json")["mentions"]
+    places = match_key(" ".join(m.get("text", "") for m in mentions if m["label"] == "locality"))
+    streets = match_key(" ".join(m.get("text", "") for m in mentions if m["label"] == "street_address"))
+    in_address = [p for p in doc.planted if p.in_address]
+    assert {p.text for p in in_address} == {"Sydney", "2000", "Parramatta", "2150", "Penrith", "2750"}
+    assert [p.text for p in in_address if match_key(p.text) not in places] == []
+    assert [p.text for p in in_address if match_key(p.text) in streets] == []
+    output = match_key(extract_all_text((out / "output.pdf").read_bytes()))
+    assert [p.text for p in doc.planted if p.in_address and match_key(p.text) in output] == []
 
 
 def test_stage_files_name_each_other_consistently(bench_run: tuple[SynthDoc, Path]) -> None:

@@ -9,6 +9,9 @@ phone numbers come from the ACMA ranges reserved for fiction.
 
 Markup inside any text:
     [value](kind)    a planted value; ``kind`` is an EntityType value (person, medicare, date, ...)
+                     ``address_locality`` and ``address_postcode`` mark a suburb or postcode that is part of an
+                     address: the client profile replaces the address whole, so these take the street_address
+                     action; a plain ``locality`` or ``postcode`` is a place on its own, which the profile keeps
     <value>(class)   content that must survive (medication, eponym, homograph, clinical, citation, ...)
 
 Block lines (anything else is a wrapped paragraph; "" is a paragraph gap):
@@ -62,6 +65,9 @@ RED = (200, 30, 40)
 TEAL = (0, 105, 115)
 
 _MARKUP = re.compile(r"\[([^\]]+)\]\(([a-z_]+)\)|<([^>]+)>\(([a-z_]+)\)")
+# A place inside an address is replaced with it (the answer key gives it the street_address action) but is still a
+# locality or a postcode.
+ADDRESS_PLACES = {"address_locality": "locality", "address_postcode": "postcode"}
 PROTECTED = {"medication", "eponym", "homograph", "clinical", "citation", "boilerplate", "role"}
 
 
@@ -112,6 +118,7 @@ class Item:
     text: str
     action: str  # what the client profile does with it (surrogate, keep, ...)
     where: str = "body"
+    in_address: bool = False  # a locality or postcode that is part of an address
 
 
 @dataclass
@@ -137,6 +144,11 @@ class _Key:
         def sub(m: re.Match[str]) -> str:
             if m.group(1) is not None:
                 value, kind = m.group(1), m.group(2)
+                if kind in ADDRESS_PLACES:
+                    place = ADDRESS_PLACES[kind]
+                    action = self.entity_actions["street_address"]
+                    self.items.append(Item(page + 1, place, value, action, where, in_address=True))
+                    return value
                 if kind not in self.entity_actions:
                     raise ValueError(f"unknown entity kind {kind!r} in {text!r}")
                 self.items.append(Item(page + 1, kind, value, self.entity_actions[kind], where))
@@ -693,11 +705,19 @@ def build(spec: DocSpec) -> Built:
 
 
 def _grouped(items: list[Item]) -> list[dict]:
-    groups: dict[tuple[str, str, str], dict] = {}
+    groups: dict[tuple[str, str, str, bool], dict] = {}
     for it in items:
         g = groups.setdefault(
-            (it.action, it.kind, it.text),
-            {"kind": it.kind, "text": it.text, "action": it.action, "count": 0, "pages": [], "where": []},
+            (it.action, it.kind, it.text, it.in_address),
+            {
+                "kind": it.kind,
+                "text": it.text,
+                "action": it.action,
+                "in_address": it.in_address,
+                "count": 0,
+                "pages": [],
+                "where": [],
+            },
         )
         g["count"] += 1
         if it.page not in g["pages"]:
@@ -709,6 +729,11 @@ def _grouped(items: list[Item]) -> list[dict]:
 
 def _md_cell(text: str) -> str:
     return text.replace("|", "\\|")
+
+
+def kind_label(value: dict) -> str:
+    """The kind of a grouped value as the reports write it."""
+    return f"{value['kind']} (in an address)" if value.get("in_address") else value["kind"]
 
 
 def answer_markdown(b: Built) -> str:
@@ -728,11 +753,11 @@ def answer_markdown(b: Built) -> str:
     out += [f"- {c}" for c in b.spec.challenges]
     out += ["", f"## Must be replaced ({len(replaced)})", "", "| Kind | Value | Pages | Where |", "|---|---|---|---|"]
     out += [
-        f"| {g['kind']} | {_md_cell(g['text'])} | {', '.join(map(str, g['pages']))} | {', '.join(g['where'])} |"
+        f"| {kind_label(g)} | {_md_cell(g['text'])} | {', '.join(map(str, g['pages']))} | {', '.join(g['where'])} |"
         for g in replaced
     ]
     out += ["", f"## Must stay as it is ({len(kept)})", "", "| Kind | Value | Pages |", "|---|---|---|"]
-    out += [f"| {g['kind']} | {_md_cell(g['text'])} | {', '.join(map(str, g['pages']))} |" for g in kept]
+    out += [f"| {kind_label(g)} | {_md_cell(g['text'])} | {', '.join(map(str, g['pages']))} |" for g in kept]
     out += ["", f"## Picture areas ({len(b.regions)})", "", "| Page | Kind | Tool should | Note |", "|---|---|---|---|"]
     out += [f"| {r.page} | {r.kind} | {r.action} | {_md_cell(r.note)} |" for r in b.regions]
     return "\n".join(out) + "\n"
