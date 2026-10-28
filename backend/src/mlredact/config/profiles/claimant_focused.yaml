@@ -6,6 +6,7 @@
 policy:
   profile_id: claimant_focused
   keep_professionals: true
+  addresses: whole
   entity_actions:
     person: surrogate
     date_of_birth: surrogate

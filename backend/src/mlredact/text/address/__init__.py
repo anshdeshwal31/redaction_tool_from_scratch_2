@@ -47,7 +47,8 @@ Public API (everything below is re-exported here)
             its place) and the place words, as positions; ``place_start`` is the first of the latter;
             ``partial``: words that are partly structure (``NSW2750``: keep 'NSW', change '2750'; ``B02/53``);
             ``key``: the canonical :class:`AddressKey`; ``repeat_of``: the unit this one repeats; ``overseas``;
-            ``form`` (built from form value boxes); ``how``: the routes that built it (diagnostics, never text).
+            ``form`` (built from form value boxes); ``form_parts``: the labelled boxes it was read from (the label
+            words and the unit words in the box); ``how``: the routes that built it (diagnostics, never text).
         ``kept``: :class:`KeptPlace` positions of places mentioned on their own (verification exempts them), with the
             kind (place, state, postcode, country, street_in_prose, place_after_cue, repeat_in_prose).
         ``notes``: diagnostic strings (positions only).
@@ -85,6 +86,7 @@ from mlredact.text.address.model import (
     AddrWord,
     Band,
     BoxRole,
+    FormPart,
     KeptKind,
     KeptPlace,
     PartialWord,
@@ -116,6 +118,7 @@ __all__ = [
     "AddressUnit",
     "Band",
     "BoxRole",
+    "FormPart",
     "KeptKind",
     "KeptPlace",
     "PartialWord",

@@ -65,6 +65,7 @@ def _public(u: UnitB, uids: dict[int, str]) -> AddressUnit:
         repeat_of=uids.get(id(u.repeat_src)) if u.repeat_src is not None else None,
         overseas=u.overseas,
         form=u.form,
+        form_parts=tuple(u.form_parts),
     )
 
 

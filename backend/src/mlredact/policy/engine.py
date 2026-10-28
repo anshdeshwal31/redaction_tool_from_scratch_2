@@ -12,7 +12,7 @@ from mlredact.core.canonical import content_id
 from mlredact.core.model import Mention, Token
 from mlredact.core.types import ActionKind, EntityType
 from mlredact.surrogate.dates import generalise_age, shift_date
-from mlredact.surrogate.generators import is_state_token, is_street_type
+from mlredact.text.address import Role, parse_mention
 
 _POSTCODE = re.compile(r"^\d{4}[,.]?$")
 
@@ -96,30 +96,17 @@ def _place_start(texts: Sequence[str]) -> int | None:
     """Index of the first token of the place part of an address, or None when it cannot be told
     apart from the street line (the whole address is then replaced).
 
-    The state is the one that ends the address (before any postcode), so a street named after a
-    state ("12 Victoria Road, ...") is not mistaken for it.  The street line ends at its last comma
-    ("8 Broadway, Ultimo NSW"; "3 Smith St, Castle Hill NSW"), or else after its street type.  A comma
-    with a number after it, or a street type only after it, is inside the street line ("Unit 5, ...")."""
-    state = len(texts) - (1 if texts and _POSTCODE.match(texts[-1]) else 0) - 1
-    if state < 0 or not is_state_token(texts[state]):
+    The address grammar reads the mention: it takes the state that ends the place (spelled out, dotted or
+    abbreviated, never a street named after a state), so "12 Victoria Road, ..." and "Mount Victoria" never set it,
+    and it ends the street line where the place begins ("8 Broadway, Ultimo NSW"; "3 Smith St, Castle Hill NSW";
+    "Unit 5, 12 Smith St Parramatta NSW").  A mention with no state in its place stays whole: without one the place
+    is too uncertain to keep apart from the street line."""
+    unit = parse_mention(texts)
+    if unit is None or not unit.locality:
         return None
-    street_types = [i for i in range(state) if is_street_type(texts[i])]
-    comma = max((i for i in range(state - 1) if texts[i].endswith(",")), default=None)  # not "Parramatta, NSW"
-    if (
-        comma is not None
-        and not any(c.isdigit() for t in texts[comma + 1 : state] for c in t)
-        and (not street_types or street_types[0] <= comma)
-    ):
-        return comma + 1
-    street_type = street_types[-1] if street_types else None
-    if street_type is not None:
-        return street_type + 1
-    numbered = max((i for i in range(state) if any(c.isdigit() for c in texts[i])), default=None)
-    if numbered is None:
-        return 0  # "Parramatta NSW 2150": place only
-    if numbered > 0 and texts[numbered - 1].lower() == "box":
-        return numbered + 1  # "PO Box 12 Parramatta NSW"
-    return None  # "8 Broadway Ultimo NSW": no way to tell where the street name ends
+    if not any(unit.roles[p] in (Role.STATE, Role.STATE_AND_POSTCODE) for p in unit.locality):
+        return None
+    return unit.locality[0][1]
 
 
 def _part(m: Mention, ids: tuple[str, ...], etype: EntityType, tokens: Mapping[str, Token]) -> Mention:

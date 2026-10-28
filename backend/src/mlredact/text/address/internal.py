@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from mlredact.text.address.model import AddressKey, KeptKind, PartialWord, Pos, Role, UnitKind
+from mlredact.text.address.model import AddressKey, FormPart, KeptKind, PartialWord, Pos, Role, UnitKind
 
 
 class Flag(StrEnum):
@@ -135,6 +135,7 @@ class UnitB:
     repeat_src: UnitB | None = None
     overseas: bool = False
     form: bool = False
+    form_parts: list[FormPart] = field(default_factory=list)
     seq: int = 0  # creation order, set when the unit is added
 
     def positions(self) -> set[Pos]:

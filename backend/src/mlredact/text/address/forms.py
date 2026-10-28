@@ -14,7 +14,7 @@ from mlredact.text.address.internal import (
     UnitB,
 )
 from mlredact.text.address.join import JoinStage
-from mlredact.text.address.model import Pos, Role, UnitKind
+from mlredact.text.address.model import FormPart, Pos, Role, UnitKind
 from mlredact.text.address.tables import BOXNUM, DESIGNATORS, HN_SLASH, LOCALITY_ROLES, PLACE_KIND_CUES
 from mlredact.text.address.words import Line, pc_value, state_at
 
@@ -69,6 +69,12 @@ class FormStage(JoinStage):
             return False
         up = self.geo.above(ln)
         return up is not None and self._starts_with_label(up) and self.labels[up.li][0].role is not LabelRole.OTHER
+
+    @staticmethod
+    def _label_positions(f: Field) -> tuple[Pos, ...]:
+        """The words of a field's label (its first box)."""
+        li, a, b = f.boxes[0]
+        return tuple((li, x) for x in range(a, b + 1))
 
     def _field_boxes(self, f: Field) -> Iterator[_Box]:
         for li, a, b in f.boxes:
@@ -150,6 +156,10 @@ class FormStage(JoinStage):
             if hit:
                 if base is None and f.role in STREET_PART_LABELS:
                     base = min(hit, key=lambda u: u.seq)
+                for u in sorted({id(u): u for u in hit}.values(), key=lambda u: u.seq):
+                    u.form_parts.append(
+                        FormPart(self._label_positions(f), tuple(p for p in vals if self.unit_at.get(p) is u))
+                    )
                 continue
             if any(p in self.used for p in vals):
                 continue
@@ -211,6 +221,11 @@ class FormStage(JoinStage):
                         break
             elif r is LabelRole.UNREADABLE:
                 pending_unread.append(f)
+        parts = [
+            FormPart(self._label_positions(f), assigned)
+            for f in g
+            if f.role is not LabelRole.UNREADABLE and (assigned := tuple(p for p in f.vals if p in roles))
+        ]
         # unreadable labels: classify the value boxes by shape (suburb, state, postcode)
         for f in pending_unread:
             vals = f.vals
@@ -237,6 +252,7 @@ class FormStage(JoinStage):
                 return
             for p in loc:
                 self.extend_unit(base, p, roles[p])
+            base.form_parts.extend(fp for fp in parts if all(p in loc for p in fp.value))
             base.how.append("form_locality")
             return
         if not street_vals and not loc:
@@ -250,7 +266,7 @@ class FormStage(JoinStage):
             kind = UnitKind.STREET_NUMBERLESS if street_vals else UnitKind.PLACE_ONLY
         if kind is UnitKind.STREET_NUMBERLESS and not loc:
             return
-        u = UnitB(kind, roles, how=["form"])
+        u = UnitB(kind, roles, how=["form"], form_parts=parts)
         if any(p in self.used for p in roles):
             return
         self.add_unit(u)

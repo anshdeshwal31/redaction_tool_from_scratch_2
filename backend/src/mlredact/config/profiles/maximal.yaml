@@ -3,6 +3,7 @@
 # hardening: word positions and gap widths no longer reveal the original values' lengths).
 policy:
   profile_id: maximal
+  addresses: whole
   entity_actions:
     person: surrogate
     date_of_birth: surrogate

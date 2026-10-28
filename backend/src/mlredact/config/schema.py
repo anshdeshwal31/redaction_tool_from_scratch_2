@@ -277,6 +277,15 @@ class PolicyConfig(_Strict):
     # Claimant-focused: names of people resolved as professionals (treating clinicians, lawyers,
     # case managers) stay visible.  The role rule is one-sided; see ``mlredact.resolve.roles``.
     keep_professionals: bool = False
+    # How an address is replaced.  "whole": every postal or street address is one unit, from its first word (a
+    # building name, floor or unit words, the house number, a corner form, the street, or the box kind) to its last
+    # (suburb, state, postcode, country), replaced as one with one same-shape fake; places mentioned on their own stay
+    # as their own type's action says.  "parts": each part follows its own type's action (the street line is replaced
+    # and, with ``locality: keep``, the place stays: the client's literal answer to Q4).
+    addresses: Literal["whole", "parts"] = "whole"
+    # The state word of a replaced address: "keep" writes the original state (fakes stay in the same state), "replace"
+    # moves every address of one state to one other state.
+    address_state: Literal["keep", "replace"] = "keep"
 
     @model_validator(mode="after")
     def _complete(self) -> PolicyConfig:
@@ -284,6 +293,8 @@ class PolicyConfig(_Strict):
         missing += [k.value for k in RegionKind if k not in self.region_actions]
         if missing:
             raise ValueError(f"policy has no action for: {missing}")
+        if self.addresses == "whole" and self.entity_actions[EntityType.STREET_ADDRESS] is ActionKind.KEEP:
+            raise ValueError("addresses: whole replaces every address, so street_address must not be keep")
         return self
 
 

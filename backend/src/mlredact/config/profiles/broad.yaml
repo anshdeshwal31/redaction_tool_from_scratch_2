@@ -4,6 +4,7 @@
 # organisations are replaced with surrogates.  Clinical content and other dates are kept.
 policy:
   profile_id: broad
+  addresses: whole
   entity_actions:
     person: surrogate
     date_of_birth: surrogate

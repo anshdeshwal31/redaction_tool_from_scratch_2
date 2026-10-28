@@ -147,6 +147,15 @@ class PartialWord:
 
 
 @dataclass(frozen=True, slots=True)
+class FormPart:
+    """A form box of a unit: the positions of the label words before the box and of the unit words in the box (the
+    verification target 'label value' is built from them)."""
+
+    label: tuple[Pos, ...]
+    value: tuple[Pos, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AddressKey:
     """The canonical identity of an address (FINAL_PLAN section 5, amendment I): the house number, street name,
     canonical street type and suffix, or the box kind and number, or the property's name; the unit and level numbers
@@ -208,7 +217,8 @@ class AddressUnit:
     not in the unit.  ``overseas`` marks a unit whose country is not Australia: its fake keeps the shape, with no
     state and no gazetteer.  ``form`` marks a unit whose lines are all form value boxes.  ``repeat_of`` names the
     earlier unit this one repeats (the repeat sweep found it, or its street part and place agree with that unit's).
-    ``how`` lists the routes that built the unit (diagnostics, never text)."""
+    ``form_parts`` lists the labelled boxes the unit was read from (form units).  ``how`` lists the routes that built
+    the unit (diagnostics, never text)."""
 
     uid: str
     kind: UnitKind
@@ -221,6 +231,7 @@ class AddressUnit:
     repeat_of: str | None = None
     overseas: bool = False
     form: bool = False
+    form_parts: tuple[FormPart, ...] = ()
 
     @property
     def positions(self) -> tuple[Pos, ...]:

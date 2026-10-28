@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,84 @@ def pages_from_lines(
             )
         )
     return [PageAnalysis(geometry, PageKind.IMAGE_ONLY, tuple(out_lines))]
+
+
+@dataclass(frozen=True, slots=True)
+class GridLine:
+    """One line of a page laid out on a grid in points (A4, rows 14.4 points apart from 60, a line 12 points high):
+    lines of the same row sit side by side, a skipped row number is a paragraph gap, ``x1`` defaults to 5.5 points a
+    character."""
+
+    text: str
+    page: int = 0
+    row: int = 0
+    x0: float = 72.0
+    x1: float | None = None
+
+
+def column(*texts: str, page: int = 0, first_row: int = 0, x0: float = 72.0) -> list[GridLine]:
+    """Lines one under the other, one row apart; an empty text leaves a paragraph gap."""
+    return [GridLine(t, page, first_row + i, x0) for i, t in enumerate(texts) if t.strip()]
+
+
+_PX_PER_PT = 300 / 72
+
+
+def pages_from_grid(lines: Sequence[GridLine], *, page_count: int | None = None) -> list[PageAnalysis]:
+    """Synthetic pages (300 dpi pixel boxes) for lines with a page, row and column: multi-page and side-by-side
+    layouts that ``pages_from_lines`` cannot make.  Lines must be given in reading order, pages ascending; the
+    ``(line, word)`` of the case table equal the flattened lines and words of the result."""
+    count = page_count if page_count is not None else (max((ln.page for ln in lines), default=0) + 1)
+    out: list[PageAnalysis] = []
+    for page_no in range(count):
+        geometry = PageGeometry(page_no, 595.276, 841.89, 300, 2481, 3508)
+        page_lines: list[Line] = []
+        for ln in (ln for ln in lines if ln.page == page_no):
+            line_no = len(page_lines)
+            right = ln.x1 if ln.x1 is not None else ln.x0 + 5.5 * len(ln.text)
+            scale = (right - ln.x0) / max(1, len(ln.text))
+            y0 = round((60 + ln.row * 14.4) * _PX_PER_PT)
+            y1 = y0 + round(12 * _PX_PER_PT)
+            tokens: list[Token] = []
+            at = 0
+            for word_no, word in enumerate(ln.text.split()):
+                at = ln.text.index(word, at)
+                bx0 = round((ln.x0 + at * scale) * _PX_PER_PT)
+                bx1 = max(bx0 + 1, round((ln.x0 + (at + len(word)) * scale) * _PX_PER_PT))
+                tokens.append(
+                    Token(
+                        token_id=token_id(page_no, line_no, word_no),
+                        page=page_no,
+                        line_no=line_no,
+                        word_no=word_no,
+                        bbox=BBox(bx0, y0, bx1, y1),
+                        confidence=0.99,
+                        min_confidence=0.99,
+                        engine="test",
+                        text=word,
+                    )
+                )
+                at += len(word)
+            bx0, bx1 = round(ln.x0 * _PX_PER_PT), max(round(right * _PX_PER_PT), round(ln.x0 * _PX_PER_PT) + 1)
+            page_lines.append(
+                Line(
+                    line_id=f"p{page_no:04d}.l{line_no:04d}",
+                    page=page_no,
+                    line_no=line_no,
+                    bbox=BBox(bx0, y0, bx1, y1),
+                    quad=(
+                        (float(bx0), float(y0)),
+                        (float(bx1), float(y0)),
+                        (float(bx1), float(y1)),
+                        (float(bx0), float(y1)),
+                    ),
+                    confidence=0.99,
+                    engine="test",
+                    tokens=tuple(tokens),
+                )
+            )
+        out.append(PageAnalysis(geometry, PageKind.IMAGE_ONLY, tuple(page_lines)))
+    return out
 
 
 # ------------------------------------------------------------- worker-pool tasks (importable by spawned children)
