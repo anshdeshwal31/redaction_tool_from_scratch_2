@@ -35,6 +35,8 @@ Public API (everything below is re-exported here)
         The same over plain lines of text laid out as one column.  ``AddrLine.from_text`` builds one line on a grid.
     ``parse_mention(words, gazetteer=None) -> AddressUnit | None`` and ``place_start(words) -> int | None``
         The unit that covers most of one detected mention's words, and the index of the first word of its place.
+    ``postcode_value(word) -> int | None``
+        The postcode one word spells (OCR letters allowed), for a caller that reads a label's value.
 
     A result, :class:`AddressParse`, holds
         ``units``: :class:`AddressUnit` in reading order, each with
@@ -51,6 +53,8 @@ Public API (everything below is re-exported here)
             words and the unit words in the box); ``how``: the routes that built it (diagnostics, never text).
         ``kept``: :class:`KeptPlace` positions of places mentioned on their own (verification exempts them), with the
             kind (place, state, postcode, country, street_in_prose, place_after_cue, repeat_in_prose).
+        ``labels``: :class:`LabelSpan` of the labels read (the form layer's lexicon, and colon phrases outside it as
+            'other'), so a caller can tell a label from a value.
         ``notes``: diagnostic strings (positions only).
     Positions are ``(line index, word index)`` into the lines the caller passed.  No result, repr or exception holds
     document text.
@@ -89,12 +93,13 @@ from mlredact.text.address.model import (
     FormPart,
     KeptKind,
     KeptPlace,
+    LabelSpan,
     PartialWord,
     Pos,
     Role,
     UnitKind,
 )
-from mlredact.text.address.parser import parse_document, parse_mention, parse_texts, place_start
+from mlredact.text.address.parser import parse_document, parse_mention, parse_texts, place_start, postcode_value
 from mlredact.text.address.tables import (
     LOCALITY_ROLES,
     STREET_ROLES,
@@ -121,6 +126,7 @@ __all__ = [
     "FormPart",
     "KeptKind",
     "KeptPlace",
+    "LabelSpan",
     "PartialWord",
     "Pos",
     "Role",
@@ -131,4 +137,5 @@ __all__ = [
     "parse_mention",
     "parse_texts",
     "place_start",
+    "postcode_value",
 ]

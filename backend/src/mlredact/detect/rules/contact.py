@@ -39,6 +39,15 @@ _EMAIL = re.compile(
 _URL = re.compile(r"(?<![\w@])((?:https?://|www\.)[^\s<>\"']+[^\s<>\"'.,;:)\]])")
 
 
+def phone_starts(text: str, start: int, end: int) -> list[int]:
+    """Offsets in ``text[start:end]`` where a phone number that needs no context begins (the number formats that stand
+    on their own, not the 8-digit local form).  For a rule that must stop a value before a phone number."""
+    found = {
+        m.start(1) for _rule, pattern, needs_ctx in _PHONES if not needs_ctx for m in pattern.finditer(text, start, end)
+    }
+    return sorted(found)
+
+
 class ContactDetector:
     detector_id = "rules.contact"
     version = "1"

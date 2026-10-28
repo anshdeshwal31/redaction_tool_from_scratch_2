@@ -15,6 +15,7 @@ from mlredact.detect.propagate import DETECTOR_ID as PROPAGATION_ID
 from mlredact.detect.propagate import DETECTOR_VERSION as PROPAGATION_VERSION
 from mlredact.detect.propagate import Target, propagate, targets_from_mentions
 from mlredact.detect.rules.address import AddressDetector
+from mlredact.detect.rules.addrview import address_view
 from mlredact.detect.rules.ages import AgeDetector
 from mlredact.detect.rules.au_ids import AuIdentifierDetector
 from mlredact.detect.rules.contact import ContactDetector
@@ -100,6 +101,23 @@ def _extend_uncertain(mentions: Sequence[Mention], view: TextView, threshold: fl
     return out
 
 
+def _off_addresses(candidates: Sequence[Candidate], view: TextView) -> list[Candidate]:
+    """Drop the person candidates that propagation found inside an address: a surname that is also a street name or a
+    suburb ('12 Smith Street') is the address's word, not the person, and the address replaces it.  Left in, it
+    would make the whole address a PERSON mention (a person outranks an address when both overlap).  A job-supplied
+    name (a seed) is kept."""
+    roles = address_view(view).role_at
+    if not roles:
+        return list(candidates)
+    out: list[Candidate] = []
+    for c in candidates:
+        inside = c.entity_type is EntityType.PERSON and c.evidence.detector_id != "seed"
+        if inside and any(i in roles for i in view.token_range(c.start, c.end)):
+            continue
+        out.append(c)
+    return out
+
+
 def detect_document(
     pages: Sequence[PageAnalysis],
     config: AppConfig,
@@ -144,6 +162,7 @@ def detect_document(
                 for c in component_candidates(persons, line_view, det_cfg.propagation_min_len)
                 if (c.start, c.end, c.entity_type) not in seen
             )
+            new = _off_addresses(new, line_view)
             if not new:
                 break
             seen.update((c.start, c.end, c.entity_type) for c in new)

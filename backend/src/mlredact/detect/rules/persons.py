@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from mlredact.core.model import Candidate
 from mlredact.core.types import EntityType, EvidenceStrength, ViewKind
 from mlredact.detect.base import candidate
+from mlredact.detect.rules.addrview import address_view
 from mlredact.detect.rules.lexicon import TITLES
 from mlredact.detect.rules.names import line_end, scan_name
 from mlredact.text.views import TextView
@@ -22,12 +23,16 @@ _SIGNOFF = re.compile(
 
 class PersonCueDetector:
     detector_id = "rules.persons"
-    version = "1"
+    version = "2"
 
     def detect(self, views: Mapping[ViewKind, TextView]) -> list[Candidate]:
-        text = views[ViewKind.LINE].text
+        view = views[ViewKind.LINE]
+        text = view.text
         out: list[Candidate] = []
         for m in _TITLED.finditer(text):
+            at = view.token_at(m.start())
+            if at is not None and at in address_view(view).role_at:
+                continue  # 'Dr' of '45 Smith Dr Penrith NSW 2750' is the street type, not a title
             span = scan_name(text, m.end(), line_end(text, m.end()), allow_title=False, max_tokens=5)
             if span:
                 out.append(

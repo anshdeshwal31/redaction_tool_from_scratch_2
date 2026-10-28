@@ -29,6 +29,7 @@ from mlredact.text.address import (
     parse_mention,
     parse_texts,
     place_start,
+    postcode_value,
 )
 from mlredact.text.address.geometry import Geo, x_overlap
 from mlredact.text.address.tables import FURNITURE
@@ -909,3 +910,38 @@ def test_empty_and_odd_words_do_not_break_the_parse() -> None:
     parse = parse_document([line, line])
     assert parse.units
     assert all(p[1] < len(texts) for u in parse.units for p in u.roles)
+
+
+def test_the_parse_lists_the_labels_it_read() -> None:
+    """A caller that reads values (the label detector) must tell a label from a value."""
+    texts = ["Suburb: Penrith State: NSW", "Address:", "Unit", "Street No."]
+    parse = parse_texts(texts)
+    spans = [(lab.line, texts[lab.line].split()[lab.first : lab.last + 1], lab.role) for lab in parse.labels]
+    assert spans == [
+        (0, ["Suburb:"], "suburb"),
+        (0, ["State:"], "state"),
+        (1, ["Address:"], "address"),
+        (2, ["Unit"], "unit"),
+        (3, ["Street", "No."], "street_no"),
+    ]
+    assert [lab.colon for lab in parse.labels] == [True, True, True, False, False]
+    assert parse_texts(["He lives in Penrith NSW 2750."]).labels == ()
+
+
+@pytest.mark.parametrize(
+    ("word", "value"),
+    [
+        ("2750", 2750),
+        ("2750,", 2750),
+        ("(2750)", 2750),
+        ("275O", 2750),
+        ("27SO", None),
+        ("2750weresurveyed.", None),
+        ("12345", None),
+        ("NSW2750", None),
+        ("Penrith", None),
+        ("", None),
+    ],
+)
+def test_postcode_value_reads_one_word(word: str, value: int | None) -> None:
+    assert postcode_value(word) == value

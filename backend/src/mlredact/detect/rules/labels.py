@@ -7,11 +7,18 @@ The value is looked for on the label's own line first.  When a form label has no
 its line ("Patient name:" on its own, a label cell of a table) the value is found by *geometry*:
 the separate cell to the right on the same row, else the line directly below in the same column.
 The value must still parse as the label's kind (name, identifier, date, phone, e-mail...).
+
+Address values are bounded by the address grammar (:mod:`mlredact.text.address`): a value ends where its place ends
+(a phone number after the postcode is not part of the address), and the labels of the form layer's lexicon ('Unit',
+'Street No.', 'Suburb/Town', 'State', 'Postcode') are labels, never values and never inside one: a sub-label next to
+'Address:' is not its value, and 'Suburb: Penrith State: NSW' holds a suburb and a state.  The value of a State label
+is no candidate at all: the state word stays as written, and belongs to its address when it has one.
 """
 
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -20,8 +27,11 @@ from mlredact.core.geometry import BBox
 from mlredact.core.model import Candidate
 from mlredact.core.types import EntityType, EvidenceStrength, ViewKind
 from mlredact.detect.base import candidate, trim_span
+from mlredact.detect.rules.addrview import FORM_LABEL_ROLES, AddressView, address_view
+from mlredact.detect.rules.contact import phone_starts
 from mlredact.detect.rules.dates import find_dates
 from mlredact.detect.rules.names import line_end, scan_name
+from mlredact.text.address import postcode_value
 from mlredact.text.views import TextView
 
 T = EntityType
@@ -36,6 +46,7 @@ class V(Enum):
     EMAIL = "email"
     ORG = "org"
     FREE = "free"
+    POSTCODE = "postcode"
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,8 +200,10 @@ LABELS: tuple[LabelSpec, ...] = (
     ),
     LabelSpec("label.org", r"company|workplace|school|university|college|tafe", T.ORGANISATION, V.ORG, True),
     LabelSpec("label.locality", r"suburb|town|city|locality", T.LOCALITY, V.FREE, True),
-    LabelSpec("label.postcode", r"post[ \t]?code|p/code|pcode", T.POSTCODE, V.ID, False),
+    LabelSpec("label.postcode", r"post[ \t]?code|p/code|pcode", T.POSTCODE, V.POSTCODE, False),
 )
+
+_ADDRESS_TYPES = frozenset({T.STREET_ADDRESS, T.LOCALITY, T.POSTCODE})
 
 _SEP_REQUIRED = r"[ \t]*[:#\-–][ \t]*"
 _SEP_OPTIONAL = r"[ \t]*[:#\-–]?[ \t]*"
@@ -206,6 +219,8 @@ _COMPILED = tuple(
 )
 
 _ID_TOKEN = re.compile(r"[^ \t\n]+")
+#: The word that labels a phone number after an address ('T (02) 5550 6610', 'Ph: ...').
+_PHONE_CUE = re.compile(r"(?i)[ \t,;|]+(?:t|p|m|f|ph|tel|fax|mob|phone|mobile)[.:]?[ \t]*$")
 _PHONE_VALUE = re.compile(r"[+(]?\d[\d ()+\-]{4,}\d")
 _EMAIL_VALUE = re.compile(r"[A-Za-z0-9._%+'\-]+[ \t]?@[ \t]?[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _ORG_CONNECTORS = frozenset(
@@ -283,7 +298,7 @@ def _segment(view: TextView, row: _Row, x_from: float, gap: float) -> tuple[int,
 
 class LabelValueDetector:
     detector_id = "rules.labels"
-    version = "2"
+    version = "3"
 
     def _geometric(
         self, view: TextView, rows: list[_Row], row_of: dict[int, int], label_first: int, label_last: int
@@ -337,15 +352,26 @@ class LabelValueDetector:
             for m in pattern.finditer(text):
                 matches.append((m.start(), m.end(), spec))
         matches.sort(key=lambda x: (x[0], -x[1], x[2].rule_id))
+        doc = address_view(view)
         starts = sorted({s for s, _e, _sp in matches})
+        form_starts, other_starts = self._grammar_starts(view, doc)
+        # A value ends at the next label.  The labels of the form layer also end the value of an address, suburb or
+        # postcode label; an address value ends at any colon label.
+        bounds = {
+            "plain": starts,
+            "form": sorted({*starts, *form_starts}),
+            "address": sorted({*starts, *form_starts, *other_starts}),
+        }
         out: list[Candidate] = []
         for m_start, v_start, spec in matches:
             limit = line_end(text, v_start)
-            for s in starts:
-                if s >= v_start + 1 and s < limit:
-                    limit = s
-                    break
-            span = self._value(spec.value, text, v_start, limit)
+            ends = bounds[
+                "address" if spec.value is V.ADDRESS else "form" if spec.entity_type in _ADDRESS_TYPES else "plain"
+            ]
+            nxt = bisect_right(ends, v_start)
+            if nxt < len(ends) and ends[nxt] < limit:
+                limit = ends[nxt]
+            span = self._value(spec, view, doc, v_start, limit)
             if span is not None and span[1] > span[0]:
                 out.append(
                     candidate(
@@ -363,7 +389,7 @@ class LabelValueDetector:
             if not label_like:
                 continue
             for s, e, where in self._geometric(view, rows, row_of, label_first, label_last):
-                value = self._value(spec.value, text, s, e)
+                value = self._value(spec, view, doc, s, e)
                 if value is not None and value[1] > value[0]:
                     out.append(
                         candidate(
@@ -379,7 +405,44 @@ class LabelValueDetector:
         return out
 
     @staticmethod
-    def _value(kind: V, text: str, start: int, limit: int) -> tuple[int, int] | None:
+    def _grammar_starts(view: TextView, doc: AddressView) -> tuple[list[int], list[int]]:
+        """Where the grammar's labels start in the view: the form layer's labels, and the other colon labels."""
+        form: list[int] = []
+        other: list[int] = []
+        for lab in doc.parse.labels:
+            at = view.starts[doc.token_at[(lab.line, lab.first)]]
+            if lab.role in FORM_LABEL_ROLES:
+                form.append(at)
+            elif lab.role == "other" and lab.colon:
+                other.append(at)
+        return form, other
+
+    @staticmethod
+    def _address(view: TextView, doc: AddressView, start: int, limit: int) -> tuple[int, int] | None:
+        """An address value: it ends where the grammar's place ends.  Words that are labels are no value.  With no
+        address read in it, it ends before a phone number."""
+        text = view.text
+        s, e = trim_span(text, start, limit)
+        rng = view.token_range(s, e)
+        if e - s < 2 or len(rng) == 0 or all(i in doc.label_tokens for i in rng):
+            return None
+        hit = [i for i in rng if i in doc.role_at]
+        if hit:
+            e = view.ends[hit[-1]]
+        else:
+            phones = phone_starts(text, s, e)
+            if phones:
+                e = phones[0]
+                cue = _PHONE_CUE.search(text, s, e)
+                if cue:
+                    e = cue.start()
+        s, e = trim_span(text, s, e)
+        return (s, e) if e - s >= 2 else None
+
+    def _value(
+        self, spec: LabelSpec, view: TextView, doc: AddressView, start: int, limit: int
+    ) -> tuple[int, int] | None:
+        kind, text = spec.value, view.text
         if start >= limit:
             return None
         if kind is V.NAME:
@@ -391,12 +454,19 @@ class LabelValueDetector:
                 if dm.start <= 3:
                     return start + dm.start, start + dm.end
             return None
-        if kind is V.ADDRESS or kind is V.FREE:
+        if kind is V.ADDRESS:
+            return self._address(view, doc, start, limit)
+        if kind is V.FREE or kind is V.POSTCODE:
             s, e = trim_span(text, start, limit)
-            if kind is V.FREE:
-                words = text[s:e].split()
-                if len(words) > 6:
-                    return None
+            rng = view.token_range(s, e)
+            if len(rng) == 0 or all(i in doc.label_tokens for i in rng):
+                return None  # a label ('Suburb/Town' above 'State') is no value
+            if kind is V.POSTCODE:
+                # the value is the postcode itself: a word that merely starts with four digits is not
+                first = view.tokens[rng.start].text
+                return trim_span(text, view.starts[rng.start], view.ends[rng.start]) if postcode_value(first) else None
+            if len(text[s:e].split()) > 6:
+                return None
             return (s, e) if e - s >= 2 else None
         if kind is V.PHONE:
             m = _PHONE_VALUE.match(text, start, limit)

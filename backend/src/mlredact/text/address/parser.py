@@ -6,8 +6,9 @@ from collections.abc import Sequence
 from types import MappingProxyType
 
 from mlredact.text.address.internal import KeptB, UnitB
-from mlredact.text.address.model import AddressParse, AddressUnit, AddrLine, BoxRole, KeptPlace
+from mlredact.text.address.model import AddressParse, AddressUnit, AddrLine, BoxRole, KeptPlace, LabelSpan
 from mlredact.text.address.sweep import FinalStage
+from mlredact.text.address.words import bare, pc_value
 from mlredact.text.gazetteer import Gazetteer, load_gazetteer
 
 
@@ -34,6 +35,11 @@ class Parser(FinalStage):
             tuple(_public(u, uids) for u in ordered),
             tuple(_kept(k) for k in sorted(self.kept, key=lambda k: min(k.positions))),
             tuple(self.notes),
+            tuple(
+                LabelSpan(li, lab.start, lab.end, lab.role.value, lab.colon, lab.whole)
+                for li in sorted(self.labels)
+                for lab in self.labels[li]
+            ),
         )
 
     @staticmethod
@@ -105,3 +111,10 @@ def place_start(words: Sequence[str], gazetteer: Gazetteer | None = None) -> int
     if unit is None or not unit.locality:
         return None
     return unit.locality[0][1]
+
+
+def postcode_value(word: str) -> int | None:
+    """The postcode a single word spells (four digits, with OCR letters O, I, l, S and B allowed when three digits are
+    real), ignoring brackets, quotes and trailing punctuation around it; None for any other word.  The word alone is
+    judged, not its place: 'postcode 2750' and the 'NSW 2750' of an address both give 2750."""
+    return pc_value(bare(word))

@@ -256,14 +256,31 @@ class KeptPlace:
     after_cue: bool = False  # right after a place-kind label or phrase
 
 
+@dataclass(frozen=True, slots=True)
+class LabelSpan:
+    """A label the grammar read: words ``first``..``last`` of line ``line``.  ``role`` is the lexicon family of the
+    form layer ('address', 'street', 'street_name', 'street_no', 'unit', 'suburb', 'state', 'postcode'), 'other' for a
+    colon phrase outside the lexicon, or 'unreadable' for a garbled label box.  ``whole`` is true when the label fills
+    its line or box.  The label words are never address values."""
+
+    line: int
+    first: int
+    last: int
+    role: str
+    colon: bool
+    whole: bool
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class AddressParse:
-    """What the grammar found in a document: its units in reading order, the places kept on their own, and notes
-    (diagnostic strings holding positions only, never text)."""
+    """What the grammar found in a document: its units in reading order, the places kept on their own, the labels it
+    read (the form layer's lexicon, in reading order) and notes (diagnostic strings holding positions only, never
+    text)."""
 
     units: tuple[AddressUnit, ...]
     kept: tuple[KeptPlace, ...]
     notes: tuple[str, ...] = ()
+    labels: tuple[LabelSpan, ...] = ()
 
     def unit_index(self) -> Mapping[Pos, AddressUnit]:
         """Every word of every unit mapped to its unit."""

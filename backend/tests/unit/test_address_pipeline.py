@@ -327,3 +327,155 @@ class TestVerificationCatches:
         assert r.result.status is JobStatus.RELEASED, r.failed
         assert r.checks["V2_text"]["metrics"]["address_hits"] == 0
         assert r.checks["V4_residual"]["metrics"]["residual_tokens"] == 0
+
+
+# ------------------------------------------------------------------------------------------------ detector fixes
+class TestDetectorFixes:
+    """Over-spans and look-alikes of the rule detectors that used to surface as re-plan black boxes or held jobs
+    (steps 2 and 4 of the build).  Each is released with no black box and no re-plan, in the profile named."""
+
+    @pytest.mark.parametrize("profile", ["client", "broad"])
+    def test_rsd_in_brackets_is_no_box_and_nothing_is_blacked_out(self, run: Callable[..., Run], profile: str) -> None:
+        r = run(column("Diagnosis: CRPS (RSD 2) of the right hand."), profile)
+        released_clean(r)
+        assert {"crps", "rsd", "2", "hand"} <= set(r.tokens())
+
+    def test_a_standalone_postcode_over_a_text_layer_without_spaces_is_not_blacked_out(
+        self, run: Callable[..., Run]
+    ) -> None:
+        """Broad replaces a postcode on its own; the re-read output holds '2070weresurveyed.' as one word, and the
+        postcode label must not take it for a postcode."""
+        r = run(column("Residents of postcode 2750 were surveyed."), "broad")
+        released_clean(r)
+        words = r.tokens()
+        assert "2750" not in words and {"residents", "postcode", "surveyed"} <= set(words)
+        kept = run(column("Residents of postcode 2750 were surveyed."), "client")
+        released_clean(kept)
+        assert "2750" in kept.tokens()
+
+    @pytest.mark.parametrize("profile", ["client", "broad"])
+    def test_form_boxes_on_their_own_lines_are_one_unit_and_the_labels_stay(
+        self, run: Callable[..., Run], profile: str
+    ) -> None:
+        r = run(
+            column(
+                "Address:",
+                "Unit",
+                "5",
+                "Street No.",
+                "12",
+                "Street name",
+                "Smith Street",
+                "Suburb/Town",
+                "Penrith",
+                "State",
+                "NSW",
+                "Postcode",
+                "2750",
+            ),
+            profile,
+        )
+        released_clean(r)
+        words = r.tokens()
+        assert not {"smith", "penrith", "2750", "12"} & set(words)
+        assert {"address", "unit", "street", "suburb", "town", "state", "nsw", "postcode"} <= set(words)
+        assert r.result.trace is not None and len(r.result.trace.units) == 1
+
+    @pytest.mark.parametrize("profile", ["client", "broad", "claimant_focused", "maximal"])
+    def test_an_address_followed_by_a_phone_number_is_one_unit_and_one_phone(
+        self, run: Callable[..., Run], profile: str
+    ) -> None:
+        r = run(column("Ms Jane Citizen", "Address: 5 Smith Street, Penrith NSW 2750 T (02) 5550 6610"), profile)
+        released_clean(r)
+        words = r.tokens()
+        assert not {"smith", "penrith", "2750", "5550", "6610"} & set(words)
+        assert "t" in words, "the label of the phone stays"
+        trace = r.result.trace
+        assert trace is not None and len(trace.units) == 1
+        phones = [d for d in trace.decisions if d.mention.entity_type.value == "phone"]
+        assert len(phones) == 1 and phones[0].mention.value == "(02) 5550 6610"
+
+    def test_a_state_label_keeps_its_value_and_is_never_a_locality(self, run: Callable[..., Run]) -> None:
+        r = run(column("Suburb: Penrith State: NSW", "", "State: NSW"), "broad")
+        released_clean(r)
+        words = r.tokens()
+        assert words.count("nsw") == 2 and "penrith" not in words
+        trace = r.result.trace
+        assert trace is not None
+        assert [d.mention.value for d in trace.decisions if d.mention.entity_type.value == "locality"] == ["Penrith"]
+
+    @pytest.mark.parametrize("profile", ["client", "claimant_focused"])
+    def test_a_surname_that_is_a_street_name_does_not_split_the_unit(
+        self, run: Callable[..., Run], profile: str
+    ) -> None:
+        """'Smith' in '12 Smith Street' used to make the whole address a PERSON mention (a person outranks an address
+        where they overlap): replaced with a person's name, or kept for a clinician under claimant_focused."""
+        r = run(
+            column("Dr John Smith, GP", "Address: 12 Smith Street, Penrith NSW 2750", "Dr Smith reviewed the claim."),
+            profile,
+        )
+        released_clean(r)
+        trace = r.result.trace
+        assert trace is not None and len(trace.units) == 1
+        (unit,) = trace.units.values()
+        assert unit.excluded == (), "no mention owns a word of the unit"
+        assert not {"penrith", "2750"} & set(r.tokens())
+        types = [d.mention.entity_type.value for d in trace.decisions]
+        assert types.count("street_address") == 1 and types.count("person") == 2
+
+    def test_dr_after_a_street_name_is_the_street_type_and_the_unit_is_whole(self, run: Callable[..., Run]) -> None:
+        r = run(column("45 Smith Dr Penrith NSW 2750"), "client")
+        released_clean(r)
+        assert not {"smith", "penrith", "2750"} & set(r.tokens())
+        trace = r.result.trace
+        assert trace is not None and len(trace.units) == 1
+        (unit,) = trace.units.values()
+        assert unit.excluded == ()
+
+    def test_a_guard_look_alike_in_a_letter_is_left_alone_in_every_profile(self, run: Callable[..., Run]) -> None:
+        lines = column(
+            "The 6 Minute Walk Test was 410 m.",
+            "He completed 30 Second Chair Rise twice.",
+            "3 Local Court convictions were recorded.",
+            "He developed RSD 3 months after the injury.",
+        )
+        for profile in ("client", "broad", "claimant_focused", "maximal"):
+            r = run(lines, profile)
+            released_clean(r)
+            words = r.tokens()
+            assert {"6", "minute", "walk", "test", "30", "second", "chair", "rise", "3", "local", "court"} <= set(words)
+            assert {"rsd", "3", "months"} <= set(words)
+
+    @pytest.mark.parametrize("profile", ["client", "broad"])
+    def test_a_state_box_is_part_of_its_unit_and_a_lone_state_label_is_not(
+        self, run: Callable[..., Run], profile: str
+    ) -> None:
+        """The state of the form's unit changes only under address_state: replace; 'State: NSW' elsewhere stays, and is
+        never made a locality (broad replaces localities)."""
+        form = column(
+            "Address:",
+            "Unit",
+            "5",
+            "Street No.",
+            "12",
+            "Street name",
+            "Smith Street",
+            "Suburb/Town",
+            "Penrith",
+            "State",
+            "NSW",
+            "Postcode",
+            "2750",
+            "",
+            "Notes",
+            "",
+            "State: NSW",
+        )
+        kept = run(form, profile)
+        released_clean(kept)
+        assert kept.tokens().count("nsw") == 2
+        moved = run(form, profile, {"policy": {"address_state": "replace"}})
+        released_clean(moved)
+        words = moved.tokens()
+        assert words.count("nsw") == 1, "the lone 'State: NSW' stays, the form's state box moved"
+        assert not {"penrith", "2750"} & set(words)

@@ -9,7 +9,9 @@ Values of confirmed mentions (and job-supplied seeds) are searched over every li
   token count only, so a match can never absorb neighbouring label words.
 
 Windows are minimal: a window that contains an already-matched window for the same target, or that
-has a token contributing no alphanumerics, is never emitted.
+has a token contributing no alphanumerics, is never emitted.  One occurrence is one window: of the windows
+of a target that overlap, only the best (highest similarity, then the smallest, then the first) is emitted.
+Otherwise a fuzzy window shifted by a token would extend a mention over its neighbour in every round.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from mlredact.text.normalize import match_key
 from mlredact.text.views import TextView
 
 DETECTOR_ID = "propagation"
-DETECTOR_VERSION = "2"
+DETECTOR_VERSION = "3"
 _MAX_ALT_COMBOS = 64
 
 
@@ -103,6 +105,7 @@ def propagate(
     out: list[Candidate] = []
     for a, b in line_ranges(tokens):
         matched: dict[int, list[tuple[int, int]]] = {}
+        found: list[tuple[int, int, int, str, float]] = []
         for size in sorted(sizes):
             for i in range(a, b - size + 1):
                 j = i + size
@@ -134,19 +137,40 @@ def propagate(
                     if size != target.n_tokens and any(not token_keys[k] for k in range(i, j)):
                         continue  # a resized window must not absorb punctuation-only tokens
                     windows.append((i, j))
-                    out.append(
-                        Candidate(
-                            entity_type=target.entity_type,
-                            view=ViewKind.LINE,
-                            start=view.starts[i],
-                            end=view.ends[j - 1],
-                            evidence=Evidence(
-                                DETECTOR_ID if target.source == "mention" else "seed",
-                                DETECTOR_VERSION,
-                                f"{target.source}.{rule}",
-                                EvidenceStrength.STRONG,
-                                round(score, 4),
-                            ),
-                        )
-                    )
+                    found.append((ti, i, j, rule, score))
+        for ti, i, j, rule, score in _one_window_each(found):
+            target = targets[ti]
+            out.append(
+                Candidate(
+                    entity_type=target.entity_type,
+                    view=ViewKind.LINE,
+                    start=view.starts[i],
+                    end=view.ends[j - 1],
+                    evidence=Evidence(
+                        DETECTOR_ID if target.source == "mention" else "seed",
+                        DETECTOR_VERSION,
+                        f"{target.source}.{rule}",
+                        EvidenceStrength.STRONG,
+                        round(score, 4),
+                    ),
+                )
+            )
     return out
+
+
+def _one_window_each(found: Sequence[tuple[int, int, int, str, float]]) -> list[tuple[int, int, int, str, float]]:
+    """The windows of one line with the overlapping windows of one target dropped (the best one stays), in the order
+    they were found.  Windows are ``(target, first token, end token, rule, similarity)``."""
+    best: dict[int, list[tuple[int, int]]] = {}
+    keep: set[int] = set()
+    ranked = sorted(
+        range(len(found)), key=lambda k: (found[k][0], -found[k][4], found[k][2] - found[k][1], found[k][1])
+    )
+    for k in ranked:
+        ti, i, j, _rule, _score = found[k]
+        taken = best.setdefault(ti, [])
+        if any(i < e and s < j for s, e in taken):
+            continue
+        taken.append((i, j))
+        keep.add(k)
+    return [w for k, w in enumerate(found) if k in keep]
