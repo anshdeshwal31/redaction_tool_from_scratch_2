@@ -99,7 +99,7 @@ class JobTrace:
     later step failed), the render operations it was drawn from (after verification re-plans) and the
     boxes those operations actually erased, keyed like the manifest's ``erased_px``.  ``injected``: the
     report of the job's injected stage inputs (benchmark oracle modes), None without them.  The address join's
-    output (``addresses: whole``, the pipeline's own detection; empty otherwise): ``layouts`` (mention id -> where the
+    output (``addresses: whole``, also for injected mentions; empty otherwise): ``layouts`` (mention id -> where the
     mention sits in its unit), ``units`` (unit id -> unit), ``kept_places`` (the places mentioned on their own, as
     the grammar recorded them) and ``address_fakes`` (unit id -> token id -> the text drawn, '' erases a token)."""
 
@@ -226,7 +226,7 @@ class Redactor:
         pdf: bytes | None = None
         redacted: list[RedactedPage] = []
         built: _Built | None = None  # read only for the trace
-        join = AddressJoin(())  # the address join (empty while the mentions are injected)
+        join = AddressJoin(())  # the address join (the injected mentions bring their own)
         address_fakes: Mapping[str, Mapping[str, str]] = {}
         _log.info("job.start", job=job_id, doc=input_sha[:32])
 
@@ -272,6 +272,8 @@ class Redactor:
                     decisions = decide(join.mentions, cfg.policy, professionals)
                 else:
                     pages, detection, decisions = list(staged.pages), staged.detection, list(staged.decisions)
+                    if staged.join is not None:  # the injected mentions went through the join as detection does
+                        join = staged.join
                     tokens = {t.token_id: t for p in pages for t in p.tokens()}
                 removed = [d.mention for d in decisions if d.action is not ActionKind.KEEP]
                 geoms = {p.geometry.index: p.geometry for p in pages}

@@ -10,6 +10,11 @@ Coordinates are ``display_pt``: PDF points of the page as displayed (CropBox aft
 top-left, y down).  The canonical raster is the displayed page (``mlredact.ingest.render``) and every
 reader's boxes are mapped back into it, so a pixel box converts with its page's own dpi alone:
 pt = px * 72 / dpi.
+
+An address is one unit for the tool (``addresses: whole``) but two parts for the benchmark's ground truth (0.2): its
+street line and its locality.  ``mentions.json`` reports each unit as two entries, the street line as ``street_address``
+under the unit's id and the place as ``locality`` under ``<unit id>.place``; ``plan.json`` and ``pseudonyms.json`` name
+those part ids, so that each part is followed through every stage (:func:`address_parts`).
 """
 
 from __future__ import annotations
@@ -17,16 +22,20 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from typing import Any
 
 from mlredact.core.errors import ReasonCode
 from mlredact.core.geometry import BBox
-from mlredact.core.model import Mention, PageAnalysis, PageGeometry
+from mlredact.core.model import Mention, PageAnalysis, PageGeometry, RenderOp, Token
 from mlredact.core.types import ActionKind, EntityType, RegionKind
 from mlredact.ocr.fusion import ENGINE_ID as TEXT_LAYER_ENGINE
 from mlredact.pipeline.runner import JobTrace
+from mlredact.policy.addresses import JOIN_DETECTOR
 
 FRAME = "display_pt"
+# An operation lies over a token when this much of the token is inside its box.
+_UNDER = 0.5
 CANDIDATE = "mlredact"
 
 _REPLACE_KINDS = frozenset(
@@ -129,16 +138,90 @@ def text_artifact(trace: JobTrace, *, text_layer: bool) -> dict[str, Any]:
     return {"schema": "rb.text/0.1", "frame": FRAME, "source": source, "pages": pages}
 
 
+@dataclass(frozen=True, slots=True)
+class AddressPart:
+    """One part of an address unit as the benchmark sees it: ``part_id`` (the unit's id for the street line,
+    ``<unit id>.place`` for the place), ``label`` (``street_address`` or ``locality``), its ``tokens`` in reading
+    order, and ``carried``: the replaced mentions that carry them, each with the token ids it carries of this part."""
+
+    part_id: str
+    label: str
+    tokens: tuple[str, ...]
+    carried: tuple[tuple[Mention, tuple[str, ...]], ...]
+
+
+def address_parts(trace: JobTrace) -> dict[str, tuple[AddressPart, ...]]:
+    """The street line and the place of every address unit whose mentions are replaced, by unit id (reading order).
+    The street line holds every word up to the place (a building or property name, designators, the house number, the
+    street, a box and its number and the words after it), the place the suburb, state, postcode and country.  A
+    place-only unit has the place only; a form's boxes are two parts like any other address, and so is a repeat.
+    Places mentioned on their own are in no unit."""
+    replaced = {d.mention.mention_id: d.mention for d in trace.decisions if d.action is not ActionKind.KEEP}
+    out: dict[str, tuple[AddressPart, ...]] = {}
+    for unit_id, unit in trace.units.items():
+        carriers = [replaced[mid] for mid in unit.mention_ids if mid in replaced]
+        place = frozenset(unit.locality)
+        parts: list[AddressPart] = []
+        for part_id, label, at_place in ((unit_id, "street_address", False), (f"{unit_id}.place", "locality", True)):
+            carried = tuple(
+                (m, ids) for m in carriers if (ids := tuple(t for t in m.token_ids if (t in place) is at_place))
+            )
+            if carried:
+                parts.append(AddressPart(part_id, label, tuple(t for _m, ids in carried for t in ids), carried))
+        if parts:
+            out[unit_id] = tuple(parts)
+    return out
+
+
+def _part_conf(part: AddressPart) -> float | None:
+    """The best probability among the evidence of the mentions that carry a part, without the join's own evidence
+    (it adds certainty only about the grouping)."""
+    scores = [
+        e.score
+        for m, _ids in part.carried
+        for e in m.evidence
+        if e.detector_id != JOIN_DETECTOR and 0.0 <= e.score <= 1.0
+    ]
+    return round(max(scores), 5) if scores else None
+
+
+def _part_entry(part: AddressPart, tokens: Mapping[str, Token], geoms: Mapping[int, PageGeometry]) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "id": part.part_id,
+        "label": part.label,
+        "text": " ".join(tokens[t].text for t in part.tokens),
+        "tokens": list(part.tokens),
+        "regions": [
+            {"page": tokens[t].page, "poly": display_poly(tokens[t].bbox, geoms[tokens[t].page])} for t in part.tokens
+        ],
+    }
+    conf = _part_conf(part)
+    if conf is not None:
+        entry["conf"] = conf
+    return entry
+
+
 def mentions_artifact(trace: JobTrace) -> dict[str, Any]:
     """``rb.mentions/0.1``: what the tool decided to replace or remove.  Detected values the policy keeps
-    (dates, places) are left out: the benchmark scores a flagged kept word as a false positive."""
+    (dates, places on their own) are left out: the benchmark scores a flagged kept word as a false positive.  An
+    address unit is two entries, its street line and its place (:func:`address_parts`), listed where the unit's first
+    mention comes."""
     geoms = {p.geometry.index: p.geometry for p in trace.pages}
     tokens = {t.token_id: t for p in trace.pages for t in p.tokens()}
+    parts = address_parts(trace)
+    unit_of = {mid: unit_id for unit_id, unit in trace.units.items() for mid in unit.mention_ids}
     mentions: list[dict[str, Any]] = []
+    listed: set[str] = set()
     for d in trace.decisions:
         if d.action is ActionKind.KEEP:
             continue
         m = d.mention
+        if m.mention_id in unit_of:
+            unit_id = unit_of[m.mention_id]
+            if unit_id not in listed:
+                listed.add(unit_id)
+                mentions.extend(_part_entry(part, tokens, geoms) for part in parts.get(unit_id, ()))
+            continue
         entry: dict[str, Any] = {
             "id": m.mention_id,
             "label": m.entity_type.value,
@@ -178,9 +261,39 @@ def entities_artifact(trace: JobTrace, mention_ids: AbstractSet[str]) -> dict[st
     return {"schema": "rb.entities/0.1", "clusters": clusters}
 
 
+def _named_by(
+    op: RenderOp,
+    mention_ids: AbstractSet[str],
+    carried: Mapping[str, Sequence[tuple[AddressPart, Sequence[str]]]],
+    tokens: Mapping[str, Token],
+) -> list[str]:
+    """The ids ``plan.json`` names for an operation: the mentions it draws or covers that ``mentions.json`` lists and,
+    for a mention that carries an address, the parts whose tokens the operation lies over (all of the mention's parts
+    where it lies over none of them: a re-plan's box)."""
+    named: list[str] = []
+    for ref in dict.fromkeys((op.ref_id, *op.covers)):
+        if ref in mention_ids:
+            named.append(ref)
+        parts = carried.get(ref, ())
+        under = [
+            part.part_id
+            for part, ids in parts
+            if any(tokens[t].page == op.page and tokens[t].bbox.overlap_fraction(op.box) >= _UNDER for t in ids)
+        ]
+        named.extend(under or [part.part_id for part, _ids in parts])
+    return list(dict.fromkeys(named))
+
+
 def plan_artifact(trace: JobTrace, mention_ids: AbstractSet[str]) -> dict[str, Any]:
-    """``rb.plan/0.1``: one region per final render operation, with the box it actually erased."""
+    """``rb.plan/0.1``: one region per final render operation, with the box it actually erased.  A region names the
+    mentions it covers and the address parts (:func:`address_parts`) whose tokens it covers."""
     geoms = {p.geometry.index: p.geometry for p in trace.pages}
+    tokens = {t.token_id: t for p in trace.pages for t in p.tokens()}
+    carried: dict[str, list[tuple[AddressPart, Sequence[str]]]] = {}
+    for unit_parts in address_parts(trace).values():
+        for part in unit_parts:
+            for m, ids in part.carried:
+                carried.setdefault(m.mention_id, []).append((part, ids))
     seen: Counter[str] = Counter()
     regions = []
     for page in sorted(trace.ops):
@@ -196,7 +309,7 @@ def plan_artifact(trace: JobTrace, mention_ids: AbstractSet[str]) -> dict[str, A
                 "page": op.page,
                 "poly": display_poly(box, geoms[op.page]),
                 "action": action,
-                "mentions": [i for i in dict.fromkeys((op.ref_id, *op.covers)) if i in mention_ids],
+                "mentions": _named_by(op, mention_ids, carried, tokens),
             }
             if op.text:
                 entry["replacement"] = op.text
@@ -206,8 +319,8 @@ def plan_artifact(trace: JobTrace, mention_ids: AbstractSet[str]) -> dict[str, A
 
 def pseudonyms_artifact(trace: JobTrace, mention_ids: AbstractSet[str]) -> dict[str, Any]:
     """``rb.pseudonyms/0.1``: every replacement text drawn, per mention and as an original -> replacement
-    table.  A surrogate that was never drawn (its mention was blacked out instead, e.g. on a sideways line)
-    is left out."""
+    table.  An address is one replacement per part (:func:`address_parts`): the fake's words at the part's tokens.  A
+    surrogate that was never drawn (its mention was blacked out instead, e.g. on a sideways line) is left out."""
     typeset = [op for ops in trace.ops.values() for op in ops if op.kind in _TYPESET_KINDS]
     drawn = {ref for op in typeset for ref in (op.ref_id, *op.covers)}
     parsed = trace.persons.mentions if trace.persons else {}
@@ -226,6 +339,25 @@ def pseudonyms_artifact(trace: JobTrace, mention_ids: AbstractSet[str]) -> dict[
         if (cluster, m.value, replacement) not in listed:
             listed.add((cluster, m.value, replacement))
             entries.append({"cluster": cluster, "original": m.value, "replacement": replacement})
+    tokens = {t.token_id: t for p in trace.pages for t in p.tokens()}
+    for parts in address_parts(trace).values():
+        for part in parts:
+            if part.part_id not in mention_ids:
+                continue
+            pieces: list[str] = []
+            for m, ids in part.carried:
+                sur = trace.surrogates.get(m.mention_id)
+                if sur is None or m.mention_id not in drawn:
+                    break
+                pieces.extend(sur.tokens[m.token_ids.index(t)] for t in ids)
+            else:
+                replacement = " ".join(p for p in pieces if p)
+                if replacement:
+                    mentions.append({"mention": part.part_id, "replacement": replacement})
+                    original = " ".join(tokens[t].text for t in part.tokens)
+                    if (None, original, replacement) not in listed:
+                        listed.add((None, original, replacement))
+                        entries.append({"cluster": None, "original": original, "replacement": replacement})
     return {"schema": "rb.pseudonyms/0.1", "entries": entries, "mentions": mentions}
 
 

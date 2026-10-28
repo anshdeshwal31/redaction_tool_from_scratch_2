@@ -490,7 +490,16 @@ def oracle_outcome(folder: Path, mode: str, docs: Docs, config: AppConfig) -> di
     tokens = {t.token_id: t for p in pages for t in p.tokens()}
     removed = [d.mention for d in decisions if d.action is not ActionKind.KEEP]
     factory = SurrogateFactory(Chooser(SURROGATE_KEY), forbidden_keys(removed, persons))
-    surrogates = SurrogateAssigner(factory, persons, tokens).assign(decisions)
+    join = staged.join
+    assigner = SurrogateAssigner(
+        factory,
+        persons,
+        tokens,
+        layouts=join.layouts if join is not None else None,
+        units=join.units if join is not None else None,
+        address_state=config.policy.address_state,
+    )
+    surrogates = assigner.assign(decisions)
     lines = [line for p in pages for line in p.lines]
     rotated = rotated_token_ids(lines)
     # The runner's region helpers read nothing but the configuration.

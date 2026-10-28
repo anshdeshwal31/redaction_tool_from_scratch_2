@@ -5,13 +5,17 @@ All text is fictitious.  The schemas themselves belong to the benchmark and are 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 from click.testing import Result
+from test_address_join import Doc, case_doc
 from typer.testing import CliRunner
 
 import mlredact.bench.artifacts as bench_artifacts
@@ -29,6 +33,7 @@ from mlredact.bench.artifacts import (
     text_artifact,
     unreleased_note,
 )
+from mlredact.bench.labels import LABEL_MAP, family_of
 from mlredact.bench.oracle import OracleInputs
 from mlredact.cli.main import app
 from mlredact.config.loader import load_config
@@ -39,15 +44,26 @@ from mlredact.core.model import Evidence, Line, Mention, PageAnalysis, PageGeome
 from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, JobStatus, PageKind, RegionKind
 from mlredact.ocr.fusion import ENGINE_ID as TEXT_LAYER_ENGINE
 from mlredact.pipeline.runner import JobResult, JobTrace, Redactor, RegionDecision
-from mlredact.policy.engine import Decision
+from mlredact.policy.addresses import join_addresses
+from mlredact.policy.engine import Decision, decide
 from mlredact.render.plan import plan_ops, rotated_token_ids
-from mlredact.resolve.persons import Gender, ParsedMention, PersonResolution
-from mlredact.surrogate.assign import MentionSurrogate
+from mlredact.resolve.persons import Gender, ParsedMention, PersonResolution, resolve_persons
+from mlredact.surrogate.assign import MentionSurrogate, SurrogateAssigner, forbidden_keys
+from mlredact.surrogate.drbg import Chooser
+from mlredact.surrogate.generators import SurrogateFactory
+from mlredact.text.views import build_line_view
+from support import GridLine, column
 
 # Page 0: portrait A4 at 300 dpi; page 1: landscape A4 rendered at 200 dpi.
 GEOM0 = PageGeometry(0, 595.276, 841.89, 300, 2481, 3508)
 GEOM1 = PageGeometry(1, 841.89, 595.276, 200, 2339, 1654)
 PDF = b"%PDF-1.7 stub output"
+CASES = {
+    c["id"]: c
+    for c in json.loads((Path(__file__).resolve().parents[1] / "data" / "address_cases.json").read_text("utf-8"))[
+        "cases"
+    ]
+}
 
 
 def _tok(page: int, line: int, word: int, box: BBox, text: str, conf: float = 0.9, engine: str = "ppocrv6") -> Token:
@@ -328,6 +344,204 @@ def test_pseudonyms_leave_out_surrogates_that_were_never_drawn() -> None:
     assert [m["id"] for m in files["mentions.json"]["mentions"]] == ["M-sideways"]
     assert [(r["action"], r.get("replacement")) for r in files["plan.json"]["regions"]] == [("remove", None)]
     assert files["pseudonyms.json"] == {"schema": "rb.pseudonyms/0.1", "entries": [], "mentions": []}
+
+
+# ------------------------------------------------------------------------------------------- address units
+# An address is one unit for the tool and two parts for the benchmark's ground truth (0.2): its street line and its
+# place.  The traces below are made by the real join, surrogates and planner over hand-made pages (no rendering).
+CLIENT = load_config("client")
+PART_KEY = hashlib.sha256(b"test_bench addresses").digest()
+WATTLE = "42 Wattle Grove Road, Penrith NSW 2750"
+
+
+def address_trace(doc: Doc, mentions: Sequence[Mention] = (), **join: Any) -> JobTrace:
+    """What ``Redactor.run`` hands the adapter for ``addresses: whole``: the join of ``mentions``, its decisions,
+    the surrogates and operations of the pipeline's own stages, and the join's units, layouts and fakes."""
+    join.setdefault("band_fraction", 0.0)
+    joined = join_addresses(list(mentions), doc.pages, CLIENT.policy, **join)
+    decisions = decide(joined.mentions, CLIENT.policy)
+    tokens = {t.token_id: t for p in doc.pages for t in p.tokens()}
+    persons = resolve_persons(joined.mentions, build_line_view(doc.pages))
+    removed = [d.mention for d in decisions if d.action is not ActionKind.KEEP]
+    factory = SurrogateFactory(Chooser(PART_KEY), forbidden_keys(removed, persons))
+    assigner = SurrogateAssigner(factory, persons, tokens, layouts=joined.layouts, units=joined.units)
+    surrogates = assigner.assign(decisions)
+    lines = [line for p in doc.pages for line in p.lines]
+    geoms = {p.geometry.index: p.geometry for p in doc.pages}
+    ops = plan_ops(decisions, tokens, geoms, CLIENT.redaction, surrogates, rotated_token_ids(lines), lines)
+    return JobTrace(
+        None,
+        tuple(doc.pages),
+        tuple(decisions),
+        persons,
+        surrogates,
+        ops,
+        {},
+        (),
+        layouts=dict(joined.layouts),
+        units=dict(joined.units),
+        kept_places=joined.kept,
+        address_fakes=dict(assigner.address_fakes),
+    )
+
+
+def entries(trace: JobTrace) -> list[tuple[str, str, str]]:
+    """(id, label, text) of the address entries of mentions.json."""
+    return [
+        (m["id"], m["label"], m["text"])
+        for m in mentions_artifact(trace)["mentions"]
+        if m["label"] in ("street_address", "locality")
+    ]
+
+
+def test_an_address_is_two_entries_its_street_line_and_its_place() -> None:
+    doc = Doc(column(WATTLE))
+    trace = address_trace(doc)
+    (unit_id,) = trace.units
+    assert entries(trace) == [
+        (unit_id, "street_address", "42 Wattle Grove Road,"),
+        (f"{unit_id}.place", "locality", "Penrith NSW 2750"),
+    ]
+    street, place = mentions_artifact(trace)["mentions"]
+    assert (street["tokens"], place["tokens"]) == (doc.order[:4], doc.order[4:])
+    assert [r["page"] for r in street["regions"]] == [0] * 4 and len(place["regions"]) == 3
+    first = doc.lines[0].tokens[0]
+    assert street["regions"][0] == {"page": 0, "poly": display_poly(first.bbox, doc.pages[0].geometry)}
+
+
+def test_a_block_address_gives_the_same_two_entries() -> None:
+    trace = address_trace(Doc(column("42 Wattle Grove Road,", "Penrith NSW 2750")))
+    (unit_id,) = trace.units
+    assert entries(trace) == [
+        (unit_id, "street_address", "42 Wattle Grove Road,"),
+        (f"{unit_id}.place", "locality", "Penrith NSW 2750"),
+    ]
+
+
+def test_building_and_designator_words_are_in_the_street_line() -> None:
+    trace = address_trace(Doc(column("Level 4, 123 George Street, Sydney NSW 2000")))
+    assert [text for _i, _label, text in entries(trace)] == ["Level 4, 123 George Street,", "Sydney NSW 2000"]
+
+
+def test_a_place_only_unit_is_one_locality_entry() -> None:
+    trace = address_trace(Doc(column("Penrith NSW 2750")))
+    (unit_id,) = trace.units
+    assert entries(trace) == [(f"{unit_id}.place", "locality", "Penrith NSW 2750")]
+
+
+def test_a_repeat_is_reported_like_any_other_unit() -> None:
+    grid = [GridLine(f"Address: {WATTLE}", 0, 0), GridLine(WATTLE, 1, 52)]
+    trace = address_trace(Doc(grid), band_fraction=0.05)
+    first, again = trace.units.values()
+    assert again.repeat_of == first.unit_id
+    assert [(i, label) for i, label, _text in entries(trace)] == [
+        (first.unit_id, "street_address"),
+        (f"{first.unit_id}.place", "locality"),
+        (again.unit_id, "street_address"),
+        (f"{again.unit_id}.place", "locality"),
+    ]
+    # One fake for the address, so one for each of its parts, wherever it is written.
+    replacements = {m["mention"]: m["replacement"] for m in _files(trace)["pseudonyms.json"]["mentions"]}
+    assert replacements[first.unit_id] == replacements[again.unit_id]
+    assert replacements[f"{first.unit_id}.place"] == replacements[f"{again.unit_id}.place"]
+
+
+def test_a_forms_boxes_are_a_street_entry_and_a_place_entry() -> None:
+    doc, bands, boxes = case_doc(CASES["form-boxes-on-own-lines"])
+    trace = address_trace(doc, bands=bands, boxes=boxes)
+    ((unit_id, unit),) = trace.units.items()
+    assert unit.form and len(unit.mention_ids) > 2  # one mention per box
+    assert entries(trace) == [
+        (unit_id, "street_address", "5 12 Smith Street"),
+        (f"{unit_id}.place", "locality", "Penrith NSW 2750"),
+    ]
+
+
+def test_places_kept_on_their_own_stay_out() -> None:
+    doc = Doc(column("She moved to Penrith.", "", WATTLE))
+    kept = doc.span(EntityType.LOCALITY, 0, 3, 3)
+    trace = address_trace(doc, [kept])
+    assert [d.action for d in trace.decisions if d.mention.mention_id == kept.mention_id] == [ActionKind.KEEP]
+    files = _files(trace)
+    assert [text for _i, _label, text in entries(trace)] == ["42 Wattle Grove Road,", "Penrith NSW 2750"]
+    assert kept.token_ids[0] not in {t for m in files["mentions.json"]["mentions"] for t in m.get("tokens", ())}
+    assert files["plan.json"]["regions"] and all(r["mentions"] for r in files["plan.json"]["regions"])
+
+
+def test_a_part_has_the_best_evidence_of_the_detectors_and_not_the_joins() -> None:
+    doc = Doc(column(WATTLE))
+    assert all("conf" not in m for m in mentions_artifact(address_trace(doc))["mentions"])  # the join is no detector
+    ner = Evidence("ner", "1", "x", EvidenceStrength.WEAK, 0.6)
+    weak = Mention("M-weak", EntityType.STREET_ADDRESS, tuple(doc.order), (ner,), WATTLE)
+    assert [m["conf"] for m in mentions_artifact(address_trace(doc, [weak]))["mentions"]] == [0.6, 0.6]
+
+
+def test_the_parts_go_back_through_the_label_map_to_the_benchmarks_types() -> None:
+    mentions = mentions_artifact(address_trace(Doc(column(WATTLE))))["mentions"]
+    types = [LABEL_MAP[m["label"]] for m in mentions]
+    assert types == ["ADDRESS", "LOCATION"]
+    # Injected the other way, each type is a family whose default is the label the part was reported under.
+    assert [family_of(t).reported for t in types] == [m["label"] for m in mentions]
+    assert {m["label"] for m in mentions} <= set(LABELS)
+
+
+def test_a_plan_region_names_the_parts_its_tokens_cover() -> None:
+    one_line = address_trace(Doc(column(WATTLE)))
+    (unit_id,) = one_line.units
+    assert [r["mentions"] for r in _files(one_line)["plan.json"]["regions"]] == [[unit_id, f"{unit_id}.place"]]
+    block = address_trace(Doc(column("42 Wattle Grove Road,", "Penrith NSW 2750")))
+    (unit_id,) = block.units
+    regions = _files(block)["plan.json"]["regions"]
+    assert [r["mentions"] for r in regions] == [[unit_id], [f"{unit_id}.place"]]  # one region per line
+    assert all(r["action"] == "replace" and r["replacement"] for r in regions)
+
+
+def test_a_retypeset_line_names_the_parts_on_it() -> None:
+    doc = Doc(column("42 Wattle Grove Road, Penrith NSW 2750", "Ring 0491570006 today"))
+    phone = doc.span(EntityType.PHONE, 1, 1, 1)
+    trace = address_trace(doc, [phone])
+    (unit_id,) = trace.units
+    named = [r["mentions"] for r in _files(trace)["plan.json"]["regions"]]
+    assert [unit_id, f"{unit_id}.place"] in named and [phone.mention_id] in named
+
+
+def test_pseudonyms_give_one_replacement_per_part() -> None:
+    trace = address_trace(Doc(column(WATTLE)))
+    ((unit_id, unit),) = trace.units.items()
+    fake = trace.address_fakes[unit_id]
+    street = " ".join(w for t in unit.street if (w := fake[t]))
+    place = " ".join(w for t in unit.locality if (w := fake[t]))
+    pseudonyms = _files(trace)["pseudonyms.json"]
+    assert pseudonyms["mentions"] == [
+        {"mention": unit_id, "replacement": street},
+        {"mention": f"{unit_id}.place", "replacement": place},
+    ]
+    assert pseudonyms["entries"] == [
+        {"cluster": None, "original": "42 Wattle Grove Road,", "replacement": street},
+        {"cluster": None, "original": "Penrith NSW 2750", "replacement": place},
+    ]
+    assert street != "42 Wattle Grove Road," and "Penrith" not in place and place.split()[-2] == "NSW"
+
+
+def test_a_part_that_was_never_drawn_has_no_replacement() -> None:
+    trace = address_trace(Doc(column(WATTLE)))
+    blacked = {p: tuple(replace(op, kind=ActionKind.BLACKOUT, text=None) for op in ops) for p, ops in trace.ops.items()}
+    files = _files(replace(trace, ops=blacked))
+    assert [m["id"] for m in files["mentions.json"]["mentions"]] == [i for i, _label, _text in entries(trace)]
+    assert files["pseudonyms.json"]["mentions"] == [] and files["pseudonyms.json"]["entries"] == []
+
+
+def test_without_units_a_street_address_is_one_entry_as_before() -> None:
+    """``addresses: parts`` (and every mention the join passes on) has no unit: the mention is reported as it is."""
+    doc = Doc(column("42 Wattle Grove Road,"))
+    street = doc.span(EntityType.STREET_ADDRESS, 0, 0, 3)
+    parts = CLIENT.policy.model_copy(update={"addresses": "parts"})
+    joined = join_addresses([street], doc.pages, parts)
+    assert not joined.units
+    decisions = tuple(decide(joined.mentions, parts))
+    trace = JobTrace(None, tuple(doc.pages), decisions, None, {}, {}, {}, ())
+    ((mention_id, label, text),) = [(m["id"], m["label"], m["text"]) for m in mentions_artifact(trace)["mentions"]]
+    assert (mention_id, label, text) == (street.mention_id, "street_address", "42 Wattle Grove Road,")
 
 
 def test_run_info_records_the_release_verdict() -> None:

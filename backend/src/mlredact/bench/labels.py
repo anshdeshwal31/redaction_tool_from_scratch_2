@@ -76,7 +76,9 @@ class Family:
     ``types``: the tool 2 types a text mention with the label may get, the default first (none for a region label);
     ``region_kind``: the kind of the regions a region label becomes, and for a text label the kind of an anchor no
     token explains (or of the whole mention when it has no token); ``ambiguous``: tool 2's rule detectors choose the
-    type among ``types`` (the identifier families); ``location``: a trailing postcode becomes a mention of its own."""
+    type among ``types`` (the identifier families); ``location``: the locality of an
+    address (under ``addresses: whole`` it joins the address before it; under ``parts`` a trailing postcode becomes a
+    mention of its own)."""
 
     types: tuple[EntityType, ...]
     region_kind: RegionKind
@@ -172,7 +174,8 @@ def refine(family: Family, tokens: range, candidates: Sequence[tuple[range, Cand
 
 def split_location(texts: Sequence[str]) -> list[tuple[EntityType, int, int]]:
     """A LOCATION mention's token texts as (type, start, end) parts, ``end`` exclusive: a trailing postcode is a
-    POSTCODE part (its fake then follows the fake suburb on the line), the rest (suburb and state) a LOCALITY part."""
+    POSTCODE part (its fake then follows the fake suburb on the line), the rest (suburb and state) a LOCALITY part.
+    Used under ``addresses: parts`` only: ``addresses: whole`` makes a LOCATION a unit with its address."""
     if not texts:
         return []
     if not _POSTCODE.match(texts[-1]):

@@ -8,6 +8,7 @@ written in the benchmark's own format (no benchmark import).  All text is fictit
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from collections.abc import Mapping, Sequence
@@ -38,13 +39,21 @@ from mlredact.pipeline.injection import (
     pt_box,
 )
 from mlredact.pipeline.runner import JobTrace, Redactor
+from mlredact.policy.addresses import join_addresses
+from mlredact.policy.engine import decide
 from mlredact.render.plan import rotated_token_ids
-from mlredact.surrogate.assign import MentionSurrogate
+from mlredact.resolve.persons import resolve_persons
+from mlredact.surrogate.assign import MentionSurrogate, SurrogateAssigner, forbidden_keys
+from mlredact.surrogate.drbg import Chooser
+from mlredact.surrogate.generators import SurrogateFactory
+from mlredact.text.address import UnitKind
 from mlredact.verify.residual import ResidualHit
 
 E = EntityType
 GEOM = PageGeometry(0, 595.276, 841.89, 150, 1240, 1754)
 CONFIG = load_config("client")
+PARTS = load_config("client", (), {"policy": {"addresses": "parts"}})
+SCOPE_KEY = hashlib.sha256(b"test_oracle_inputs").digest()
 CANARY = "Zelphinia Quarrington"
 
 
@@ -388,7 +397,8 @@ def test_a_mention_across_a_page_break_is_redacted_page_by_page(tmp_path: Path) 
 
 
 # ------------------------------------------------------------------------------------------- types
-def test_a_location_s_postcode_is_a_mention_of_its_own(tmp_path: Path) -> None:
+def test_under_parts_a_location_s_postcode_is_a_mention_of_its_own(tmp_path: Path) -> None:
+    """``addresses: parts`` keeps the old staging: no join, a LOCATION's trailing postcode is a mention of its own."""
     tokens = layout("Penrith NSW 2750", "Sydney NSW 2000,", "2150", "Parramatta")
     s = stage(
         tmp_path,
@@ -399,6 +409,7 @@ def test_a_location_s_postcode_is_a_mention_of_its_own(tmp_path: Path) -> None:
             mention("postcode", "LOCATION", tokens=["t2.0"]),
             mention("parramatta", "LOCATION", tokens=["t3.0"]),
         ],
+        config=PARTS,
     )
     assert s.mentions == [
         ("locality", "Penrith NSW"),
@@ -417,8 +428,343 @@ def test_a_location_s_postcode_is_a_mention_of_its_own(tmp_path: Path) -> None:
     assert s.report.aliases[s.internal("2750")] == ("penrith",)
     # The client keeps places: every injected one is replaced all the same.
     assert {d.action for d in s.stage.decisions} == {ActionKind.SURROGATE}
+    assert s.stage.join is None
     note = s.note("injected mentions")
-    assert "2 locations split into locality and postcode, 6 of a kept type redacted" in note
+    assert "0 locations joined to their address, 0 places alone as units, 2 locations split" in note
+    assert "locality and postcode, 6 of a kept type redacted" in note
+
+
+# ------------------------------------------------------------------------------------------ address units
+def drawn(s: Staged) -> dict[str, str]:
+    """The text the runner draws at each token of ``s``'s mentions: surrogates as the runner makes them (the staged
+    join's layouts and units, a fixed scope key)."""
+    stage, join = s.stage, s.stage.join
+    persons = stage.detection.persons
+    tokens = {t.token_id: t for p in stage.pages for t in p.tokens()}
+    removed = [d.mention for d in stage.decisions if d.action is not ActionKind.KEEP]
+    assigner = SurrogateAssigner(
+        SurrogateFactory(Chooser(SCOPE_KEY), forbidden_keys(removed, persons)),
+        persons,
+        tokens,
+        layouts=join.layouts if join is not None else None,
+        units=join.units if join is not None else None,
+    )
+    surrogates = assigner.assign(stage.decisions)
+    return {
+        tid: surrogates[d.mention.mention_id].tokens[pos]
+        for d in stage.decisions
+        if d.mention.mention_id in surrogates
+        for pos, tid in enumerate(d.mention.token_ids)
+    }
+
+
+def e2e_drawn(s: Staged) -> dict[str, str]:
+    """The same drawing for the same pages as the pipeline's own detection hands it: the injected people and
+    organisations as its detectors would find them, the address left to the join (with its repeat sweep)."""
+    stage = s.stage
+    found = [m for m in stage.detection.mentions if m.entity_type in (E.PERSON, E.ORGANISATION, E.PHONE, E.EMAIL)]
+    join = join_addresses(found, stage.pages, CONFIG.policy)
+    decisions = decide(join.mentions, CONFIG.policy)
+    persons = resolve_persons(join.mentions, stage.detection.line_view)
+    tokens = {t.token_id: t for p in stage.pages for t in p.tokens()}
+    removed = [d.mention for d in decisions if d.action is not ActionKind.KEEP]
+    assigner = SurrogateAssigner(
+        SurrogateFactory(Chooser(SCOPE_KEY), forbidden_keys(removed, persons)),
+        persons,
+        tokens,
+        layouts=join.layouts,
+        units=join.units,
+    )
+    surrogates = assigner.assign(decisions)
+    return {
+        tid: surrogates[d.mention.mention_id].tokens[pos]
+        for d in decisions
+        if d.mention.mention_id in surrogates
+        for pos, tid in enumerate(d.mention.token_ids)
+    }
+
+
+def tid(line: int, word: int) -> str:
+    return f"p0000.l{line:04d}.w{word:03d}"
+
+
+def test_an_address_and_its_locality_are_one_unit(tmp_path: Path) -> None:
+    """GT 0.2 ids: the locality of ``addr1`` is ``addr1-loc``.  One unit, one mention to redact, both ids reported."""
+    tokens = layout("14 Example Street,", "Faketown QLD 4000")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("addr1", "ADDRESS", tokens=["t0.0", "t0.1", "t0.2"]),
+            mention("addr1-loc", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"]),
+        ],
+    )
+    assert s.mentions == [("street_address", "14 Example Street, Faketown QLD 4000")]
+    join = s.stage.join
+    assert join is not None
+    ((unit_id, unit),) = join.units.items()
+    assert unit_id in join.targets
+    (internal,) = unit.mention_ids
+    assert s.report.aliases[internal] == ("addr1", "addr1-loc")  # both ids, in reading order
+    reported = s.reported
+    assert (reported["addr1"].label, reported["addr1-loc"].label) == ("street_address", "locality")
+    assert reported["addr1"].slots == tuple((internal, i) for i in range(3))
+    assert reported["addr1-loc"].slots == tuple((internal, i) for i in range(3, 6))
+    assert reported["addr1"].owner and reported["addr1-loc"].owner
+    assert [d.action for d in s.stage.decisions] == [ActionKind.SURROGATE]
+    assert unit.street == tuple(tid(0, w) for w in range(3)) and unit.locality == tuple(tid(1, w) for w in range(3))
+    note = s.note("injected mentions")
+    assert "1 locations joined to their address, 0 places alone as units" in note
+
+
+def test_every_word_of_the_unit_that_is_not_structure_is_replaced(tmp_path: Path) -> None:
+    """The state stays (a structure word); the number, the street, the type, the suburb and the postcode change."""
+    tokens = layout("14 Example Street,", "Faketown QLD 4000")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("addr1", "ADDRESS", tokens=["t0.0", "t0.1", "t0.2"]),
+            mention("addr1-loc", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"]),
+        ],
+    )
+    fake = drawn(s)
+    originals = {tid(0, 0): "14", tid(0, 1): "Example", tid(0, 2): "Street,", tid(1, 0): "Faketown", tid(1, 2): "4000"}
+    assert {t: fake[t] for t in originals} != originals
+    assert all(fake[t] != word for t, word in originals.items())
+    assert fake[tid(1, 1)] == "QLD"
+
+
+def test_the_footer_s_box_words_are_replaced(tmp_path: Path) -> None:
+    """The real PO-box footer has two words between its box number and the comma, inside the injected street line."""
+    tokens = layout("PO Box 123 City East,", "Brisbane QLD 4002")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("foot", "ADDRESS", tokens=["t0.0", "t0.1", "t0.2", "t0.3", "t0.4"]),
+            mention("foot-loc", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"]),
+        ],
+    )
+    fake = drawn(s)
+    assert [fake[tid(0, w)] for w in (0, 1)] == ["PO", "Box"] and fake[tid(1, 1)] == "QLD"
+    for line, word, original in ((0, 2, "123"), (0, 3, "City"), (0, 4, "East,"), (1, 0, "Brisbane"), (1, 2, "4002")):
+        assert fake[tid(line, word)] != original, original
+
+
+def test_a_unit_can_be_wider_than_the_injection(tmp_path: Path) -> None:
+    """The grammar reads 'Level 4,' as part of the address: the unit is redacted whole (one fake for the address),
+    while the injected ADDRESS and LOCATION keep to their own words."""
+    tokens = layout("Level 4, 123 George Street,", "Sydney NSW 2000")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("addr", "ADDRESS", tokens=["t0.2", "t0.3", "t0.4"]),
+            mention("addr-loc", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"]),
+        ],
+    )
+    assert s.mentions == [("street_address", "Level 4, 123 George Street, Sydney NSW 2000")]
+    assert s.reported["addr"].token_ids == (tid(0, 2), tid(0, 3), tid(0, 4))
+    assert drawn(s)[tid(0, 1)] != "4,"
+
+
+@pytest.mark.parametrize(
+    ("lines", "street", "place", "paired"),
+    [
+        # The same line, the line above, and two lines above (an unrelated line between: no pair).
+        (("Flurble Quux, Zarnok NSW 2750",), ("t0.0", "t0.1"), ("t0.2", "t0.3", "t0.4"), True),
+        (("Flurble Quux,", "Zarnok NSW 2750"), ("t0.0", "t0.1"), ("t1.0", "t1.1", "t1.2"), True),
+        (("Flurble Quux,", "Some other words", "Zarnok NSW 2750"), ("t0.0", "t0.1"), ("t2.0", "t2.1", "t2.2"), False),
+    ],
+)
+def test_a_location_joins_the_address_just_before_it(
+    tmp_path: Path, lines: tuple[str, ...], street: tuple[str, ...], place: tuple[str, ...], paired: bool
+) -> None:
+    """Without the id convention: the injected ADDRESS before the LOCATION, on its line or the line above."""
+    s = stage(
+        tmp_path,
+        layout(*lines),
+        [mention("street", "ADDRESS", tokens=list(street)), mention("place", "LOCATION", tokens=list(place))],
+    )
+    join = s.stage.join
+    assert join is not None
+    if paired:
+        ((_, unit),) = join.units.items()
+        assert unit.forced and unit.kind is not UnitKind.PLACE_ONLY and len(unit.token_ids) == 5
+        assert s.report.aliases[unit.mention_ids[0]] == ("street", "place")
+    else:
+        assert [u.kind for u in join.units.values()] == [UnitKind.PLACE_ONLY]
+        assert s.mentions == [("street_address", "Flurble Quux,"), ("street_address", "Zarnok NSW 2750")]
+
+
+def test_the_id_convention_comes_before_the_position(tmp_path: Path) -> None:
+    """``<address>-loc`` is the locality of ``<address>`` however far apart they lie; two ids that are no pair by
+    their names are one only by position."""
+    tokens = layout("Flurble Quux,", "Some other words", "More words here", "Zarnok NSW 2750")
+    street, place = ["t0.0", "t0.1"], ["t3.0", "t3.1", "t3.2"]
+    s = stage(
+        tmp_path,
+        tokens,
+        [mention("a", "ADDRESS", tokens=street), mention("a-loc", "LOCATION", tokens=place)],
+    )
+    assert s.stage.join is not None and len(s.stage.join.units) == 1  # the words between are not its own
+    assert s.mentions == [("street_address", "Flurble Quux,"), ("street_address", "Zarnok NSW 2750")]  # two runs
+    other = stage(
+        tmp_path / "other",
+        tokens,
+        [mention("a", "ADDRESS", tokens=street), mention("b", "LOCATION", tokens=place)],
+    )
+    assert other.stage.join is not None
+    assert [u.kind for u in other.stage.join.units.values()] == [UnitKind.PLACE_ONLY]  # no pair: a place alone
+    tool_2 = stage(
+        tmp_path / "tool2",
+        tokens,
+        [mention("a", "ADDRESS", tokens=street), mention("a.place", "LOCATION", tokens=place)],
+    )
+    assert tool_2.stage.join is not None and not [
+        u for u in tool_2.stage.join.units.values() if u.kind is UnitKind.PLACE_ONLY
+    ]  # tool 2's own report: '<address>.place'
+
+
+def test_an_address_is_taken_by_one_location_and_the_nearest_wins(tmp_path: Path) -> None:
+    tokens = layout("Flurble Quux,", "Blarg Zonk,", "Zarnok NSW 2750")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("far", "ADDRESS", tokens=["t0.0", "t0.1"]),
+            mention("near", "ADDRESS", tokens=["t1.0", "t1.1"]),
+            mention("place", "LOCATION", tokens=["t2.0", "t2.1", "t2.2"]),
+        ],
+    )
+    assert s.mentions == [("street_address", "Flurble Quux,"), ("street_address", "Blarg Zonk, Zarnok NSW 2750")]
+    assert s.report.aliases[s.internal("Blarg Zonk, Zarnok NSW 2750")] == ("near", "place")
+
+
+def test_the_injected_clusters_keep_two_entities_apart(tmp_path: Path) -> None:
+    tokens = layout("Flurble Quux,", "Zarnok NSW 2750")
+    mentions = [
+        mention("street", "ADDRESS", tokens=["t0.0", "t0.1"]),
+        mention("place", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"]),
+    ]
+    same = stage(tmp_path / "same", tokens, mentions, [("e", ("street", "place"))])
+    apart = stage(tmp_path / "apart", tokens, mentions, [("e1", ("street",)), ("e2", ("place",))])
+    unlisted = stage(tmp_path / "unlisted", tokens, mentions, [("e1", ("street",))])
+    assert same.mentions == [("street_address", "Flurble Quux, Zarnok NSW 2750")]
+    assert apart.mentions == [("street_address", "Flurble Quux,"), ("street_address", "Zarnok NSW 2750")]
+    assert unlisted.mentions == same.mentions  # the clusters do not say they are two
+
+
+def test_a_location_with_no_address_is_a_place_only_unit(tmp_path: Path) -> None:
+    tokens = layout("Dr Jane Citizen", "Zarnok NSW 2750")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("jane", "PERSON_NAME", tokens=["t0.1", "t0.2"]),
+            mention("place", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"]),
+        ],
+    )
+    join = s.stage.join
+    assert join is not None
+    ((_, unit),) = join.units.items()
+    assert unit.kind is UnitKind.PLACE_ONLY and unit.forced and unit.street == ()
+    assert s.mentions == [("person", "Jane Citizen"), ("street_address", "Zarnok NSW 2750")]
+    assert s.reported["place"].label == "locality"
+    fake = drawn(s)
+    assert fake[tid(1, 0)] != "Zarnok" and fake[tid(1, 1)] == "NSW" and fake[tid(1, 2)] != "2750"
+    assert "0 locations joined to their address, 1 places alone as units" in s.note("injected mentions")
+
+
+def test_a_box_per_field_form_address_is_one_unit(tmp_path: Path) -> None:
+    tokens = layout("Street 14 Example Street", "Suburb Faketown", "State QLD", "Postcode 4000")
+    street = ["t0.1", "t0.2", "t0.3"]
+    place = ["t1.1", "t2.1", "t3.1"]
+    s = stage(
+        tmp_path,
+        tokens,
+        [mention("form", "ADDRESS", tokens=street), mention("form-loc", "LOCATION", tokens=place)],
+    )
+    join = s.stage.join
+    assert join is not None
+    (unit,) = join.units.values()
+    assert {tid(0, 1), tid(0, 2), tid(0, 3), tid(1, 1), tid(2, 1), tid(3, 1)} <= set(unit.token_ids)
+    assert len(unit.mention_ids) > 1  # the boxes are mentions of one unit
+    assert {a for ids in (s.report.aliases[i] for i in unit.mention_ids) for a in ids} == {"form", "form-loc"}
+    fake = drawn(s)
+    assert fake[tid(0, 1)] != "14" and fake[tid(1, 1)] != "Faketown" and fake[tid(3, 1)] != "4000"
+    assert fake[tid(2, 1)] == "QLD"
+
+
+def test_the_oracle_draws_the_fake_that_end_to_end_draws(tmp_path: Path) -> None:
+    tokens = layout("Dr Jane Citizen", "42 Wattle Grove Road,", "Penrith NSW 2750")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("jane", "PERSON_NAME", tokens=["t0.1", "t0.2"]),
+            mention("addr-wattle", "ADDRESS", tokens=["t1.0", "t1.1", "t1.2", "t1.3"]),
+            mention("loc-penrith", "LOCATION", tokens=["t2.0", "t2.1", "t2.2"]),
+        ],
+    )
+    fake, theirs = drawn(s), e2e_drawn(s)
+    assert fake == theirs and fake[tid(1, 1)] != "Wattle"
+
+
+def test_a_place_only_unit_s_fake_follows_its_heading_as_end_to_end(tmp_path: Path) -> None:
+    """The injected people and organisations are passed on, so the heading of a place-only unit is the one end to end
+    sees (the fake of a place alone depends on it)."""
+    lines = ("Dr Jane Citizen", "Penrith NSW 2750")
+    place = mention("place", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"])
+    with_jane = stage(
+        tmp_path / "jane", layout(*lines), [mention("jane", "PERSON_NAME", tokens=["t0.1", "t0.2"]), place]
+    )
+    assert drawn(with_jane) == e2e_drawn(with_jane)
+    alone = stage(tmp_path / "alone", layout(*lines), [place])
+    assert drawn(alone) == e2e_drawn(alone)
+    assert drawn(alone)[tid(1, 0)] != drawn(with_jane)[tid(1, 0)]  # a heading changes the fake
+
+
+def test_nothing_is_swept_for_repeats_the_gt_lists_every_mention(tmp_path: Path) -> None:
+    """End to end finds the footer's repeat of the address; injected mentions list every mention, so there is none to
+    find in the oracle modes."""
+    tokens = layout("42 Wattle Grove Road, Penrith NSW 2750", *[""] * 35, "Penrith")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("addr-wattle", "ADDRESS", tokens=["t0.0", "t0.1", "t0.2", "t0.3"]),
+            mention("loc-penrith", "LOCATION", tokens=["t0.4", "t0.5", "t0.6"]),
+        ],
+    )
+    join = s.stage.join
+    assert join is not None and len(join.units) == 1
+    swept = join_addresses([], s.stage.pages, CONFIG.policy)
+    assert [u.repeat_of is not None for u in swept.units.values()] == [False, True]
+
+
+@pytest.mark.parametrize("clusters", [None, [("c", ("jane",))]])
+def test_the_verification_data_is_the_joins(tmp_path: Path, clusters: Any) -> None:
+    """Units, targets and exempt positions come with the staged decisions, as the pipeline's own detection brings
+    them."""
+    tokens = layout("Dr Jane Citizen", "42 Wattle Grove Road,", "Penrith NSW 2750", "She grew up in Camperdown.")
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("jane", "PERSON_NAME", tokens=["t0.1", "t0.2"]),
+            mention("addr-wattle", "ADDRESS", tokens=["t1.0", "t1.1", "t1.2", "t1.3"]),
+            mention("loc-penrith", "LOCATION", tokens=["t2.0", "t2.1", "t2.2"]),
+        ],
+        clusters,
+    )
+    join = s.stage.join
+    assert join is not None and len(join.units) == 1
+    (unit_id,) = join.units
+    assert join.targets[unit_id].whole and join.targets[unit_id].compound
+    assert join.layouts and {m.mention_id for m in s.stage.detection.mentions} >= set(join.layouts)
+    assert tid(3, 4) in join.exempt.kept_places  # a place mentioned on its own is a kept place, whatever the staging
 
 
 def test_identifiers_take_the_type_tool_2_s_rules_recognise(tmp_path: Path) -> None:
@@ -472,9 +818,9 @@ def test_every_injected_mention_is_redacted(tmp_path: Path) -> None:
     assert [(d.mention.entity_type, d.action) for d in s.stage.decisions] == [
         (E.PERSON, ActionKind.SURROGATE),
         (E.DATE_OF_BIRTH, ActionKind.SURROGATE),  # kept by the client profile
-        (E.LOCALITY, ActionKind.SURROGATE),  # kept by the client profile
+        (E.STREET_ADDRESS, ActionKind.SURROGATE),  # a place alone is a place-only unit, replaced though kept
     ]
-    assert "2 of a kept type redacted" in s.note("injected mentions")
+    assert "1 of a kept type redacted" in s.note("injected mentions")
     detection = s.stage.detection
     assert detection.detectors == (("bench.inject", "1"), ("resolve.persons", "1"))
     assert (detection.low_evidence, detection.propagation_rounds) == ((), 0)
@@ -1253,10 +1599,11 @@ BUSY_CASES = (
     "injected text: 58 tokens (1 empty, 1 with a repeated id",
     "18 placed by token ids, 0 by span, 2 by region anchors, 1 not placed",
     "2 sharing tokens another one owns",
-    "2 locations split into locality and postcode, 4 of a kept type redacted, 1 labels taken as other_id, 1 anchors "
+    "1 locations joined to their address, 1 places alone as units, 0 locations split into locality and postcode, 0 of "
+    "a kept type redacted, 1 labels taken as other_id, 1 anchors "
     "not explained by their tokens",
     "injected clusters: 5 read (1 merged by id), 1 mentions in several clusters, 2 non-person members, 1 members",
-    "47 applied by 25 operations (13 joining regions of a mention on a line, 2 the same as another), 4 applied as "
+    "47 applied by 22 operations (12 joining regions of a mention on a line, 2 the same as another), 4 applied as "
     "non-text regions, 2 over several mentions or other words, 2 over no mention's word removed as illegible, 1 beyond "
     "the last page, 1 replacement texts not used",
 )

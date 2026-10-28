@@ -16,7 +16,10 @@ production.
 An injected mention becomes tool 2's mentions over whole tokens, and regions where its anchors are not text (a
 signature) or are not explained by its tokens (a logo around an organisation's name).  Where injected mentions share
 a token, the tokens are redacted once, with the type of the mention that has the most of them; every injected mention
-is still reported under its own id (``InjectReport``).  Verification checks the output as usual, but from
+is still reported under its own id (``InjectReport``).  Under ``addresses: whole`` an injected LOCATION (the locality
+of an address) and the injected ADDRESS of the same entity just before it are one address unit, through the address
+join with explicit pairs, and a LOCATION with no such ADDRESS is a place-only unit: every word of the unit that is not
+a structure word is replaced, with the same fake as in ``e2e``.  Verification checks the output as usual, but from
 ``oracle_mentions`` on it re-plans only removed values that are still readable, and in ``oracle_regions`` nothing:
 whatever else it finds was not injected, and only counts against the release.
 
@@ -52,6 +55,7 @@ from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, Region
 from mlredact.detect.engine import DetectionResult, default_detectors
 from mlredact.detect.fusion import TYPE_PRIORITY
 from mlredact.pipeline.injection import InjectedPage, InjectedStage, InjectReport, ReportedMention, on_page, pt_box
+from mlredact.policy.addresses import AddressJoin, join_addresses
 from mlredact.policy.engine import Decision, decide, decide_injected
 from mlredact.resolve.persons import resolve_persons, with_clusters
 from mlredact.surrogate.assign import MentionSurrogate
@@ -236,6 +240,22 @@ class _Text:
         return self.anchored.tokens
 
 
+@dataclass(frozen=True, slots=True)
+class _Group:
+    """Injected text mentions that share tokens (transitively), ranked: the owner of the shared tokens first."""
+
+    ranked: tuple[_Text, ...]
+
+    @property
+    def winner(self) -> _Text:
+        return self.ranked[0]
+
+    @property
+    def tokens(self) -> tuple[int, ...]:
+        """The union of the members' line-view token indices, in reading order."""
+        return tuple(sorted({i for t in self.ranked for i in t.tokens}))
+
+
 class _Stager:
     """One run of ``OracleInputs.stage``: the injected mentions on the analysed pages."""
 
@@ -252,36 +272,62 @@ class _Stager:
         sources = sorted(self.injection.mentions or (), key=lambda m: m.id)
         placed = [self._place(m) for m in sources]
         candidates = self._candidates(placed)
-        anchored = [self._typed(p, candidates) for p in placed]
+        whole = config.policy.addresses == "whole"
+        anchored = [self._typed(p, candidates, whole) for p in placed]
 
         texts = [_Text(a, a.kind) for a in anchored if a.kind is not None]
+        groups = [_Group(tuple(sorted(g, key=self._rank))) for g in _groups(texts)]
+        pairing = self._pairing(groups) if whole else {}
+        in_units = {k for place, street in pairing.items() for k in (place, street) if k is not None}
         internal: list[Mention] = []
+        unit_of: dict[int, str] = {}  # group -> the id of its mention (a unit group has exactly one)
+        for k, group in enumerate(groups):
+            winner = group.winner
+            runs = _runs(group.tokens, self.view)
+            self.counts["nested"] += len(group.ranked) - 1
+            self.counts["split"] += len(runs) > 1
+            if k in in_units:
+                # One mention over all the group's tokens, which need not follow each other (a form's boxes): the join
+                # makes one unit of it and its pair.
+                kind = EntityType.LOCALITY if winner.anchored.family.location else winner.kind
+                unit = self._mention(group.tokens, kind, winner)
+                unit_of[k] = unit.mention_id
+                internal.append(unit)
+                continue
+            for run in runs:
+                parts = self._parts(run, winner, whole)
+                self.counts["location_split"] += len(parts) > 1
+                internal.extend(self._mention(run[start:end], kind, winner) for kind, start, end in parts)
+        join: AddressJoin | None = None
+        if whole:
+            pairs = {
+                unit_of[place]: unit_of[street] if street is not None else None for place, street in pairing.items()
+            }
+            join = join_addresses(internal, self.pages, config.policy, pairs, repeat_sweep=False)
+            mentions = list(join.mentions)
+        else:
+            mentions = sorted(internal, key=lambda m: (m.token_ids[0], m.token_ids[-1], m.entity_type.value))
+
+        # Which injected mentions each of tool 2's mentions stands for (the owner first), and where each token went.
         aliases: dict[str, tuple[str, ...]] = {}
         slots: dict[int, tuple[str, int]] = {}
-        groups: dict[str, list[_Text]] = {}  # internal mention id -> its group, ranked (the owner first)
-        for group in _groups(texts):
-            ranked = sorted(group, key=self._rank)
-            winner = ranked[0]
-            runs = _runs(sorted({i for t in group for i in t.tokens}), self.view)
-            self.counts["nested"] += len(group) - 1
-            self.counts["split"] += len(runs) > 1
-            for run in runs:
-                parts = self._parts(run, winner)
-                self.counts["location_split"] += len(parts) > 1
-                for kind, start, end in parts:
-                    mention = self._mention(run[start:end], kind, winner)
-                    covered = set(run[start:end])
-                    internal.append(mention)
-                    aliases[mention.mention_id] = tuple(t.id for t in ranked if covered.intersection(t.tokens))
-                    groups[mention.mention_id] = ranked
-                    slots.update((i, (mention.mention_id, pos)) for pos, i in enumerate(run[start:end]))
-        mentions = sorted(internal, key=lambda m: (m.token_ids[0], m.token_ids[-1], m.entity_type.value))
+        ranked_of: dict[str, tuple[_Text, ...]] = {}  # mention id -> the ranked group of its first injected token
+        group_at = {i: k for k, g in enumerate(groups) for i in g.tokens}
+        for mention in mentions:
+            at = [self.index[t] for t in mention.token_ids]
+            covered = set(at)
+            touched = list(dict.fromkeys(group_at[i] for i in at if i in group_at))
+            names = tuple(t.id for k in touched for t in groups[k].ranked if covered.intersection(t.tokens))
+            if names:
+                aliases[mention.mention_id] = names
+                ranked_of[mention.mention_id] = groups[touched[0]].ranked
+            slots.update((i, (mention.mention_id, pos)) for pos, i in enumerate(at))
 
         persons = resolve_persons(mentions, self.view)
         clusters = None
         if self.injection.clusters is not None:
             first = self._first_clusters({a.source.id: a for a in anchored})
-            persons = with_clusters(persons, _person_clusters(mentions, groups, first))
+            persons = with_clusters(persons, _person_clusters(mentions, ranked_of, first))
             members: dict[str, list[str]] = defaultdict(list)
             for mention_id, cluster in sorted(first.items()):
                 members[cluster].append(mention_id)
@@ -309,12 +355,56 @@ class _Stager:
             persons=persons,
             line_view=self.view,
         )
-        stage = InjectedStage(_with_regions(self.pages, regions.values()), detection, tuple(decisions))
-        owners = {group[0].id for group in groups.values()}
+        stage = InjectedStage(_with_regions(self.pages, regions.values()), detection, tuple(decisions), join)
+        owners = {group.winner.id for group in groups}
         reported = [self._report(a, slots, owners) for a in anchored if a.tokens or a.regions]
         reported.sort(key=lambda r: (min(page for page, _box in r.boxes), r.mention_id))
         notes = (self._mention_note(), *([self._cluster_note()] if clusters is not None else []))
         return _Staged(stage, tuple(reported), dict(sorted(aliases.items())), clusters, notes)
+
+    # ---------------------------------------------------------------------------------------- pairs
+    def _pairing(self, groups: Sequence[_Group]) -> dict[int, int | None]:
+        """The address units of the injected locations (``addresses: whole``): each location group (the locality of an
+        address, whatever its words) -> the group of the injected ADDRESS it completes, or None when it stands alone (a
+        place-only unit).  The benchmark's id convention comes first: ``<address id>-loc`` (or ``.place``, as tool 2
+        reports a locality) is the locality of ``<address id>``.  Otherwise the nearest ADDRESS group before it, on its
+        line or the line above, that no other location took and that the injected clusters do not put in another
+        entity."""
+        places = [k for k, g in enumerate(groups) if g.winner.anchored.family.location]
+        streets = {k for k, g in enumerate(groups) if g.winner.kind is EntityType.STREET_ADDRESS}
+        group_of = {t.id: k for k, g in enumerate(groups) for t in g.ranked}
+        entities: dict[str, set[str]] = defaultdict(set)
+        for cluster in self.injection.clusters or ():
+            for mention_id in cluster.mentions:
+                entities[mention_id].add(cluster.id)
+        pairs: dict[int, int | None] = {}
+        taken: set[int] = set()
+        for place in places:
+            for t in groups[place].ranked:
+                street = group_of.get(_street_id(t.id) or "")
+                if street is not None and street in streets and street != place and street not in taken:
+                    pairs[place] = street
+                    taken.add(street)
+                    break
+        for place in places:
+            if place in pairs:
+                continue
+            first = self.view.tokens[groups[place].tokens[0]]
+            near = [
+                k
+                for k in sorted(streets - taken)
+                if groups[k].tokens[-1] < groups[place].tokens[0]
+                and self.view.tokens[groups[k].tokens[-1]].page == first.page
+                and 0 <= first.line_no - self.view.tokens[groups[k].tokens[-1]].line_no <= 1
+                and _same_entity(groups[k], groups[place], entities)
+            ]
+            nearest = max(near, key=lambda k: groups[k].tokens[-1]) if near else None
+            pairs[place] = nearest
+            if nearest is not None:
+                taken.add(nearest)
+        self.counts["paired"] += sum(street is not None for street in pairs.values())
+        self.counts["place_only"] += sum(street is None for street in pairs.values())
+        return dict(sorted(pairs.items()))
 
     # ------------------------------------------------------------------------------------- anchors
     def _place(self, m: PredMention) -> _Placed:
@@ -412,15 +502,18 @@ class _Stager:
         views = build_views(self.pages)
         return [(views[c.view].token_range(c.start, c.end), c) for d in default_detectors() for c in d.detect(views)]
 
-    def _typed(self, placed: _Placed, candidates: Sequence[tuple[range, Candidate]]) -> _Anchored:
-        """The mention with its own type: a location's is its locality, or a lone postcode's; an identifier's is
-        the one tool 2's rules recognise in it; any other text label's is its family's."""
+    def _typed(self, placed: _Placed, candidates: Sequence[tuple[range, Candidate]], whole: bool = True) -> _Anchored:
+        """The mention with its own type: a location's is its locality (``addresses: whole``: the locality of an
+        address, whatever its words), or under ``parts`` a lone postcode's; an identifier's is the one tool 2's rules
+        recognise in it; any other text label's is its family's."""
         m, family, tokens, found_by, regions = placed
         kind = None
         if family.types and tokens:
-            if family.location:
+            if family.location and not whole:
                 parts = split_location([self.view.tokens[i].text for i in tokens])
                 kind = EntityType.POSTCODE if [p[0] for p in parts] == [EntityType.POSTCODE] else EntityType.LOCALITY
+            elif family.location:
+                kind = EntityType.LOCALITY
             else:
                 kind = refine(family, range(tokens[0], tokens[-1] + 1), candidates)
         return _Anchored(m, family, tokens, found_by, kind, regions)
@@ -431,9 +524,10 @@ class _Stager:
         return (-len(t.tokens), -len(text), _RANK[t.kind], t.id)
 
     # ------------------------------------------------------------------------------------- mentions
-    def _parts(self, run: Sequence[int], winner: _Text) -> list[tuple[EntityType, int, int]]:
-        """A run's mentions as (type, start, end): a location's trailing postcode is a mention of its own."""
-        if winner.anchored.family.location:
+    def _parts(self, run: Sequence[int], winner: _Text, whole: bool) -> list[tuple[EntityType, int, int]]:
+        """A run's mentions as (type, start, end).  Under ``addresses: parts`` a location's trailing postcode is a
+        mention of its own (``addresses: whole`` joins a location with its address before it gets here)."""
+        if winner.anchored.family.location and not whole:
             return split_location([self.view.tokens[i].text for i in run])
         return [(winner.kind, 0, len(run))]
 
@@ -477,7 +571,7 @@ class _Stager:
             text=" ".join(t.text for t in tokens),
             token_ids=tuple(t.token_id for t in tokens),
             boxes=(*((t.page, t.bbox) for t in tokens), *((r.page, r.bbox) for r in a.regions)),
-            slots=tuple(slots[i] for i in a.tokens) if a.kind is not None else (),
+            slots=tuple(slots[i] for i in a.tokens if i in slots) if a.kind is not None else (),
             owner=a.kind is None or a.source.id in owners,
             conf=a.source.conf,
         )
@@ -491,6 +585,7 @@ class _Stager:
             f"{c['by_span']} by span, {c['by_regions']} by region anchors, {c['unanchored']} not placed "
             f"({c['token_ids_not_found']} token ids not found, {c['anchors_beyond']} anchors beyond the last page), "
             f"{c['nested']} sharing tokens another one owns, {c['split']} split into runs, "
+            f"{c['paired']} locations joined to their address, {c['place_only']} places alone as units, "
             f"{c['location_split']} locations split into locality and postcode, {c['kept_acted']} of a kept type "
             f"redacted, {c['fallback']} labels taken as other_id, {c['extra_regions']} anchors not explained by "
             f"their tokens, {c['anchors_off_page']} anchors off their page, {c['unfakeable']} runs without a letter "
@@ -558,6 +653,22 @@ def _groups(texts: Sequence[_Text]) -> list[list[_Text]]:
     for k, t in enumerate(texts):
         out[root(k)].append(t)
     return sorted(out.values(), key=lambda g: min(t.tokens[0] for t in g))
+
+
+def _street_id(location_id: str) -> str | None:
+    """The id of the address a location id names as its own: ``<address>-loc`` is the locality of ``<address>`` in
+    the benchmark's ground truth (0.2), ``<address>.place`` in tool 2's reports."""
+    for suffix in ("-loc", ".place"):
+        if location_id.endswith(suffix) and len(location_id) > len(suffix):
+            return location_id[: -len(suffix)]
+    return None
+
+
+def _same_entity(street: _Group, place: _Group, entities: Mapping[str, AbstractSet[str]]) -> bool:
+    """The injected clusters, where they list both, do not put the two in different entities."""
+    a = {c for t in street.ranked for c in entities.get(t.id, ())}
+    b = {c for t in place.ranked for c in entities.get(t.id, ())}
+    return not a or not b or bool(a & b)
 
 
 def _runs(indices: Sequence[int], view: TextView) -> list[list[int]]:

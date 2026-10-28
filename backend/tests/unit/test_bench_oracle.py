@@ -53,7 +53,7 @@ from mlredact.cli.main import app
 from mlredact.core.geometry import BBox, union_all
 from mlredact.core.model import PageGeometry
 from mlredact.pipeline.injection import pt_box
-from mlredact.surrogate.pools import load_pools
+from mlredact.text.gazetteer import fold_name, load_gazetteer
 from mlredact.text.normalize import digits_only, match_key
 from mlredact.verify.checks import extract_all_text
 
@@ -159,7 +159,8 @@ def bench(
         src.write_bytes(pdf)
         inject = write_inject_dir(folder / "inject", mode, docs)
         args = ["bench", "--input", str(src), "--workdir", str(out), "--config", str(cfg)]
-        result = CliRunner().invoke(app, [*args, "--mode", mode, "--inject-dir", str(inject), *options])
+        injected = ["--inject-dir", str(inject)] if MODE_FILES[mode] else []
+        result = CliRunner().invoke(app, [*args, "--mode", mode, *injected, *options])
         state = frozenset(workers_module._STATE)
     return Bench(mode, docs, result, out, len(pool.builds), state, calls, len(detections), ner)
 
@@ -229,6 +230,8 @@ def scanned() -> Docs:
 
 
 RUNS: dict[str, Callable[[Path], Bench]] = {
+    # Tool 2's own detection of the letter (end to end), for the fakes the oracle modes must equal.
+    "e2e": lambda d: bench(d, "e2e", {}),
     # A residual barcode on the first re-read; region analysis takes a word for show-through.
     "oracle_text": lambda d: bench(
         d, "oracle_text", changed_word(), pool=InProcessPool(residuals=(RESIDUAL,)), ghost=True
@@ -393,8 +396,11 @@ def test_tool_2_detects_and_keeps_as_usual(runs: Runs) -> None:
         ("email", "john.smith78@example.org"),
         ("medicare", medicare_number("29537015", 1)),
     } <= found
-    # The client keeps dates and places.
-    assert not {label for label, _text in found} & {"date", "date_of_birth", "locality", "postcode"}
+    # The client keeps dates and places on their own; the letter has none, and the places of its addresses are
+    # the places of their units ('<unit>.place').
+    assert not {label for label, _text in found} & {"date", "date_of_birth", "postcode"}
+    places = [i for i, m in runs["oracle_text"].mentions().items() if m["label"] == "locality"]
+    assert places and all(i.endswith(".place") for i in places)
 
 
 def test_every_residual_hit_is_re_planned(runs: Runs) -> None:
@@ -438,14 +444,50 @@ def test_the_injected_mentions_are_reported_under_their_ids(runs: Runs, mode: st
         assert [tool_2[t] for t in m.get("tokens", ())] == own and m.get("text", "") == " ".join(own)
 
 
-def test_a_location_and_its_postcode_are_replaced_together(runs: Runs) -> None:
-    run = runs["oracle_mentions"]
+@pytest.mark.parametrize("mode", ["oracle_mentions", "oracle_entities", "oracle_regions"])
+def test_a_locality_is_replaced_with_its_address_as_one_unit(runs: Runs, mode: str) -> None:
+    """The injected LOCATION joins the injected ADDRESS before it: the street line and the place are parts of one
+    address, and the place's fake is a locality of the list with its own postcode, in the original's state."""
+    run = runs[mode]
     output = extract_all_text(run.read("output.pdf"))
-    pools = load_pools()
-    for mention_id, place, postcode in (("loc-penrith", "Penrith", "2750"), ("loc-sydney", "Sydney", "2000")):
-        name, fake = run.replacement(mention_id).rsplit(" ", 1)
-        assert fake in {loc.postcode for loc in pools.localities if loc.name == name}, mention_id
+    rows = {(loc.folded, loc.postcode, loc.state) for loc in load_gazetteer().rows}
+    for mention_id, place, postcode, state in (
+        ("loc-penrith", "Penrith", "2750", "NSW"),
+        ("loc-sydney", "Sydney", "2000", "NSW"),
+    ):
+        *name, fake_state, fake_postcode = run.replacement(mention_id).split()
+        assert fake_state == state and (fold_name(" ".join(name)), fake_postcode, state) in rows, mention_id
         assert re.search(rf"\b({place}|{postcode})\b", output) is None
+
+
+def test_the_oracle_draws_the_fakes_that_end_to_end_draws(runs: Runs) -> None:
+    """Same document, same scope (the document itself), same key: the fake of an address is the same wherever its
+    words come from.  Each injected part shows the words of the end-to-end part that holds its tokens."""
+    theirs = {m["mention"]: m["replacement"] for m in runs["e2e"].json("pseudonyms.json")["mentions"]}
+    parts = {i: m for i, m in runs["e2e"].mentions().items() if m["label"] in ("street_address", "locality")}
+    for mode in ("oracle_mentions", "oracle_entities", "oracle_regions"):
+        run = runs[mode]
+        for mention_id in ("addr-george", "addr-pobox", "addr-wattle", "loc-sydney", "loc-parramatta", "loc-penrith"):
+            own = run.mentions()[mention_id]["text"]
+            (part,) = [i for i, m in parts.items() if own in m["text"]]
+            assert f" {run.replacement(mention_id)}" in f" {theirs[part]}", (mode, mention_id)
+
+
+@pytest.mark.parametrize("name", ["e2e", "oracle_text", "oracle_mentions", "oracle_entities", "oracle_regions"])
+def test_verification_knows_the_address_units_in_every_mode(runs: Runs, name: str) -> None:
+    checks = {c["check"]: c["metrics"] for c in runs[name].json("manifest.json")["verification"]["checks"]}
+    assert checks["V2_text"]["address_needles"] > 0 and "address_word_collision" in checks["V5_surrogate"]
+
+
+def test_the_plan_s_replacement_for_an_address_is_the_units_fake(runs: Runs) -> None:
+    """A region of an address draws the unit's fake over the words of the line it covers: the street line's and the
+    place's together where they share a line."""
+    run = runs["oracle_regions"]
+    for street, place in (("addr-wattle", "loc-penrith"), ("addr-george", "loc-sydney")):
+        texts = {r["replacement"] for r in run.plan() if r["mentions"] in ([street], [place])}
+        assert len(texts) == 1
+        (text,) = texts
+        assert run.replacement(street) in text and run.replacement(place) in text
 
 
 def test_a_name_inside_an_organisation_is_drawn_with_it(runs: Runs) -> None:
@@ -562,10 +604,13 @@ def test_each_mention_is_drawn_once_per_line_over_its_words(runs: Runs) -> None:
     geometry, manifest = _geometry(run), run.json("manifest.json")
     words = {t["id"]: pt_box(t["poly"], geometry) for t in run.json("text.json")["pages"][0]["tokens"]}
     left_out = run.mentions()[LEFT_OUT]["tokens"]
+    plan_boxes = [pt_box(r["poly"], geometry) for r in run.docs["plan.json"]["regions"]]
     for m in manifest["mentions"]:
         lines: dict[str, list[BBox]] = defaultdict(list)
         for token in m["token_ids"]:
-            lines[token.rsplit(".", 1)[0]].append(words[token])
+            # A word of an address's unit that no injected region covers (the letter's "Level 4,") is not drawn.
+            if any(words[token].overlap_fraction(box) >= 0.5 for box in plan_boxes):
+                lines[token.rsplit(".", 1)[0]].append(words[token])
         if m["token_ids"] == left_out:
             assert (m["render"], m["boxes"]) == ([], [])  # none of its regions is in the plan
             continue

@@ -27,6 +27,7 @@ from mlredact.core.types import ActionKind
 if TYPE_CHECKING:
     from mlredact.config.schema import AppConfig
     from mlredact.detect.engine import DetectionResult
+    from mlredact.policy.addresses import AddressJoin
     from mlredact.policy.engine import Decision
     from mlredact.surrogate.assign import MentionSurrogate
     from mlredact.verify.residual import ResidualHit
@@ -160,11 +161,14 @@ def ocr_shaped(lines: Sequence[Line], sideways: AbstractSet[str]) -> tuple[Line,
 @dataclass(frozen=True, slots=True)
 class InjectedStage:
     """Detection and policy from injected mentions: the pages with the injected regions attached, the detection
-    result over them and one decision per internal mention."""
+    result over them and one decision per internal mention.  ``join``: the address join the mentions went through
+    (``addresses: whole``; None under ``parts``), whose units, targets and exempt positions verification reads as it
+    does for the pipeline's own detection."""
 
     pages: tuple[PageAnalysis, ...] = field(repr=False)
     detection: DetectionResult = field(repr=False)
     decisions: tuple[Decision, ...] = field(repr=False)
+    join: AddressJoin | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
