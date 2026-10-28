@@ -14,7 +14,8 @@ Every generator is a pure function of (scope key, entity type, canonical origina
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import TypeVar
 
 from mlredact.core.types import EntityType
 from mlredact.detect.rules.checksums import (
@@ -29,8 +30,13 @@ from mlredact.detect.rules.checksums import (
 from mlredact.detect.rules.files import EXTENSIONS
 from mlredact.detect.rules.lexicon import STATES, STREET_TYPE_WORDS
 from mlredact.surrogate.drbg import Chooser
+from mlredact.surrogate.exclusions import NO_EXCLUSIONS, Exclusions
 from mlredact.surrogate.pools import Locality, Pools, load_pools
+from mlredact.text.address import TYPE_FORMS, canonical_street_type, is_abbreviated_type
+from mlredact.text.address.tables import BUILDING_WORDS, PLURAL_TYPES, PROPERTY_WORDS
 from mlredact.text.normalize import digits_only, match_key
+
+T = TypeVar("T")
 
 ACMA_MOBILES = (
     "0491 570 006", "0491 570 156", "0491 570 157", "0491 570 158", "0491 570 159", "0491 570 110",
@@ -56,7 +62,7 @@ _STATE_CANON = {
     "act": "ACT", "australian capital territory": "ACT",
 }  # fmt: skip
 _STATE_POSTCODE_LEAD = {"NSW": "2", "ACT": "2", "VIC": "3", "QLD": "4", "SA": "5", "WA": "6", "TAS": "7", "NT": "0"}
-_ORG_GENERIC = frozenset(
+ORG_GENERIC = frozenset(
     """pty ltd limited p/l inc co corporation corp group holdings services service solutions lawyers solicitors
     legal partners associates hospital hospitals private public clinic clinics medical centre center health
     healthcare practice surgery rehabilitation rehab physiotherapy physio radiology imaging pathology insurance
@@ -79,6 +85,46 @@ _DRIVE = re.compile(r"^[A-Za-z]:$")
 # Years and day/month numbers in file names are dates, which the policies keep.
 _PATH_DATE_PART = re.compile(r"^(?:(?:19|20)\d\d|\d{1,2})$")
 _MAX_ATTEMPTS = 64
+_ADDRESS_ATTEMPTS = 48  # keyed draws of an address number before the first one is used regardless
+_STRICT_ATTEMPTS = 24  # of them, the draws that must keep a range's digit counts and gap
+_STRICT, _RELAXED, _FORCED = 0, 1, 2  # how a range is faked (see _fake_number)
+STATE_NAMES = {
+    "NSW": "New South Wales",
+    "VIC": "Victoria",
+    "QLD": "Queensland",
+    "SA": "South Australia",
+    "WA": "Western Australia",
+    "TAS": "Tasmania",
+    "NT": "Northern Territory",
+    "ACT": "Australian Capital Territory",
+}
+_STATE_NAME_WORDS = frozenset(n.lower() for n in STATE_NAMES.values())
+# Directionals as (code, abbreviation, word), the three styles of a street-type suffix.
+_DIRECTIONS = {
+    "N": ("N", "Nth", "North"),
+    "S": ("S", "Sth", "South"),
+    "E": ("E", "E", "East"),
+    "W": ("W", "W", "West"),
+}
+_DIRECTION_OF = {
+    "n": "N", "nth": "N", "north": "N", "s": "S", "sth": "S", "south": "S",
+    "e": "E", "east": "E", "w": "W", "west": "W",
+}  # fmt: skip
+# Canonical street types a fake may take (the residential and common ones), and the ones an untyped street gets.
+_FAKE_TYPES = (
+    "STREET", "ROAD", "AVENUE", "DRIVE", "COURT", "PLACE", "CRESCENT", "LANE", "WAY", "PARADE", "TERRACE",
+    "BOULEVARD", "CLOSE", "CIRCUIT", "GROVE", "SQUARE", "ESPLANADE", "RISE", "MEWS", "WALK", "LOOP", "LINK",
+    "VIEW", "GLADE", "GARDENS", "HEIGHTS", "RIDGE", "PROMENADE", "QUAY", "COVE", "CREST", "GREEN", "HILL",
+    "VALE", "VISTA", "CHASE",
+)  # fmt: skip
+_UNCOMMON_ABBREVIATIONS = frozenset({"RIDGE", "QUAY", "CREST", "GREEN", "VISTA"})  # written in full instead
+_COMMON_TYPES = ("STREET", "ROAD", "AVENUE", "DRIVE", "COURT", "PLACE", "CRESCENT", "LANE")
+_BUILDING_FAKE = ("Tower", "House", "Chambers", "Centre", "Building", "Complex", "Arcade", "Plaza")
+_PROPERTY_FAKE = ("Station", "Farm", "Homestead", "Estate", "Vineyard", "Orchard", "Downs", "Park")
+_DIGIT_RUN = re.compile(r"\d+")
+_LEVEL = re.compile(r"(\d{1,2})(st|nd|rd|th)?", re.IGNORECASE)
+_NUMBER_RANGE = re.compile(r"^(\d+)([A-Za-z]?)([-–—])(\d+)([A-Za-z]?)$")
+_NUMBER_ITEM = re.compile(r"\d+|(?<![A-Za-z])[A-Za-z]{1,2}(?![A-Za-z])")
 
 
 def canonical_state(text: str | None) -> str | None:
@@ -345,30 +391,249 @@ class SurrogateFactory:
         return result
 
     # -------------------------------------------------------------------------------- locations
-    def locality(self, value: str, state: str | None) -> Locality:
-        key = match_key(value)
-        pool = self._pools.localities_in(state)
-        name = self._unique_pool(f"locality:{state or 'any'}", key, [loc.name for loc in pool])
-        return next(loc for loc in pool if loc.name == name)
+    def not_original(self, text: str) -> bool:
+        """True when neither ``text`` nor any of its words equals (or, from 5 letters, is one edit from) an original
+        value of the document: the check V5 makes of every replaced address word."""
+        from mlredact.verify.surrogates import near_any
+
+        for part in (text, *text.split()):
+            key = match_key(part)
+            if key and near_any(key, self._forbidden_sorted):
+                return False
+        return True
+
+    def _pick(self, domain: str, key: str, pool: Sequence[T], accept: Callable[[T], bool]) -> T | None:
+        """The first acceptable entry of a keyed order of ``pool``: a few keyed random draws, then a keyed sweep of the
+        whole pool.  The first draw does not depend on ``accept``, so a filter that rejects other entries leaves the
+        choice as it was (one address keeps its fake across the documents of a matter).  No uniqueness across
+        originals: None only when nothing is acceptable."""
+        n = len(pool)
+        if not n:
+            return None
+        for attempt in range(8):
+            candidate = pool[self._c.index(domain, key, n, attempt)]
+            if accept(candidate):
+                return candidate
+        start = self._c.index(domain + ":sweep", key, n)
+        for i in range(n):
+            candidate = pool[(start + i) % n]
+            if accept(candidate):
+                return candidate
+        return None
+
+    def locality(
+        self,
+        value: str,
+        state: str | None,
+        klass: str | None = None,
+        *,
+        key: str | None = None,
+        accept: Callable[[Locality], bool] | None = None,
+    ) -> Locality:
+        """A fake locality of ``state`` and ``klass`` ('metro' or 'regional'; None for any) from the suburb list's
+        ``fake_pool`` rows, chosen from ``key`` (default: the original ``value``).  ``accept`` filters rows (the fake
+        rules); the original values of the document are never offered.  An empty choice widens (the class, then the
+        state) and never raises."""
+        k = key if key is not None else match_key(value)
+
+        def ok(loc: Locality) -> bool:
+            return self.not_original(loc.name) and (accept is None or accept(loc))
+
+        for st, kl in ((state, klass), (state, None), (None, None)):
+            hit = self._pick(f"locality:{st or 'any'}:{kl or 'any'}", k, self._pools.localities_in(st, kl), ok)
+            if hit is not None:
+                return hit
+        pool = self._pools.localities_in(state) or self._pools.localities_in()
+        return pool[self._c.index("locality:last", k, len(pool))]
 
     def postcode(self, value: str, state: str | None) -> str:
         key = match_key(value)
         lead = _STATE_POSTCODE_LEAD.get(state or "", value[:1] if value[:1].isdigit() else "2")
         return self._unique("postcode", key, lambda a: lead + self._c.digit_string("postcode", key, 3, a))
 
-    def street_name(self, key: str) -> str:
-        return self._unique_pool("street", key, self._pools.street_names)
+    def street_name(self, key: str, accept: Callable[[str], bool] | None = None) -> str:
+        """A street name from the pool, chosen from ``key``: no uniqueness across originals, and never an error."""
+        pool = self._pools.street_names
+        hit = self._pick("street", key, pool, lambda w: self.not_original(w) and (accept is None or accept(w)))
+        return hit if hit is not None else pool[self._c.index("street:last", key, len(pool))]
 
     def number_like(self, domain: str, value: str) -> str:
         key = match_key(value)
         return _project(value, self._unique(domain, key, lambda a: self._digits_like(domain, key, value, a)))
+
+    # ------------------------------------------------------------------------------- address parts
+    # The parts of a whole-address fake (FINAL_PLAN TOOL2 section 5, amendment D).  Every part is chosen from a key the
+    # caller builds from the address's canonical key under the scope key, never from an original part alone.  None of
+    # them uses the per-document uniqueness pool, and none raises when a filter leaves nothing: it widens.
+    def street_type(self, original: str | None, key: str, ex: Exclusions | None = None) -> str:
+        """Another canonical street type, written in the original's style: an abbreviation stays an abbreviation, a
+        plural stays plural, the case is the original's.  An untyped street (``original`` None) gets a common type
+        written in full."""
+        ex = ex or NO_EXCLUSIONS
+        old = canonical_street_type(original) if original else None
+        pool = _FAKE_TYPES if original else _COMMON_TYPES
+
+        def ok(canon: str) -> bool:
+            forms = TYPE_FORMS[canon]
+            return canon != old and all(ex.word_ok(f) for f in forms) and self.not_original(forms[0])
+
+        canon = self._pick("addr.type", key, pool, ok) or self._pick("addr.type:any", key, pool, lambda c: c != old)
+        canon = canon or pool[self._c.index("addr.type:last", key, len(pool))]
+        forms = TYPE_FORMS[canon]
+        written = forms[0]
+        if original and is_abbreviated_type(original) and canon not in _UNCOMMON_ABBREVIATIONS:
+            written = next((f for f in forms if is_abbreviated_type(f)), forms[0])
+        if original and original.strip(" ,.;:()").lower() in PLURAL_TYPES and not written.endswith("s"):
+            written += "es" if written.endswith(("x", "ch")) else "s"
+        return apply_case(original.strip(" ,.;:()"), written.title()) if original else written.title()
+
+    def street_suffix(self, original: str, key: str, ex: Exclusions | None = None) -> str:
+        """Another directional in the original's style: a code ('N'), an abbreviation ('Nth') or the word ('North')."""
+        ex = ex or NO_EXCLUSIONS
+        core = original.strip(" ,.;:()")
+        old = _DIRECTION_OF.get(core.lower())
+        style = 0 if len(core) <= 2 else 1 if core.lower() in ("nth", "sth") else 2
+        codes = tuple(_DIRECTIONS)
+
+        def ok(code: str) -> bool:
+            words = _DIRECTIONS[code]
+            return code != old and all(ex.word_ok(w) for w in words) and self.not_original(words[2])
+
+        code = self._pick("addr.suffix", key, codes, ok)
+        code = code or self._pick("addr.suffix:any", key, codes, lambda c: c != old)
+        written = _DIRECTIONS[code or "N"][style]
+        return apply_case(core, written.title() if style else written)
+
+    def building_name(
+        self, words: Sequence[str], key: str, ex: Exclusions | None = None, used: set[str] | None = None
+    ) -> list[str]:
+        """The words of a building or property name ('Westpoint Tower'): each name word becomes a distinct pool word
+        and a building word ('Tower', 'House', 'Station', 'Farm') becomes another, in the original's case.  ``used``
+        holds the (lower-case) words the unit's fake already has; the new ones are added to it."""
+        ex = ex or NO_EXCLUSIONS
+        names = self._pools.street_names
+        out: list[str] = []
+        chosen = used if used is not None else set()
+        for i, word in enumerate(words):
+            low = word.lower()
+            slot = f"{key}\x1f{i}"
+            if i == len(words) - 1 and len(words) > 1 and low in BUILDING_WORDS | PROPERTY_WORDS:
+                lexicon = _PROPERTY_FAKE if low in PROPERTY_WORDS else _BUILDING_FAKE
+                new = (
+                    self._pick(
+                        "addr.building.word",
+                        slot,
+                        lexicon,
+                        lambda w, low=low: w.lower() != low and ex.word_ok(w) and self.not_original(w),  # type: ignore[misc]
+                    )
+                    or lexicon[self._c.index("addr.building.word:last", slot, len(lexicon))]
+                )
+            else:
+                new = (
+                    self._pick(
+                        "addr.building.name",
+                        slot,
+                        names,
+                        lambda w: w.lower() not in chosen and ex.word_ok(w) and self.not_original(w),
+                    )
+                    or names[self._c.index("addr.building.name:last", slot, len(names))]
+                )
+            chosen.add(new.lower())
+            out.append(apply_case(word, new))
+        return out
+
+    def pool_word(self, domain: str, key: str, template: str, ex: Exclusions | None = None) -> str:
+        """A pool word for an identifying word with no other rule (a box extra, a town, an unread word), in the case
+        of ``template``."""
+        ex = ex or NO_EXCLUSIONS
+        return apply_case(template, self.street_name(f"{domain}\x1f{key}", ex.word_ok))
+
+    def address_number(self, value: str, key: str, ex: Exclusions | None = None) -> str:
+        """A house, unit, box or DX number of the same shape: the digit count kept, every digit different at its
+        position and a non-zero lead, a letter suffix kept as a letter suffix but another letter, separators kept.  A
+        range ('12-14') stays ascending with the original gap; when no fake keeps both digit counts and the gap
+        ('8-10', '98-104'), each end keeps its own digit count (every digit still differs) and the range stays
+        ascending."""
+        ex = ex or NO_EXCLUSIONS
+        first: str | None = None
+        for attempt in range(_ADDRESS_ATTEMPTS):
+            stream = self._c.integers("addr.number", f"{key}\x03{attempt}")
+            candidate = _fake_number(value, stream, _STRICT if attempt < _STRICT_ATTEMPTS else _RELAXED)
+            if candidate is None:
+                continue
+            first = first or candidate
+            if ex.number_ok(candidate) and all(self.not_original(r) for r in _DIGIT_RUN.findall(candidate)):
+                return candidate
+        if first is None:  # a range that no keyed draw could fake: ascending is all that is left to keep
+            first = _fake_number(value, self._c.integers("addr.number", f"{key}\x03force"), _FORCED)
+        return first or value
+
+    def level_number(self, value: str, key: str, ex: Exclusions | None = None) -> str:
+        """Another realistic level (1-5; 1-25 when nothing in 1-5 qualifies) with no digit equal to the original's at
+        its position ('Level 2' never becomes 20-25), an ordinal kept as an ordinal ('2nd' becomes '4th')."""
+        ex = ex or NO_EXCLUSIONS
+        m = _LEVEL.fullmatch(value)
+        if m is None:
+            return self.address_number(value, key, ex)
+        digits, suffix = m.group(1), m.group(2)
+
+        def ok(n: int) -> bool:
+            text = str(n)
+            same = any(a == b for a, b in zip(text, digits, strict=False))
+            return n != int(digits) and not same and ex.number_ok(text) and self.not_original(text)
+
+        pick = self._pick("addr.level:5", key, range(1, 6), ok)
+        if pick is None:
+            pick = self._pick("addr.level:25", key, range(1, 26), ok)
+        if pick is None:
+            return self.address_number(value, key, ex)
+        return f"{pick}{apply_case(suffix, _ordinal(pick))}" if suffix else str(pick)
+
+    def overseas_postcode(self, value: str, key: str, ex: Exclusions | None = None) -> str:
+        """An overseas postcode of the same shape: every character changes, digit for digit and letter for letter, in
+        the original's case ('OX1 4AA' becomes, say, 'KR7 2TB')."""
+        ex = ex or NO_EXCLUSIONS
+        first: str | None = None
+        for attempt in range(_ADDRESS_ATTEMPTS):
+            stream = self._c.integers("addr.postcode.overseas", f"{key}\x03{attempt}")
+            out = []
+            for i, ch in enumerate(value):
+                if ch.isdigit():
+                    out.append(_other_digit(ch, next(stream), nonzero=i == 0))
+                elif ch.isalpha():
+                    out.append(_other_letter(ch, next(stream)))
+                else:
+                    out.append(ch)
+            candidate = "".join(out)
+            first = first or candidate
+            if ex.number_ok(candidate):
+                return candidate
+        return first or value
+
+    @staticmethod
+    def state_form(original: str, code: str) -> str:
+        """The state ``code`` written in the style of ``original``: a spelled-out name ('New South Wales'), a dotted
+        form ('N.S.W.'), a mixed-case abbreviation ('Vic.') or upper case; the case and a final dot of the original
+        are kept."""
+        core = original.strip(" ,;:()")
+        dot = "." if core.endswith(".") else ""
+        body = core.rstrip(".")
+        if "." in body:
+            dotted = ".".join(code)
+            return (dotted.lower() if body.islower() else dotted) + dot
+        if " " in body or len(body) > 4 or body.lower() in _STATE_NAME_WORDS:
+            name = STATE_NAMES[code]
+            return (name.upper() if body.isupper() else name.lower() if body.islower() else name) + dot
+        if body.isupper() or not body.isalpha():
+            return code + dot
+        return (code.lower() if body.islower() else code.title()) + dot
 
     def organisation(self, value: str) -> str:
         key = match_key(value)
         words = value.split()
         generic_tail: list[str] = []
         for w in reversed(words):
-            if w.strip(",.()").lower() in _ORG_GENERIC:
+            if w.strip(",.()").lower() in ORG_GENERIC:
                 generic_tail.insert(0, w)
             else:
                 break
@@ -533,3 +798,51 @@ def is_state_token(text: str) -> bool:
 
 def is_street_type(text: str) -> bool:
     return text.strip(" ,.").lower() in STREET_TYPE_WORDS
+
+
+def _other_digit(ch: str, draw: int, *, nonzero: bool = False) -> str:
+    """A digit that is not ``ch`` (and not 0 when ``nonzero``), chosen by the integer ``draw``."""
+    options = [c for c in "0123456789" if c != ch and not (nonzero and c == "0")]
+    return options[draw % len(options)]
+
+
+def _other_letter(ch: str, draw: int) -> str:
+    """A letter of the case of ``ch`` that is not ``ch``, chosen by the integer ``draw``."""
+    base = "A" if ch.isupper() else "a"
+    options = [c for c in (chr(ord(base) + i) for i in range(26)) if c.lower() != ch.lower()]
+    return options[draw % len(options)]
+
+
+def _other_digits(digits: str, stream: Iterator[int]) -> str:
+    return "".join(_other_digit(ch, next(stream), nonzero=i == 0) for i, ch in enumerate(digits))
+
+
+def _fake_number(value: str, stream: Iterator[int], mode: int) -> str | None:
+    """One keyed candidate for an address number: every digit different at its position (a non-zero lead), a letter
+    suffix another letter.  A range '12-14' is faked together: ``_STRICT`` keeps both digit counts and the gap (None
+    when this draw cannot), ``_RELAXED`` lets each end keep its own digit count and the range stays ascending (None when
+    this draw does not), ``_FORCED`` keeps only the gap.  Everything else is faked item by item."""
+    r = _NUMBER_RANGE.match(value)
+    if r is None:
+        return _NUMBER_ITEM.sub(
+            lambda m: (
+                _other_digits(m.group(), stream) if m.group().isdigit() else _other_letter(m.group(), next(stream))
+            ),
+            value,
+        )
+    a, sa, dash, b, sb = r.groups()
+    fa = _other_digits(a, stream)
+    gap = int(b) - int(a)
+    if mode == _FORCED:
+        fb = str(int(fa) + max(gap, 1))
+    elif mode == _STRICT:
+        fb = str(int(fa) + gap)
+        if gap <= 0 or len(a) != len(b) or len(fb) != len(b) or any(x == y for x, y in zip(fb, b, strict=True)):
+            return None
+    else:
+        fb = _other_digits(b, stream)
+        if gap > 0 and int(fb) <= int(fa):
+            return None
+    la = _other_letter(sa, next(stream)) if sa else ""
+    lb = _other_letter(sb, next(stream)) if sb else ""
+    return f"{fa}{la}{dash}{fb}{lb}"

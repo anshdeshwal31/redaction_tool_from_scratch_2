@@ -3,6 +3,11 @@
 Alignment matters because rendering happens per line segment: each original token's slot on the
 page receives the surrogate token(s) that replace it.  When a surrogate has a different token count
 than the original, the whole surrogate goes into the first slot and the others are only erased.
+
+Street addresses.  Under ``addresses: whole`` the join hands in its layouts and units: every unit gets ONE fake
+(:class:`mlredact.surrogate.addresses.AddressFaker`) and each mention takes the words of its own tokens, so the boxes
+of a form get the matching parts of one fake.  A STREET_ADDRESS mention the join did not lay out (``addresses: parts``,
+or a caller that does not pass the join) is replaced part by part as before.
 """
 
 from __future__ import annotations
@@ -13,16 +18,21 @@ from dataclasses import dataclass, field
 
 from mlredact.core.model import Mention, Token
 from mlredact.core.types import ActionKind, EntityType
+from mlredact.policy.addresses import JoinedUnit, MentionLayout
 from mlredact.policy.engine import DATE_TYPES, Decision
 from mlredact.resolve.persons import Gender, NameToken, PersonResolution, Role
+from mlredact.surrogate.addresses import AddressFaker, AddressState, view_of
 from mlredact.surrogate.dates import DateShifter, generalise_age, leak_needles
 from mlredact.surrogate.generators import (
+    ORG_GENERIC,
     SurrogateFactory,
+    apply_case,
     canonical_state,
     is_state_token,
     is_street_type,
 )
 from mlredact.surrogate.pools import Locality
+from mlredact.text.address import UnitKind
 from mlredact.text.normalize import match_key
 
 _UNIT_WORDS = frozenset(
@@ -57,10 +67,26 @@ def forbidden_keys(mentions: Iterable[Mention], persons: PersonResolution) -> se
 
 
 class SurrogateAssigner:
-    def __init__(self, factory: SurrogateFactory, persons: PersonResolution, tokens: Mapping[str, Token]) -> None:
+    """``layouts`` and ``units`` are the address join's (``AddressJoin.layouts`` and ``.units``); without them every
+    street address is replaced part by part.  ``address_state`` is the policy's ``address_state``."""
+
+    def __init__(
+        self,
+        factory: SurrogateFactory,
+        persons: PersonResolution,
+        tokens: Mapping[str, Token],
+        *,
+        layouts: Mapping[str, MentionLayout] | None = None,
+        units: Mapping[str, JoinedUnit] | None = None,
+        address_state: AddressState = "keep",
+    ) -> None:
         self._f = factory
         self._persons = persons
         self._tokens = tokens
+        self._layouts = layouts or {}
+        self._units = units or {}
+        self._address_state = address_state
+        self._faker: AddressFaker | None = None
         self._line_locality: dict[tuple[int, int], Locality] = {}
         self._lines: dict[tuple[int, int], list[Token]] = {}
         for tok in tokens.values():
@@ -74,10 +100,19 @@ class SurrogateAssigner:
                 bucket.extend(t.key for t in pm.tokens if t.role is Role.GIVEN and t.key not in bucket)
 
     # ---------------------------------------------------------------------------------- public
+    @property
+    def address_fakes(self) -> Mapping[str, Mapping[str, str]]:
+        """After :meth:`assign`: the fake of every address unit, as unit id -> token id -> replacement text (an empty
+        string erases a token whose words went into the first slot of its run).  Verification reads the drawn fakes
+        from here; empty when no layouts were given."""
+        return self._faker.fakes if self._faker is not None else {}
+
     def assign(self, decisions: Sequence[Decision]) -> dict[str, MentionSurrogate]:
         """Replacement text for every SURROGATE, DATE_SHIFT (dates) and GENERALISE (ages) decision."""
         out: dict[str, MentionSurrogate] = {}
         shifter: DateShifter | None = None
+        if self._units and self._faker is None:
+            self._faker = self._address_faker(decisions)
         for d in decisions:
             m = d.mention
             originals = [self._tokens[t].text for t in m.token_ids]
@@ -113,12 +148,12 @@ class SurrogateAssigner:
         if t is EntityType.FILE_PATH:
             return _aligned(self._f.file_path(m.value), originals)
         if t is EntityType.STREET_ADDRESS:
-            return self._address(m, originals)
+            return self._whole_address(m) or self._address(m, originals)
         if t is EntityType.LOCALITY:
             state = self._state_after(m)
             loc = self._f.locality(m.value, state)
             self._line_locality[self._line_of(m)] = loc
-            return _aligned(loc.name, originals)
+            return _aligned(apply_case(" ".join(o.strip(",.") for o in originals), loc.name), originals)
         if t is EntityType.POSTCODE:
             linked = self._line_locality.get(self._line_of(m))
             value = linked.postcode if linked else self._f.postcode(m.value, self._state_before(m))
@@ -186,6 +221,70 @@ class SurrogateAssigner:
                 out.append(p)
         return "".join(out)
 
+    def _address_faker(self, decisions: Sequence[Decision]) -> AddressFaker:
+        """The fakes of all the document's units (D1 reads every unit, whatever its mention's action)."""
+        owners = {
+            t: d.mention
+            for d in decisions
+            if d.mention.entity_type in (EntityType.PERSON, EntityType.ORGANISATION)
+            for t in d.mention.token_ids
+        }
+        views = [
+            view_of(u, {t: self._tokens[t].text for t in u.roles}, self._heading(u, owners))
+            for _, u in sorted(self._units.items())
+            if all(t in self._tokens for t in u.roles)
+        ]
+        return AddressFaker(self._f, views, address_state=self._address_state)
+
+    def _whole_address(self, m: Mention) -> tuple[str, ...] | None:
+        """The words of the unit's fake for the tokens of this mention, or None when the mention has no unit."""
+        layout = self._layouts.get(m.mention_id)
+        fake = self._faker.fakes.get(layout.unit_id) if self._faker is not None and layout is not None else None
+        if fake is None or not all(t in fake for t in m.token_ids):
+            return None
+        return tuple(fake[t] for t in m.token_ids)
+
+    def _heading(self, unit: JoinedUnit, owners: Mapping[str, Mention]) -> str:
+        """For a place-only unit, the canonical name of the person or organisation heading its block: the nearest one
+        before it on its line, or on the lines right above it (a gap of more than a line height ends the block)."""
+        if unit.kind is not UnitKind.PLACE_ONLY or not unit.roles:
+            return ""
+        first = self._tokens.get(next(iter(unit.roles)))
+        if first is None:
+            return ""
+        line = self._lines.get((first.page, first.line_no), [])
+        for tok in reversed([t for t in line if t.word_no < first.word_no]):
+            if tok.token_id in owners:
+                return self._canonical_name(owners[tok.token_id])
+        lower, line_no = line, first.line_no - 1
+        for _ in range(3):
+            above = self._lines.get((first.page, line_no))
+            if not above or not lower:
+                break
+            height = max(1, above[0].bbox.y1 - above[0].bbox.y0)
+            if lower[0].bbox.y0 - above[0].bbox.y1 > height:
+                break
+            for tok in above:
+                if tok.token_id in owners:
+                    return self._canonical_name(owners[tok.token_id])
+            lower, line_no = above, line_no - 1
+        return ""
+
+    def _canonical_name(self, m: Mention) -> str:
+        """A person's surname and first initial, or an organisation's name without its generic words: the same whatever
+        the spelling of the mention, for keying the fake of a place-only unit."""
+        if m.entity_type is EntityType.ORGANISATION:
+            words = [w.strip(",.()").lower() for w in m.value.split()]
+            return "o:" + " ".join(w for w in words if w and w not in ORG_GENERIC)
+        pm = self._persons.mentions.get(m.mention_id)
+        if pm is None:
+            return "p:" + match_key(m.value)
+        surname = "".join(t.key for t in pm.tokens if t.role is Role.SURNAME)
+        given = next((t.key for t in pm.tokens if t.role is Role.GIVEN), "")
+        if pm.cluster:
+            given = (self._given_by_cluster.get(pm.cluster) or [given])[0]
+        return f"p:{surname},{given[:1]}"
+
     def _address(self, m: Mention, originals: list[str]) -> tuple[str, ...]:
         cores = [o.strip(",.") for o in originals]
         state_idx = next((i for i, c in enumerate(cores) if is_state_token(c)), None)
@@ -203,7 +302,7 @@ class SurrogateAssigner:
             if state_idx is not None and i == state_idx + 1 and _POSTCODE.match(core):
                 continue  # postcode handled after the locality
             if any(c.isdigit() for c in core):
-                out[i] = self._f.number_like("addr.number", orig)
+                out[i] = orig.replace(core, self._f.address_number(core, f"parts\x1f{core.upper()}"), 1)
             elif core[:1].isupper():
                 if type_idx is not None and i < type_idx:
                     street_slots.append(i)
@@ -253,6 +352,7 @@ def _fill(out: list[str], originals: Sequence[str], slots: Sequence[int], value:
     """Write ``value`` into the first slot (keeping its trailing punctuation); erase the others."""
     first = slots[0]
     trailing = originals[slots[-1]][len(originals[slots[-1]].rstrip(",.")) :]
-    out[first] = value + trailing
+    template = " ".join(originals[i].strip(",.") for i in slots)
+    out[first] = apply_case(template, value) + trailing
     for i in slots[1:]:
         out[i] = ""
