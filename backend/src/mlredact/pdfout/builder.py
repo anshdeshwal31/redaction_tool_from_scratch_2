@@ -83,3 +83,29 @@ def build_pdf(pages: Sequence[PageSpec], cfg: OutputConfig) -> bytes:
         fix_metadata_version=False,
     )
     return out.getvalue()
+
+
+def build_text_pdf(pages: Sequence[tuple[float, float, bytes | None]]) -> bytes:
+    """A PDF of text layers alone: (width, height, layer) per page, no images, no metadata.  Verification reads the
+    exempt rendition of an output's text layer from it with the extraction it reads the output with; it is never
+    released."""
+    pdf = pikepdf.new()
+    font = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.Font,
+            Subtype=pikepdf.Name.Type1,
+            BaseFont=pikepdf.Name.Helvetica,
+            Encoding=pikepdf.Name.WinAnsiEncoding,
+        )
+    )
+    for width, height, layer in pages:
+        page = pikepdf.Dictionary(
+            Type=pikepdf.Name.Page,
+            MediaBox=[0, 0, float(_fmt(width)), float(_fmt(height))],
+            Resources=pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font)),
+            Contents=pikepdf.Stream(pdf, layer or b""),
+        )
+        pdf.pages.append(pikepdf.Page(page))
+    out = io.BytesIO()
+    pdf.save(out, deterministic_id=True)
+    return out.getvalue()

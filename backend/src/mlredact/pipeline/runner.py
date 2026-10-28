@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -20,8 +20,8 @@ from mlredact.config.schema import AppConfig
 from mlredact.core.canonical import sha256_hex
 from mlredact.core.errors import EnvironmentErrorMl, MlredactError, ReasonCode
 from mlredact.core.geometry import BBox
-from mlredact.core.model import PageAnalysis, Region, RenderOp, Token
-from mlredact.core.types import ActionKind, JobStatus, VerificationCheck
+from mlredact.core.model import Line, Mention, PageAnalysis, PageGeometry, Region, RenderOp, Token
+from mlredact.core.types import ActionKind, EntityType, JobStatus, VerificationCheck
 from mlredact.detect.base import Detector
 from mlredact.detect.engine import DetectionResult, Seed, default_detectors, detect_document
 from mlredact.detect.ner import build_ner_detectors
@@ -30,8 +30,8 @@ from mlredact.ingest.inspect import InspectionReport
 from mlredact.manifest.build import build_manifest
 from mlredact.manifest.sensitive import build_sensitive, seal
 from mlredact.ocr.tesseract import binary_version
-from mlredact.pdfout.builder import PageSpec, build_pdf
-from mlredact.pdfout.textlayer import page_text_layer, text_layer_items
+from mlredact.pdfout.builder import PageSpec, build_pdf, build_text_pdf
+from mlredact.pdfout.textlayer import LayerMask, page_text_layer, text_layer_items
 from mlredact.pipeline.pool import WorkerPool
 from mlredact.pipeline.requirements import required_model_ids
 from mlredact.pipeline.shared import SharedBlob
@@ -43,7 +43,15 @@ from mlredact.pipeline.workers import (
     task_inspect,
     task_redact,
 )
-from mlredact.policy.engine import Decision, decide, split_kept_places
+from mlredact.policy.addresses import (
+    AddressJoin,
+    JoinedUnit,
+    KeptRecord,
+    MentionLayout,
+    fold_word,
+    join_addresses,
+)
+from mlredact.policy.engine import Decision, decide
 from mlredact.registry.models import load_registry, models_dir, resolve
 from mlredact.render.label import NOTICE_REMOVED, NOTICE_SURROGATE
 from mlredact.render.plan import check_supported, pad_box, plan_ops, rotated_token_ids
@@ -58,7 +66,9 @@ from mlredact.surrogate.drbg import Chooser
 from mlredact.surrogate.generators import SurrogateFactory
 from mlredact.surrogate.keys import MasterKey, load_master_key
 from mlredact.surrogate.labels import assign_labels
+from mlredact.verify.addresses import AddressFakes, AddressReread, reread_of
 from mlredact.verify.checks import CheckResult, check_integrity, check_structure, check_text_leak
+from mlredact.verify.needles import MASK, AddressNeedles, AddressText, needles_of
 from mlredact.verify.residual import find_residuals, residual_ops, residual_result
 from mlredact.verify.surrogates import check_surrogates
 
@@ -88,7 +98,10 @@ class JobTrace:
     and ``erased`` belong together: the last output the pipeline built (released or not, also when a
     later step failed), the render operations it was drawn from (after verification re-plans) and the
     boxes those operations actually erased, keyed like the manifest's ``erased_px``.  ``injected``: the
-    report of the job's injected stage inputs (benchmark oracle modes), None without them."""
+    report of the job's injected stage inputs (benchmark oracle modes), None without them.  The address join's
+    output (``addresses: whole``, the pipeline's own detection; empty otherwise): ``layouts`` (mention id -> where the
+    mention sits in its unit), ``units`` (unit id -> unit), ``kept_places`` (the places mentioned on their own, as
+    the grammar recorded them) and ``address_fakes`` (unit id -> token id -> the text drawn, '' erases a token)."""
 
     pdf: bytes | None = field(repr=False)
     pages: tuple[PageAnalysis, ...] = field(repr=False)
@@ -99,6 +112,26 @@ class JobTrace:
     erased: Mapping[tuple[str, BBox], BBox]
     regions: tuple[RegionDecision, ...]
     injected: InjectReport | None = field(default=None, repr=False)
+    layouts: Mapping[str, MentionLayout] = field(default_factory=dict, repr=False)
+    units: Mapping[str, JoinedUnit] = field(default_factory=dict, repr=False)
+    kept_places: tuple[KeptRecord, ...] = field(default=(), repr=False)
+    address_fakes: Mapping[str, Mapping[str, str]] = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _AddressChecks:
+    """What verification knows of the document's addresses, built once per job: ``removed``, the removed mentions that
+    V2 and V4 search by value (a unit's mention is searched by its targets); ``scrub``, the units' targets for the log
+    scrubber; ``needles`` and ``mask`` (V2); ``fakes`` (V5); ``reread`` (V4); ``kept``, the regions V4's
+    re-detection leaves alone."""
+
+    removed: list[Mention]
+    scrub: list[str]
+    needles: AddressNeedles
+    mask: LayerMask
+    fakes: AddressFakes | None
+    reread: AddressReread | None
+    kept: dict[int, list[BBox]]
 
 
 @dataclass(frozen=True)
@@ -193,6 +226,8 @@ class Redactor:
         pdf: bytes | None = None
         redacted: list[RedactedPage] = []
         built: _Built | None = None  # read only for the trace
+        join = AddressJoin(())  # the address join (empty while the mentions are injected)
+        address_fakes: Mapping[str, Mapping[str, str]] = {}
         _log.info("job.start", job=job_id, doc=input_sha[:32])
 
         def lap(name: str, t0: float) -> None:
@@ -232,8 +267,9 @@ class Redactor:
                         else frozenset()
                     )
                     tokens = {t.token_id: t for p in pages for t in p.tokens()}
-                    mentions = split_kept_places(detection.mentions, tokens, cfg.policy)
-                    decisions = decide(mentions, cfg.policy, professionals)
+                    # addresses: whole -> the join (units, kept places); parts -> the per-part split of today.
+                    join = join_addresses(detection.mentions, pages, cfg.policy)
+                    decisions = decide(join.mentions, cfg.policy, professionals)
                 else:
                     pages, detection, decisions = list(staged.pages), staged.detection, list(staged.decisions)
                     tokens = {t.token_id: t for p in pages for t in p.tokens()}
@@ -243,7 +279,16 @@ class Redactor:
                 if self._key is not None:
                     chooser = Chooser(self._key.scope_key(scope_id or input_sha))
                     factory = SurrogateFactory(chooser, originals)
-                    surrogates = SurrogateAssigner(factory, detection.persons, tokens).assign(decisions)
+                    assigner = SurrogateAssigner(
+                        factory,
+                        detection.persons,
+                        tokens,
+                        layouts=join.layouts,
+                        units=join.units,
+                        address_state=cfg.policy.address_state,
+                    )
+                    surrogates = assigner.assign(decisions)
+                    address_fakes = assigner.address_fakes
                 elif cfg.redaction.style == "label":
                     surrogates = assign_labels(decisions, detection.persons)
                 all_lines = [line for p in pages for line in p.lines]
@@ -271,7 +316,10 @@ class Redactor:
                 if cfg.output.notice:
                     notice = NOTICE_SURROGATE if cfg.redaction.style == "surrogate" else NOTICE_REMOVED
 
-                with scrub_terms([m.value for m in removed]):
+                checks_of = self._address_checks(
+                    join, decisions, removed, surrogates, tokens, address_fakes, geoms, all_lines
+                )
+                with scrub_terms([*(m.value for m in checks_of.removed), *checks_of.scrub]):
                     replans = 0
                     while True:
                         t0 = time.perf_counter()
@@ -284,7 +332,11 @@ class Redactor:
 
                         t0 = time.perf_counter()
                         v1 = check_structure(pdf, n, allow_fonts=cfg.output.text_layer)
-                        v2 = check_text_leak(pdf, [m.value for m in removed])
+                        v2 = check_text_leak(
+                            pdf,
+                            [m.value for m in checks_of.removed],
+                            addresses=self._address_text(checks_of, redacted, pages, ops, notice),
+                        )
                         v6, v3 = check_integrity(
                             [(r.geometry.width_pt, r.geometry.height_pt) for r in redacted],
                             pdf,
@@ -293,7 +345,7 @@ class Redactor:
                             [r.fills_ok for r in redacted],
                         )
                         v5 = (
-                            self._check_surrogates(decisions, surrogates, tokens, originals)
+                            self._check_surrogates(decisions, surrogates, tokens, originals, checks_of.fakes)
                             if cfg.redaction.style == "surrogate"
                             else CheckResult(VerificationCheck.SURROGATE, True, {"surrogates": 0})
                         )
@@ -305,18 +357,21 @@ class Redactor:
                                 )
                             hits = find_residuals(
                                 out_pages,
-                                removed,
+                                checks_of.removed,
                                 self._erased_ops(ops, redacted),
                                 cfg,
                                 [" ".join(t for t in s.tokens if t) for s in surrogates.values()],
-                                self._kept_regions(decisions, tokens, geoms),
+                                checks_of.kept,
+                                addresses=checks_of.reread,
                             )
                         lap(f"verify_ms_{replans}", t0)
                         # Injected stage inputs may re-plan fewer hits; every hit still counts for the verdict.
                         replan = hits if inject is None else inject.replan_hits(hits)
                         if replan and replans < cfg.verification.max_replans:
                             replans += 1
-                            ops = self._merge_ops(ops, residual_ops(replan, input_sha, replans), geoms, cfg)
+                            ops = self._merge_ops(
+                                ops, residual_ops(replan, input_sha, replans), geoms, cfg, checks_of.mask
+                            )
                             _log.warning("verify.replan", job=job_id, iteration=replans, tokens=len(replan))
                             continue
                         checks = [v1, v2, v3, residual_result(hits, replans), v5, v6]
@@ -394,6 +449,8 @@ class Redactor:
                 ops,
                 redacted,
                 injected=inject.report() if inject is not None else None,
+                join=join,
+                address_fakes=address_fakes,
             )
             if trace
             else None
@@ -410,19 +467,116 @@ class Redactor:
     ) -> list[PageSpec]:
         specs = []
         for r, page in zip(redacted, pages, strict=True):
-            layer = None
-            if self.config.output.text_layer:
-                # Use the boxes that were actually erased (ink-aware refinement may differ from plan).
-                erased = {(a.ref_id, a.planned): a.erased for a in r.applied}
-                page_ops = [
-                    replace(op, box=erased.get((op.ref_id, op.box), op.box)) for op in ops.get(page.geometry.index, ())
-                ]
-                items = text_layer_items(list(page.tokens()), page_ops)
-                if notice and r.notice_box is not None:
-                    items.append((r.notice_box, notice))
-                layer = page_text_layer(r.geometry, items)
+            layer = self._text_layer(r, page, ops, notice, None) if self.config.output.text_layer else None
             specs.append(PageSpec(r.geometry.width_pt, r.geometry.height_pt, r.image, layer))
         return specs
+
+    @staticmethod
+    def _text_layer(
+        r: RedactedPage,
+        page: PageAnalysis,
+        ops: Mapping[int, Sequence[RenderOp]],
+        notice: str | None,
+        mask: LayerMask | None,
+    ) -> bytes | None:
+        """One page's invisible text layer; with ``mask``, its exempt rendition (verification V2)."""
+        # Use the boxes that were actually erased (ink-aware refinement may differ from plan).
+        erased = {(a.ref_id, a.planned): a.erased for a in r.applied}
+        page_ops = [replace(op, box=erased.get((op.ref_id, op.box), op.box)) for op in ops.get(page.geometry.index, ())]
+        items = text_layer_items(list(page.tokens()), page_ops, mask)
+        if notice and r.notice_box is not None:
+            items.append((r.notice_box, notice))
+        return page_text_layer(r.geometry, items)
+
+    def _address_text(
+        self,
+        checks: _AddressChecks,
+        redacted: Sequence[RedactedPage],
+        pages: Sequence[PageAnalysis],
+        ops: Mapping[int, Sequence[RenderOp]],
+        notice: str | None,
+    ) -> AddressText | None:
+        """The address needles of V2 with the exempt rendition of the text layer just built (None: no units)."""
+        if not checks.needles:
+            return None
+        if not self.config.output.text_layer:
+            return AddressText(checks.needles)
+        layers = [
+            (r.geometry.width_pt, r.geometry.height_pt, self._text_layer(r, page, ops, notice, checks.mask))
+            for r, page in zip(redacted, pages, strict=True)
+        ]
+        return AddressText(checks.needles, build_text_pdf(layers))
+
+    def _address_checks(
+        self,
+        join: AddressJoin,
+        decisions: Sequence[Decision],
+        removed: Sequence[Mention],
+        surrogates: Mapping[str, MentionSurrogate],
+        tokens: Mapping[str, Token],
+        fakes: Mapping[str, Mapping[str, str]],
+        geoms: Mapping[int, PageGeometry],
+        lines: Sequence[Line],
+    ) -> _AddressChecks:
+        """What verification knows of the document's addresses (TOOL2 section 6): the removed mentions it still searches
+        by value (a unit's mention is searched by its targets instead), the exempt positions, the V2 mask, V5's fakes
+        and V4's data."""
+        plain = [m for m in removed if m.mention_id not in join.layouts]
+        kept = self._kept_regions(decisions, tokens, geoms, join.exempt.kept_places)
+        exempt_ids = frozenset(join.exempt.kept_places) | {
+            t for d in decisions if d.action is ActionKind.KEEP for t in d.mention.token_ids
+        }
+        replacement = {
+            tid: text
+            for d in decisions
+            if d.action is not ActionKind.KEEP and (sur := surrogates.get(d.mention.mention_id)) is not None
+            for tid, text in zip(d.mention.token_ids, sur.tokens, strict=True)
+        }
+        ink: dict[tuple[int, BBox], Sequence[Token]] = {}
+        for line in lines:
+            if line.tokens:
+                box = line.tokens[0].bbox
+                for t in line.tokens[1:]:
+                    box = box.union(t.bbox)
+                ink[(line.page, box)] = line.tokens
+        mask = LayerMask(exempt_ids, replacement, ink, MASK)
+        if not join.units:
+            return _AddressChecks(plain, [], AddressNeedles(), mask, None, None, kept)
+        targets = [join.targets[u] for u in sorted(join.targets)]
+        applied = frozenset(
+            t
+            for d in decisions
+            if d.mention.mention_id in join.layouts and d.mention.mention_id in surrogates
+            for t in d.mention.token_ids
+        )
+        texts = {t: tokens[t].text for u in join.units.values() for t in u.roles}
+        fake_words = frozenset(
+            w for sur in surrogates.values() for tok in sur.tokens for w in map(fold_word, tok.split()) if w
+        )
+        reread = (
+            reread_of(
+                join.units,
+                join.targets,
+                texts,
+                fakes,
+                applied,
+                fake_words,
+                self._boxes(exempt_ids, tokens, geoms),
+                (tok.text for tid, tok in tokens.items() if tid not in texts),
+            )
+            if self.config.policy.addresses == "whole" and self.config.verification.re_ocr
+            else None
+        )
+        terms = [" ".join(words) for t in targets for words in t.compound] + [w for t in targets for w in t.whole]
+        return _AddressChecks(
+            plain,
+            sorted({term for term in terms if len(term) >= 3}),
+            needles_of(targets),
+            mask,
+            AddressFakes(join.units, texts, fakes, applied) if fakes else None,
+            reread,
+            kept,
+        )
 
     def _region_decisions(self, page: PageAnalysis) -> list[RegionDecision]:
         """Non-text regions (signatures, barcodes, faces, stamps, handwriting, faint ink) -> actions.
@@ -463,6 +617,8 @@ class Redactor:
         ops: Mapping[int, tuple[RenderOp, ...]],
         redacted: Sequence[RedactedPage],
         injected: InjectReport | None = None,
+        join: AddressJoin | None = None,
+        address_fakes: Mapping[str, Mapping[str, str]] | None = None,
     ) -> JobTrace:
         """The job's trace.  When an output was built, the ops and erased boxes are the ones it was
         drawn from (a step that failed after it may already have planned more)."""
@@ -479,21 +635,44 @@ class Redactor:
             erased={(a.ref_id, a.planned): a.erased for r in redacted for a in r.applied},
             regions=tuple(d for p in pages for d in self._region_decisions(p)),
             injected=injected,
+            layouts=dict(join.layouts) if join is not None else {},
+            units=dict(join.units) if join is not None else {},
+            kept_places=join.kept if join is not None else (),
+            address_fakes=dict(address_fakes) if address_fakes else {},
         )
 
     def _kept_regions(
-        self, decisions: Sequence[Decision], tokens: Mapping[str, Token], geoms: Mapping[int, Any]
+        self,
+        decisions: Sequence[Decision],
+        tokens: Mapping[str, Token],
+        geoms: Mapping[int, Any],
+        places: Collection[str] = (),
     ) -> dict[int, list[BBox]]:
-        """Padded boxes of mentions kept *by override* (their type is normally acted on)."""
+        """Padded boxes of mentions kept *by override* (their type is normally acted on).  Under ``addresses: whole``
+        also the kept LOCALITY and POSTCODE mentions and the places mentioned on their own (``places``: the join's
+        record, less what a mention replaces), which verification leaves alone."""
         actions = self.config.policy.entity_actions
-        out: dict[int, list[BBox]] = {}
+        whole = self.config.policy.addresses == "whole"
+        ids: set[str] = set(places) if whole else set()
         for d in decisions:
-            if d.action is not ActionKind.KEEP or actions[d.mention.entity_type] is ActionKind.KEEP:
+            if d.action is not ActionKind.KEEP:
                 continue
-            for tid in d.mention.token_ids:
-                tok = tokens[tid]
-                box = pad_box(tok.bbox, tok.bbox.height, self.config.redaction, geoms[tok.page].bounds)
-                out.setdefault(tok.page, []).append(box)
+            etype = d.mention.entity_type
+            by_type = actions[etype] is ActionKind.KEEP
+            if by_type and not (whole and etype in (EntityType.LOCALITY, EntityType.POSTCODE)):
+                continue
+            ids.update(d.mention.token_ids)
+        return self._boxes(ids, tokens, geoms)
+
+    def _boxes(
+        self, token_ids: Collection[str], tokens: Mapping[str, Token], geoms: Mapping[int, Any]
+    ) -> dict[int, list[BBox]]:
+        """The padded boxes of tokens, by page, in a fixed order."""
+        out: dict[int, list[BBox]] = {}
+        for tid in sorted(token_ids):
+            tok = tokens[tid]
+            box = pad_box(tok.bbox, tok.bbox.height, self.config.redaction, geoms[tok.page].bounds)
+            out.setdefault(tok.page, []).append(box)
         return out
 
     @staticmethod
@@ -513,6 +692,7 @@ class Redactor:
         surrogates: Mapping[str, MentionSurrogate],
         tokens: Mapping[str, Token],
         originals: set[str],
+        addresses: AddressFakes | None = None,
     ) -> CheckResult:
         if not surrogates:
             return CheckResult(VerificationCheck.SURROGATE, True, {"surrogates": 0})
@@ -533,7 +713,7 @@ class Redactor:
             orig = [tokens[t].text for t in d.mention.token_ids]
             replaced = tuple(s for s, o in zip(sur.tokens, orig, strict=True) if s and s != o)
             items.append((d.mention.entity_type, text, replaced))
-        return check_surrogates(items, originals, shifted_dates=shifted, generalised=generalised)
+        return check_surrogates(items, originals, shifted_dates=shifted, generalised=generalised, addresses=addresses)
 
     @staticmethod
     def _merge_ops(
@@ -541,13 +721,49 @@ class Redactor:
         extra: Mapping[int, list[RenderOp]],
         geoms: Mapping[int, Any],
         cfg: AppConfig,
+        mask: LayerMask | None = None,
     ) -> dict[int, tuple[RenderOp, ...]]:
+        """The ops with a re-plan's operations added.  A re-typeset line a re-plan draws over takes the re-plan's words
+        in place of the ones it replaces (``mask`` holds the lines and what was drawn in place of their tokens): the
+        text layer must not keep the words the page no longer shows."""
         merged: dict[int, list[RenderOp]] = {p: list(v) for p, v in ops.items()}
         for page, page_ops in extra.items():
             for op in page_ops:
                 padded = pad_box(op.box, op.box.height, cfg.redaction, geoms[page].bounds)
-                merged.setdefault(page, []).append(RenderOp(op.page, op.kind, padded, op.reason, op.ref_id))
+                merged.setdefault(page, []).append(replace(op, box=padded))
+        if mask is not None:
+            for page, page_ops in extra.items():
+                merged[page] = [
+                    _retext(o, page_ops, mask) if o.kind is ActionKind.RETYPESET_REGION else o for o in merged[page]
+                ]
         return {p: tuple(sorted(v, key=lambda o: o.sort_key)) for p, v in sorted(merged.items())}
+
+
+def _retext(op: RenderOp, replans: Sequence[RenderOp], mask: LayerMask) -> RenderOp:
+    """A re-typeset line with the words under a re-plan's operations replaced by the operation's text (or dropped)."""
+    line = mask.lines.get((op.page, op.ink_box)) if op.ink_box is not None else None
+    if line is None:
+        return op
+    words: list[str] = []
+    used: set[int] = set()
+    changed = False
+    for tok in line:
+        under = next(
+            (
+                i
+                for i, r in enumerate(replans)
+                if (inter := tok.bbox.intersection(r.box)) is not None and inter.area * 2 >= tok.bbox.area
+            ),
+            None,
+        )
+        if under is None:
+            words.append(mask.replacement.get(tok.token_id, tok.text))
+            continue
+        changed = True
+        if under not in used:
+            used.add(under)
+            words.append(replans[under].text or "")
+    return replace(op, text=" ".join(w for w in words if w)) if changed else op
 
 
 def _reason_for(check: CheckResult) -> str:

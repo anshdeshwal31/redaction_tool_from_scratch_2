@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -159,6 +160,40 @@ def pages_from_grid(lines: Sequence[GridLine], *, page_count: int | None = None)
             )
         out.append(PageAnalysis(geometry, PageKind.IMAGE_ONLY, tuple(page_lines)))
     return out
+
+
+def pdf_from_grid(lines: Sequence[GridLine], *, page_count: int | None = None, size: float = 10.0) -> bytes:
+    """A born-digital PDF (A4, Helvetica) with the grid lines laid out as ``pages_from_grid`` lays them out, for the
+    in-process runs of the real pipeline (page analysis reads the PDF's own text layer): ``x1`` is ignored."""
+    import pikepdf
+
+    count = page_count if page_count is not None else (max((ln.page for ln in lines), default=0) + 1)
+    pdf = pikepdf.new()
+    font = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.Font,
+            Subtype=pikepdf.Name.Type1,
+            BaseFont=pikepdf.Name.Helvetica,
+            Encoding=pikepdf.Name.WinAnsiEncoding,
+        )
+    )
+    for page_no in range(count):
+        ops = ["BT", f"/F1 {size} Tf"]
+        for ln in (ln for ln in lines if ln.page == page_no):
+            y = 841.89 - (60 + ln.row * 14.4) - 0.8 * size
+            text = ln.text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            ops.append(f"1 0 0 1 {ln.x0:.2f} {y:.2f} Tm ({text}) Tj")
+        ops.append("ET")
+        page = pikepdf.Dictionary(
+            Type=pikepdf.Name.Page,
+            MediaBox=[0, 0, 595.276, 841.89],
+            Resources=pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font)),
+            Contents=pikepdf.Stream(pdf, "\n".join(ops).encode("cp1252")),
+        )
+        pdf.pages.append(pikepdf.Page(page))
+    out = io.BytesIO()
+    pdf.save(out, deterministic_id=True)
+    return out.getvalue()
 
 
 # ------------------------------------------------------------- worker-pool tasks (importable by spawned children)

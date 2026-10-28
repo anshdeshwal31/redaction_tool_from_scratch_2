@@ -7,12 +7,17 @@ Three probes over the re-read output:
 3. no barcode or face may still be detectable outside the planned redaction boxes.
 
 Residual hits become additional redaction boxes for one re-plan; if they persist the job fails.
+
+Address units (``addresses``) are probed by their per-part targets in place of their removed values (compound and
+whole-token targets, form parts as 'label value', exempt positions apart), and the address join runs on the re-read
+output too: a unit or an anchored place whose identifying words are not this run's fakes is a residual even though
+LOCALITY and POSTCODE are KEEP types.  A residual that repeats a found unit is re-planned with that unit's fake.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 
 from mlredact.config.schema import AppConfig
 from mlredact.core.canonical import content_id
@@ -22,20 +27,31 @@ from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, Region
 from mlredact.detect.engine import default_detectors
 from mlredact.detect.fusion import fuse
 from mlredact.detect.propagate import Target, propagate
+from mlredact.policy.addresses import fold_word, join_addresses
+from mlredact.text.address import STRUCTURE_ROLES, KeptKind
 from mlredact.text.normalize import match_key
-from mlredact.text.views import build_views
+from mlredact.text.views import TextView, build_views
+from mlredact.verify.addresses import AddressReread, swapped
 from mlredact.verify.checks import CheckResult
+from mlredact.verify.needles import MIN_WHOLE
 
 _COVERED_FRACTION = 0.5
 _VISUAL_RESIDUALS = frozenset({RegionKind.BARCODE, RegionKind.FACE})
+_DESCENDERS = frozenset("gjpqy,;()[]{}_")  # as the planner's: they calibrate the font of a drawn fake
 
 
 @dataclass(frozen=True, slots=True)
 class ResidualHit:
+    """``fake``: for a residual that repeats a found address unit, the text of that unit's fake to draw over ``box``
+    (the union of the residual words on one line) instead of a black box; ``original`` is the text it covers (it
+    calibrates the drawing and never leaves the process)."""
+
     page: int
     box: BBox
     reason: str  # entity type or region kind value
     source: str  # "removed_value" | "redetect" | "region"
+    fake: str | None = field(default=None, repr=False)
+    original: str | None = field(default=None, repr=False)
 
 
 def _covered(box: BBox, ops: Sequence[RenderOp]) -> bool:
@@ -48,14 +64,16 @@ def _covered(box: BBox, ops: Sequence[RenderOp]) -> bool:
 
 
 def _explained(value: str, replacement_keys: Sequence[str]) -> bool:
-    """A re-detected mention that is (part of) one of our own surrogates / labels is not residual.
+    """A re-detected mention that lies within one of our own surrogates / labels is not residual.
 
     Safe because V5 guarantees no surrogate equals or nearly equals any original value; the
-    removed-value probe (which this never suppresses) still catches every visible original."""
+    removed-value probe (which this never suppresses) still catches every visible original.  A mention that merely
+    contains a surrogate is not explained: 'Address: 40 Bridge Street, Penrith NSW 2750' with only the street line
+    replaced contains the fake street line, and the place after it is still there."""
     key = match_key(value)
     if len(key) < 3:
         return False
-    return any(key in r or (len(r) >= 3 and r in key) for r in replacement_keys)
+    return any(key in r for r in replacement_keys)
 
 
 def _inside_any(box: BBox, regions: Sequence[BBox]) -> bool:
@@ -70,11 +88,17 @@ def find_residuals(
     config: AppConfig,
     replacements: Sequence[str] = (),
     kept: Mapping[int, Sequence[BBox]] | None = None,
+    *,
+    addresses: AddressReread | None = None,
 ) -> list[ResidualHit]:
     """``planned`` must carry the boxes that were *actually* erased; ``replacements`` are the
     surrogate / label strings drawn on the pages; ``kept`` are regions the policy deliberately left
     visible although their type is normally acted on (e.g. professionals under the claimant-focused
-    profile).  ``kept`` only exempts re-detection - the removed-value probe is never suppressed."""
+    profile).  ``kept`` only exempts re-detection - the removed-value probe is never suppressed.
+
+    ``addresses``: the document's address units (``removed`` then holds no unit mention).  Their targets are probed in
+    place of removed values, with the exempt positions of ``addresses.exempt`` (kept places and kept mentions) left
+    alone, and the address join runs on the re-read output."""
     kept = kept or {}
     replacement_keys = sorted({match_key(r) for r in replacements if match_key(r)})
     views = build_views(output_pages)
@@ -101,6 +125,8 @@ def find_residuals(
     candidates = [c for d in default_detectors() for c in d.detect(views)]
     mentions, _low = fuse(candidates, views, "residual")
     index = {t.token_id: t for t in tokens}
+    if addresses is not None:
+        hits.extend(_address_hits(addresses, output_pages, line_view, index, mentions, planned, config))
     actions = config.policy.entity_actions
     for m in mentions:
         if actions[m.entity_type] is ActionKind.KEEP:
@@ -122,18 +148,133 @@ def find_residuals(
     return [unique[k] for k in sorted(unique, key=lambda k: (k[0], k[1], k[2], k[3]))]
 
 
+def _address_hits(
+    addresses: AddressReread,
+    output_pages: Sequence[PageAnalysis],
+    line_view: TextView,
+    index: Mapping[str, Token],
+    mentions: Sequence[Mention],
+    planned: Mapping[int, Sequence[RenderOp]],
+    config: AppConfig,
+) -> list[ResidualHit]:
+    """The address residuals of the re-read output.  A token is left alone when a planned operation covers it, when it
+    lies in an exempt position (kept places, kept mentions of other types), or, in a unit, when it is a word of a fake
+    this run drew.  Windows that repeat a found unit become that unit's fake; any other residual is a black box."""
+    tokens = line_view.tokens
+    vcfg = config.verification
+    hits: list[ResidualHit] = []
+    done: set[str] = set()
+    reason = EntityType.STREET_ADDRESS.value
+
+    # A re-typeset line is drawn again whole, the words it kept included: its operation covers a word only when the
+    # word is one this run drew (a kept original left in it is as readable as before).
+    drawn = {page: [op for op in ops if op.kind is not ActionKind.RETYPESET_REGION] for page, ops in planned.items()}
+
+    def covered(tok: Token) -> bool:
+        if _covered(tok.bbox, drawn.get(tok.page, ())):
+            return True
+        return _covered(tok.bbox, planned.get(tok.page, ())) and fold_word(tok.text) in addresses.fake_words
+
+    def eligible(tok: Token) -> bool:
+        return (
+            tok.token_id not in done
+            and not covered(tok)
+            and not _inside_any(tok.bbox, addresses.exempt.get(tok.page, ()))
+        )
+
+    def record(window: Sequence[Token], focus: Sequence[Token], source: str) -> None:
+        """``window``: consecutive tokens of one line; ``focus``: the ones that are residual."""
+        todo = [t for t in focus if eligible(t)]
+        if not todo:
+            return
+        fake = swapped([t.text for t in window], addresses) if all(eligible(t) for t in window) else None
+        if fake is not None:
+            box = window[0].bbox
+            for t in window[1:]:
+                box = box.union(t.bbox)
+            hits.append(ResidualHit(window[0].page, box, reason, source, fake, " ".join(t.text for t in window)))
+            done.update(t.token_id for t in window)
+        else:
+            hits.extend(ResidualHit(t.page, t.bbox, reason, source) for t in todo)
+            done.update(t.token_id for t in todo)
+
+    # The probe: the units' targets in the re-read output (a repeat of a found address too).
+    probe: dict[str, Target] = {}
+    for unit_targets in addresses.targets:
+        for words in unit_targets.compound:
+            probe.setdefault(match_key(" ".join(words)), Target("", len(words), EntityType.STREET_ADDRESS, "mention"))
+        for word in unit_targets.whole:
+            probe.setdefault(match_key(word), Target("", 1, EntityType.STREET_ADDRESS, "mention"))
+    ordered = [
+        Target(key, t.n_tokens, t.entity_type, t.source) for key, t in sorted(probe.items()) if len(key) >= MIN_WHOLE
+    ]
+    found = propagate(ordered, line_view, fuzzy_ratio=vcfg.residual_fuzzy_ratio)
+    windows = [tokens[r.start : r.stop] for r in (line_view.token_range(c.start, c.end) for c in found)]
+    for window in sorted(windows, key=lambda w: (-len(w), w[0].token_id if w else "")):
+        if window:
+            record(window, window, "removed_value")
+
+    # The join on the re-read output: a unit, or an anchored place, whose identifying words are not this run's fakes.
+    if config.policy.addresses == "whole":
+        reread = join_addresses(mentions, output_pages, config.policy)
+        for unit in reread.units.values():
+            owned = [index[t] for t in unit.roles if t in index]
+            focus = [
+                index[t]
+                for t, role in unit.roles.items()
+                if t in index and (role is None or role not in STRUCTURE_ROLES) and t not in unit.excluded
+            ]
+            _unit_residuals(owned, focus, addresses, record)
+        for place in reread.kept:
+            if place.kind is KeptKind.PLACE_AFTER_CUE:
+                owned = [index[t] for t in place.token_ids if t in index]
+                _unit_residuals(owned, owned, addresses, record)
+    return hits
+
+
+def _unit_residuals(
+    owned: Sequence[Token],
+    focus: Sequence[Token],
+    addresses: AddressReread,
+    record: Callable[[Sequence[Token], Sequence[Token], str], None],
+) -> None:
+    """The residual words of one re-read unit (``focus``: its identifying words; ``owned``: all its words), line by
+    line.  A word of a fake this run drew is no residual."""
+    todo = [t for t in focus if (w := fold_word(t.text)) and w not in addresses.fake_words and w not in addresses.plain]
+    by_line: dict[tuple[int, int], list[Token]] = {}
+    for tok in todo:
+        by_line.setdefault((tok.page, tok.line_no), []).append(tok)
+    for key in sorted(by_line):
+        group = sorted(by_line[key], key=lambda t: t.word_no)
+        lo, hi = group[0].word_no, group[-1].word_no
+        span = sorted(
+            (t for t in owned if (t.page, t.line_no) == key and lo <= t.word_no <= hi), key=lambda t: t.word_no
+        )
+        record(span if [t.word_no for t in span] == list(range(lo, hi + 1)) else group, group, "redetect")
+
+
 def residual_ops(hits: Sequence[ResidualHit], doc_key: str, iteration: int) -> dict[int, list[RenderOp]]:
+    """The re-plan's operations: a black box over each hit, or, where the hit repeats a found address unit, that
+    unit's fake drawn over it."""
     out: dict[int, list[RenderOp]] = {}
     for h in hits:
-        out.setdefault(h.page, []).append(
+        ref_id = content_id("R", doc_key, iteration, h.page, *h.box.as_tuple())
+        op = (
             RenderOp(
-                page=h.page,
-                kind=ActionKind.BLACKOUT,
-                box=h.box,
-                reason=h.reason,
-                ref_id=content_id("R", doc_key, iteration, h.page, *h.box.as_tuple()),
+                h.page,
+                ActionKind.SURROGATE,
+                h.box,
+                h.reason,
+                ref_id,
+                h.fake,
+                h.box,
+                any(c in _DESCENDERS for c in h.original or ""),
+                h.original,
             )
+            if h.fake is not None
+            else RenderOp(h.page, ActionKind.BLACKOUT, h.box, h.reason, ref_id)
         )
+        out.setdefault(h.page, []).append(op)
     return out
 
 

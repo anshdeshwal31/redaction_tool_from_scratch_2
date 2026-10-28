@@ -5,7 +5,10 @@
 * phone surrogates lie in ACMA's ranges reserved for fiction;
 * e-mail / URL surrogates use RFC 2606 reserved domains;
 * shifted dates (Maximal) never equal an original value and all move by one common offset;
-* generalised ages leave no age of 90 or over.
+* generalised ages leave no age of 90 or over;
+* address fakes (``mlredact.verify.addresses``): no word or number of a fake repeats an identifying word or number of
+  any address unit of the document, the fake postcode follows the state's ranges and amendment D3, and no two
+  different originals share a whole fake.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from mlredact.detect.rules.checksums import (
 )
 from mlredact.surrogate.dates import UNPARSEABLE_DATE
 from mlredact.text.normalize import digits_only, match_key
+from mlredact.verify.addresses import AddressFakes, check_address_fakes
 from mlredact.verify.checks import CheckResult
 
 _ACMA_MOBILES = frozenset(
@@ -101,8 +105,10 @@ def check_surrogates(
     *,
     shifted_dates: Sequence[tuple[str, str]] = (),
     generalised: Sequence[str] = (),
+    addresses: AddressFakes | None = None,
 ) -> CheckResult:
-    """``items``: (entity type, whole surrogate text, replaced tokens) per surrogated mention.
+    """``items``: (entity type, whole surrogate text, replaced tokens) per surrogated mention.  ``addresses``: the
+    fakes of the document's address units, checked as a whole against all of its units' identifying words.
 
     Name-like types are checked token by token (only tokens that were actually replaced; kept
     structure words such as "Street" or "NSW" are identical to the original by design); identifier,
@@ -141,6 +147,8 @@ def check_surrogates(
     for text in generalised:
         if any(int(n) >= 90 for n in _AGE_LEFT.findall(text)):
             problems["age_not_top_coded"] += 1
+    if addresses is not None:
+        problems.update(check_address_fakes(addresses))
     total = sum(problems.values())
     metrics: dict[str, int | float | bool] = {
         "surrogates": len(items),

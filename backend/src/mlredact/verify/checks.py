@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from mlredact.core.types import VerificationCheck
 from mlredact.text.normalize import digits_only, match_key
+from mlredact.verify.needles import AddressText, count_sequences, excess
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,8 +209,19 @@ def extract_all_text(pdf_bytes: bytes) -> str:
     return chr(10).join(text_segments(pdf_bytes))
 
 
-def check_text_leak(pdf_bytes: bytes, removed_values: Sequence[str], *, min_len: int = 4) -> CheckResult:
-    """V2: no removed value (or its digit sequence) is present in any extractable text segment."""
+def check_text_leak(
+    pdf_bytes: bytes,
+    removed_values: Sequence[str],
+    *,
+    min_len: int = 4,
+    addresses: AddressText | None = None,
+) -> CheckResult:
+    """V2: no removed value (or its digit sequence) is present in any extractable text segment.
+
+    ``addresses``: the targets of the document's address units (``mlredact.verify.needles``).  They replace the bare
+    values of address mentions: whole-token matching (digits as maximal digit runs, never joined), and an occurrence
+    passes only when an exempt position accounts for it, which the check settles by comparing counts with the
+    exempt rendition of the text layer."""
     segments = text_segments(pdf_bytes)
     keys = [match_key(seg) for seg in segments]
     digit_runs = [digits_only(seg) for seg in segments]
@@ -219,11 +231,24 @@ def check_text_leak(pdf_bytes: bytes, removed_values: Sequence[str], *, min_len:
         pool = digit_runs if n.isdigit() else keys
         if any(n in hay for hay in pool):
             hits += 1
-    return CheckResult(
-        VerificationCheck.TEXT,
-        hits == 0,
-        {"needles": len(needles), "hits": hits, "segments": len(segments), "text_chars": sum(map(len, segments))},
-    )
+    metrics: dict[str, int | float | bool] = {
+        "needles": len(needles),
+        "hits": hits,
+        "segments": len(segments),
+        "text_chars": sum(map(len, segments)),
+    }
+    if addresses is not None and addresses.needles:
+        found = count_sequences(addresses.needles, segments)
+        allowed = (
+            count_sequences(addresses.needles, text_segments(addresses.exempt_pdf))
+            if addresses.exempt_pdf is not None
+            else {}
+        )
+        address_hits = excess(addresses.needles, found, allowed)
+        metrics["address_needles"] = len(addresses.needles.sequences)
+        metrics["address_hits"] = address_hits
+        hits += address_hits
+    return CheckResult(VerificationCheck.TEXT, hits == 0, metrics)
 
 
 # ---------------------------------------------------------------------------------------- V6

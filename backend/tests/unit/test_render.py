@@ -231,3 +231,43 @@ class TestLineRetypeset:
         # The first line's descenders (drawn first) survive the second line's erase.
         g_rows = edit.raster[second.y0 : first.y1 + 4, first.x0 : first.x1]
         assert (g_rows.mean(axis=2) < 128).any()
+
+
+def test_a_two_line_address_gives_one_operation_per_line() -> None:
+    """An address block is one mention and one fake; the planner draws each line's part of the fake on its own line."""
+    import hashlib
+
+    from test_address_join import Doc
+
+    from mlredact.config.loader import load_config
+    from mlredact.policy.addresses import join_addresses
+    from mlredact.policy.engine import decide
+    from mlredact.render.plan import plan_ops
+    from mlredact.resolve.persons import PersonResolution
+    from mlredact.surrogate.assign import SurrogateAssigner, forbidden_keys
+    from mlredact.surrogate.drbg import Chooser
+    from mlredact.surrogate.generators import SurrogateFactory
+    from support import column
+
+    cfg = load_config("client")
+    doc = Doc(column("12 Smith Street", "PENRITH NSW 2750"))
+    join = join_addresses([], doc.pages, cfg.policy)
+    decisions = decide(join.mentions, cfg.policy)
+    assert [d.mention.entity_type for d in decisions] == [EntityType.STREET_ADDRESS]
+    persons = PersonResolution({}, {}, {})
+    tokens = {t.token_id: t for line in doc.lines for t in line.tokens}
+    removed = [d.mention for d in decisions]
+    factory = SurrogateFactory(Chooser(hashlib.sha256(b"k").digest()), forbidden_keys(removed, persons))
+    assigner = SurrogateAssigner(factory, persons, tokens, layouts=join.layouts, units=join.units)
+    sur = assigner.assign(decisions)
+    ops = plan_ops(decisions, tokens, {0: doc.pages[0].geometry}, cfg.redaction, sur)[0]
+    assert len(ops) == 2 and {o.ref_id for o in ops} == {removed[0].mention_id}
+    assert all(o.kind is ActionKind.SURROGATE and o.reason == "street_address" for o in ops)
+    street, place = sorted(ops, key=lambda o: o.box.y0)
+    assert street.box.y1 <= place.box.y0 + 1
+    assert street.source_text == "12 Smith Street" and place.source_text == "PENRITH NSW 2750"
+    assert place.text is not None and place.text.endswith("NSW " + place.text.split()[-1])  # the state stays
+    assert (
+        " ".join(o.text or "" for o in sorted(ops, key=lambda o: o.box.y0)).split()
+        == " ".join(t for t in sur[removed[0].mention_id].tokens if t).split()
+    )
