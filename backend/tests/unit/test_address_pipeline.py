@@ -228,6 +228,26 @@ class TestWholeAddresses:
         assert "wattle" not in words and "penrith" in words  # the locality is kept: Joel's literal answer
         assert "address_needles" not in r.checks["V2_text"]["metrics"]
 
+    @pytest.mark.parametrize("scope", [None, "scope-0", "scope-1", "scope-2"])
+    def test_parts_mode_keeps_the_place_after_a_street_line_drawn_in_a_letter(
+        self, run: Callable[..., Run], scope: str | None
+    ) -> None:
+        """In a letter the street line is drawn as a plain surrogate, not re-typeset: the re-read reads the fake street
+        line and the kept place after it as one street address, and must leave the kept words alone (no black box)."""
+        letter = column(
+            "Ms Jane Citizen",
+            "Address: 42 Wattle Grove Road, Penrith NSW 2750",
+            "Postal address: PO Box 123, Parramatta NSW 2150",
+            "She was born in Dubbo NSW 2830 and grew up in Penrith.",
+            "She was injured at Bathurst NSW 2795 on 14 May 2023.",
+            "She flew to Sydney for review. Her depot serves postcode 2250.",
+            "Thank you.",
+        )
+        r = run(letter, overrides={"policy": {"addresses": "parts"}}, scope_id=scope)
+        released_clean(r)
+        words = r.tokens()
+        assert {"penrith", "2750", "parramatta", "2150"} <= set(words) and not {"wattle", "123"} & set(words)
+
     def test_the_trace_records_the_join(self, run: Callable[..., Run]) -> None:
         r = run(column("Address: 42 Wattle Grove Road, Penrith NSW 2750", "", "She grew up in Penrith."))
         trace = r.result.trace
@@ -358,6 +378,65 @@ class TestVerificationCatches:
         assert r.result.status is JobStatus.RELEASED, r.failed
         assert r.checks["V2_text"]["metrics"]["address_hits"] == 0
         assert r.checks["V4_residual"]["metrics"]["residual_tokens"] == 0
+
+
+# ----------------------------------------------------------------------------------------- words verification keeps
+ORDINARY_WORDS = {
+    "may": ("12 May Street", "She may return to work in June."),
+    "short": ("12 Short Street", "She is short of breath on exertion."),
+    "high": ("12 High Street", "Her blood pressure was high on review."),
+    "station": ("8 Station Street", "She walked to the station each day."),
+    "park": ("8 Park Road", "She fell in the car park."),
+    "rose": ("12 Rose Street", "Her pain score rose to 8 of 10."),
+    "bay": ("8 Smith Street, Rose", "Bed 4 in Bay 2 of the ward."),
+    "pacific": ("8 Pacific Highway", "She worked for Asia Pacific Freight."),
+}
+
+
+class TestWordsVerificationKeeps:
+    """Words the policy keeps are no leak, even when they equal a word of a replaced address, and wherever a re-typeset
+    line draws them: no hold, no fake or black box over them (FINAL_PLAN TOOL2 section 6, ruling Q2)."""
+
+    @pytest.mark.parametrize("reread", ["text", "pixel"])
+    @pytest.mark.parametrize("word", sorted(ORDINARY_WORDS))
+    def test_an_ordinary_word_equal_to_an_address_word_stays(
+        self, run: Callable[..., Run], word: str, reread: str
+    ) -> None:
+        street, prose = ORDINARY_WORDS[word]
+        place = "Bay NSW 2029" if word == "bay" else "Penrith NSW 2750"
+        r = run(column("Ms Jane Citizen", f"Address: {street}, {place}", "", prose), reread=reread)
+        released_clean(r)
+        assert word in r.tokens(), "the prose word is kept as written"
+        assert r.checks["V2_text"]["metrics"]["address_hits"] == 0
+
+    @pytest.mark.parametrize("reread", ["text", "pixel"])
+    @pytest.mark.parametrize(
+        "lines",
+        [
+            ("Name: Jane Citizen  Place of birth: Penrith", "Address: 12 Smith Street, Penrith NSW 2750"),
+            ("Address: 12 Smith Street, Penrith NSW 2750", "", "Ms Jane Citizen, Penrith."),
+        ],
+        ids=["place-of-birth-on-the-name-row", "kept-place-on-a-dense-line"],
+    )
+    def test_a_kept_place_on_a_re_typeset_line_is_exempt_wherever_it_is_drawn(
+        self, run: Callable[..., Run], lines: tuple[str, ...], reread: str
+    ) -> None:
+        """The line is drawn again from its left edge: the kept 'Penrith' after a fake of another width moves out of
+        its input box, and stays exempt by what it is."""
+        r = run(column(*lines), reread=reread)
+        released_clean(r)
+        assert r.tokens().count("penrith") == 1
+
+    @pytest.mark.parametrize("reread", ["text", "pixel"])
+    @pytest.mark.parametrize(
+        "prose", ["She was seen at Penrith's main hospital.", "She sees a Penrith-based physiotherapist."]
+    )
+    def test_a_possessive_or_hyphenated_place_on_its_own_is_no_hold(
+        self, run: Callable[..., Run], prose: str, reread: str
+    ) -> None:
+        r = run(column("Ms Jane Citizen", "Address: 12 Smith Street, Penrith NSW 2750", "", prose), reread=reread)
+        released_clean(r)
+        assert r.tokens().count("penrith") == 1
 
 
 class TestRetext:

@@ -30,6 +30,7 @@ from mlredact.verify.addresses import (
     check_address_fakes,
     reread_of,
     swapped,
+    words_on_their_own,
 )
 from mlredact.verify.checks import check_text_leak
 from mlredact.verify.needles import AddressNeedles, AddressText, count_sequences, excess, needles_of, tokens_of
@@ -88,6 +89,37 @@ class TestTokens:
         assert counts[("penrith",)] == 3 and counts[("penrith", "nsw", "2750")] == 1
         assert excess(needles, counts, {("penrith",): 3, ("penrith", "nsw", "2750"): 1}) == 0
         assert excess(needles, counts, {("penrith",): 2, ("penrith", "nsw", "2750"): 1}) == 1
+
+
+class TestWordsOnTheirOwn:
+    """Ordinary words equal to an address word are exempt positions (no V2 hold, no V4 re-plan); a word that stands
+    where an address word stands is not."""
+
+    DOC = column(
+        "Address: 12 May Street, Rose Bay NSW 2029",
+        "",
+        "She may return to work in June.",
+        "Bed 4 in Bay 2 of the ward.",
+        "She was seen at Rose Bay's clinic.",
+        "Then 14 May Avenue was closed.",
+        "Rose and Bay 2029 are two words.",
+        "The rose garden.",
+    )
+
+    def exempt(self, heights: Mapping[int, int]) -> list[str]:
+        doc = Doc(self.DOC)
+        join = _join(doc)
+        lines = [ln for p in doc.pages for ln in p.lines]
+        ids = words_on_their_own(join.units, join.targets, lines, heights, frozenset())
+        return [tok.text for ln in lines for tok in ln.tokens if tok.token_id in ids]
+
+    def test_ordinary_words_are_exempt_and_words_in_an_address_position_are_not(self) -> None:
+        # Not exempt: 'May' after a number or before a street type, 'Bay' before a postcode, "Bay's" after 'Rose':
+        # positions of an address left behind.  Exempt: the verb, a ward's bay, 'Rose' before 'and', the flower.
+        assert self.exempt({}) == ["may", "Bay", "Rose", "rose"]
+
+    def test_a_letterhead_or_footer_band_is_an_address_position(self) -> None:
+        assert self.exempt({0: 12000}) == []  # every line lies in the top 6% of so tall a page
 
 
 def _join(doc: Doc) -> AddressJoin:

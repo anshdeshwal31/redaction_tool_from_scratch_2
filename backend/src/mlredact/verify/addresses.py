@@ -21,17 +21,79 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 
 from mlredact.core.geometry import BBox
+from mlredact.core.model import Line
 from mlredact.policy.addresses import JoinedUnit, UnitTargets, fold_word
 from mlredact.surrogate.addresses import postcode_ok
 from mlredact.surrogate.exclusions import Exclusions, digit_runs
 from mlredact.surrogate.generators import canonical_state
-from mlredact.text.address import STRUCTURE_ROLES, Role
+from mlredact.text.address import STRUCTURE_ROLES, Role, canonical_street_type
 from mlredact.text.gazetteer import fold_name, in_range, range_states
 
 _GLUED = re.compile(r"^([A-Za-z.]*?)(\d{4})$")
 _OCR_DIGITS = str.maketrans("OoIlSB", "001158")
 _EDGES = ",;:()[]{}|!?\"'“”‘’"
 _POSTCODE_ROLES = frozenset({Role.POSTCODE, Role.STATE_AND_POSTCODE})
+
+
+_BAND = 0.06  # a letterhead or footer band: this share of the page height at its top and at its bottom
+_WORD = re.compile(r"\d+|[^\W\d_]+")
+
+
+# ------------------------------------------------------------------------------------------ words on their own
+def words_on_their_own(
+    units: Mapping[str, JoinedUnit],
+    targets: Mapping[str, UnitTargets],
+    lines: Sequence[Line],
+    heights: Mapping[int, int],
+    owned: AbstractSet[str],
+) -> frozenset[str]:
+    """The tokens that hold a unit's whole-token target (a suburb, street-name or building word) but stand on their own:
+    ordinary words such as 'may', 'short', 'high', 'station', 'Bay 2' or 'medical' in prose, or a place written
+    "Penrith's" or 'Penrith-based'.  Verification counts them as exempt positions, as ruling Q3 treats a street named on
+    its own: no hold on them (V2), no fake or black box drawn over them (V4).
+
+    A token counts only outside every unit and every mention (``owned``), and only when it is not in an address
+    position: a number before it (a house number), a street type, a state or a 4-digit postcode after it, another
+    target word beside it, a unit's word on its line, or a letterhead or footer band.  A word left behind by an
+    address stands in such a position, so it still counts as a leak; the compound targets do not change."""
+    whole = {w for t in targets.values() for w in t.whole}
+    if not whole:
+        return frozenset()
+    in_units = {t for u in units.values() for t in u.roles}
+    out: set[str] = set()
+    for line in lines:
+        toks = sorted(line.tokens, key=lambda t: t.word_no)
+        if any(t.token_id in in_units for t in toks):
+            continue
+        height = heights.get(line.page, 0)
+        for i, tok in enumerate(toks):
+            if tok.token_id in owned or not any(p in whole for p in _parts(tok.text)):
+                continue
+            if height and (tok.bbox.y1 <= _BAND * height or tok.bbox.y0 >= (1 - _BAND) * height):
+                continue
+            before = toks[i - 1].text if i else ""
+            after = toks[i + 1].text if i + 1 < len(toks) else ""
+            if _address_position(before, after, whole):
+                continue
+            out.add(tok.token_id)
+    return frozenset(out)
+
+
+def _parts(text: str) -> list[str]:
+    return _WORD.findall(text.replace("’", "'").casefold())
+
+
+def _address_position(before: str, after: str, whole: AbstractSet[str]) -> bool:
+    """A word between ``before`` and ``after`` stands where an address word stands."""
+    prev, nxt = _parts(before), _parts(after)
+    if prev and prev[-1].isdigit():
+        return True
+    if nxt and (nxt[0] in whole or (nxt[0].isdigit() and len(nxt[0]) == 4)):
+        return True
+    if prev and prev[-1] in whole:
+        return True
+    word = after.strip(_EDGES + ".")
+    return bool(word) and (canonical_street_type(word) is not None or canonical_state(word) is not None)
 
 
 # ------------------------------------------------------------------------------------------------------- V4
@@ -45,7 +107,9 @@ class AddressReread:
     original word -> its fake, for the words one fake covers unambiguously (a word two units fake differently is left
     out): a residual whose words all swap is re-planned with their fakes.  ``plain``: the folded words the document
     writes outside every unit and that no unit's identifying words include: a re-read unit that took such a word in
-    (a ward, a heading) did not leave it behind."""
+    (a ward, a heading) did not leave it behind.  ``line_exempt``: per re-typeset line (page, ink box), the folded words
+    of its exempt tokens: the line is drawn again from its left edge, so a kept word after a fake of another width
+    moves out of its exempt box, and is exempt by what it is instead of where it was."""
 
     targets: tuple[UnitTargets, ...] = field(default=(), repr=False)
     exempt: Mapping[int, Sequence[BBox]] = field(default_factory=dict, repr=False)
@@ -53,6 +117,7 @@ class AddressReread:
     structure: frozenset[str] = field(default=frozenset(), repr=False)
     swaps: Mapping[str, str] = field(default_factory=dict, repr=False)
     plain: frozenset[str] = field(default=frozenset(), repr=False)
+    line_exempt: Mapping[tuple[int, BBox], frozenset[str]] = field(default_factory=dict, repr=False)
 
 
 def _edges(text: str) -> tuple[str, str, str]:
@@ -82,10 +147,11 @@ def reread_of(
     fake_words: frozenset[str],
     exempt: Mapping[int, Sequence[BBox]],
     outside: Iterable[str] = (),
+    line_exempt: Mapping[tuple[int, BBox], frozenset[str]] | None = None,
 ) -> AddressReread:
     """The V4 data of a run.  ``applied``: the tokens of the unit mentions that carry a fake (a token another mention
     owns is replaced by that mention's rule); ``fakes``: unit id -> token id -> replacement ('' erases a token);
-    ``outside``: the text of the document's tokens that no unit holds."""
+    ``outside``: the text of the document's tokens that no unit holds; ``line_exempt``: see :class:`AddressReread`."""
     structure: set[str] = set()
     swap: dict[str, dict[str, str]] = {}
     for unit_id, unit in sorted(units.items()):
@@ -107,7 +173,13 @@ def reread_of(
     }
     plain = frozenset(w for text in outside if (w := fold_word(text)) and w not in identifying)
     return AddressReread(
-        tuple(targets[u] for u in sorted(targets)), exempt, fake_words, frozenset(structure), swaps, plain
+        tuple(targets[u] for u in sorted(targets)),
+        exempt,
+        fake_words,
+        frozenset(structure),
+        swaps,
+        plain,
+        dict(line_exempt or {}),
     )
 
 

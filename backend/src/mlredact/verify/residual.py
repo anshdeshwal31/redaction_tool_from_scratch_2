@@ -135,10 +135,12 @@ def find_residuals(
             continue
         if _explained(m.value, replacement_keys):
             continue
-        toks = [index[t] for t in m.token_ids]
-        if all(_inside_any(t.bbox, kept.get(t.page, ())) for t in toks):
-            continue
-        record(toks, m.entity_type, "redetect")
+        # A mention that runs on into kept words (a fake street line read with the kept place after it) leaves them.
+        record(
+            [t for t in (index[t] for t in m.token_ids) if not _inside_any(t.bbox, kept.get(t.page, ()))],
+            m.entity_type,
+            "redetect",
+        )
     for out_page in output_pages:
         for region in out_page.regions:
             if region.kind in _VISUAL_RESIDUALS and not _covered(region.bbox, planned.get(region.page, ())):
@@ -175,11 +177,24 @@ def _address_hits(
             return True
         return _covered(tok.bbox, planned.get(tok.page, ())) and fold_word(tok.text) in addresses.fake_words
 
+    retypeset = {page: [op for op in ops if op.kind is ActionKind.RETYPESET_REGION] for page, ops in planned.items()}
+
+    def exempt_on_its_line(tok: Token) -> bool:
+        """A kept word of a re-typeset line, wherever the line drew it."""
+        word = fold_word(tok.text)
+        return bool(word) and any(
+            op.ink_box is not None
+            and word in addresses.line_exempt.get((op.page, op.ink_box), ())
+            and _covered(tok.bbox, (op,))
+            for op in retypeset.get(tok.page, ())
+        )
+
     def eligible(tok: Token) -> bool:
         return (
             tok.token_id not in done
             and not covered(tok)
             and not _inside_any(tok.bbox, addresses.exempt.get(tok.page, ()))
+            and not exempt_on_its_line(tok)
         )
 
     def record(window: Sequence[Token], focus: Sequence[Token], source: str) -> None:

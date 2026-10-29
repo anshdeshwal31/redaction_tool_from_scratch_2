@@ -69,7 +69,7 @@ from mlredact.surrogate.generators import SurrogateFactory
 from mlredact.surrogate.keys import MasterKey, load_master_key
 from mlredact.surrogate.labels import assign_labels
 from mlredact.text.normalize import match_key
-from mlredact.verify.addresses import AddressFakes, AddressReread, reread_of
+from mlredact.verify.addresses import AddressFakes, AddressReread, reread_of, words_on_their_own
 from mlredact.verify.checks import CheckResult, check_integrity, check_structure, check_text_leak
 from mlredact.verify.needles import MASK, AddressNeedles, AddressText, needles_of
 from mlredact.verify.residual import find_residuals, residual_ops, residual_result
@@ -539,6 +539,14 @@ class Redactor:
         exempt_ids = frozenset(join.exempt.kept_places) | {
             t for d in decisions if d.action is ActionKind.KEEP for t in d.mention.token_ids
         }
+        if join.units:  # ordinary words that equal an address word ('may', 'high', 'Bay 2') are no leak
+            exempt_ids |= words_on_their_own(
+                join.units,
+                join.targets,
+                lines,
+                {i: g.height_px for i, g in geoms.items()},
+                {t for d in decisions for t in d.mention.token_ids},
+            )
         replacement = {
             tid: text
             for d in decisions
@@ -576,6 +584,15 @@ class Redactor:
                 fake_words,
                 self._boxes(exempt_ids, tokens, geoms),
                 (tok.text for tid, tok in tokens.items() if tid not in texts),
+                {
+                    key: words
+                    for key, line_tokens in ink.items()
+                    if (
+                        words := frozenset(
+                            w for t in line_tokens if t.token_id in exempt_ids and (w := fold_word(t.text))
+                        )
+                    )
+                },
             )
             if self.config.policy.addresses == "whole" and self.config.verification.re_ocr
             else None
@@ -661,9 +678,10 @@ class Redactor:
         geoms: Mapping[int, Any],
         places: Collection[str] = (),
     ) -> dict[int, list[BBox]]:
-        """Padded boxes of mentions kept *by override* (their type is normally acted on).  Under ``addresses: whole``
-        also the kept LOCALITY and POSTCODE mentions and the places mentioned on their own (``places``: the join's
-        record, less what a mention replaces), which verification leaves alone."""
+        """Padded boxes of mentions kept *by override* (their type is normally acted on), and of the kept LOCALITY and
+        POSTCODE mentions (under ``addresses: parts`` too, where a re-read fake street line runs on into the kept place
+        after it).  Under ``addresses: whole`` also the places mentioned on their own (``places``: the join's record,
+        less what a mention replaces).  Verification leaves them alone."""
         actions = self.config.policy.entity_actions
         whole = self.config.policy.addresses == "whole"
         ids: set[str] = set(places) if whole else set()
@@ -672,7 +690,7 @@ class Redactor:
                 continue
             etype = d.mention.entity_type
             by_type = actions[etype] is ActionKind.KEEP
-            if by_type and not (whole and etype in (EntityType.LOCALITY, EntityType.POSTCODE)):
+            if by_type and etype not in (EntityType.LOCALITY, EntityType.POSTCODE):
                 continue
             ids.update(d.mention.token_ids)
         return self._boxes(ids, tokens, geoms)
