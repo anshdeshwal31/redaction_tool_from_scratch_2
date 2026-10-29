@@ -1037,6 +1037,33 @@ class TestNeverRaises:
         assert len({f.split(",")[0] for _o, f in out}) == 8  # different originals, different fakes
 
 
+class TestNoPlaceFakeContainsAnOriginal:
+    """V2 reads a removed value of 4+ letters inside any word as a leak, so a fake suburb or street name never contains
+    one ('Hill' in 'Hillsdale', 'Orange' in 'Orangeville')."""
+
+    ORIGINALS = ("Hill", "Orange", "Wood", "Park")
+
+    def test_fake_localities_and_street_names_contain_no_original(self) -> None:
+        keys = [match_key(o) for o in self.ORIGINALS]
+        pools = load_pools()
+        # The pools hold names that contain one, so the rule is what keeps them out.
+        assert any(k in match_key(loc.name) for loc in pools.localities_in("NSW") for k in keys)
+        assert any(k in match_key(w) for w in pools.street_names for k in keys)
+        f = factory(self.ORIGINALS)
+        for i in range(300):
+            loc = f.locality("x", "NSW", key=f"k{i}")
+            street = f.street_name(f"k{i}")
+            assert loc.state == "NSW"
+            assert not any(k in match_key(loc.name) for k in keys), loc.name
+            assert not any(k in match_key(street) for k in keys), street
+
+    def test_an_original_of_three_letters_does_not_narrow_the_choice(self) -> None:
+        pools = load_pools()
+        f, plain = factory(("Ash",)), factory()
+        assert [f.street_name(f"k{i}") for i in range(50)] == [plain.street_name(f"k{i}") for i in range(50)]
+        assert any("ash" in match_key(w) for w in pools.street_names)
+
+
 class TestAddressFakes:
     def test_variants_of_one_address_give_one_fake(self) -> None:
         spellings = [

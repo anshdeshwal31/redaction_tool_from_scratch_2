@@ -223,7 +223,13 @@ class SurrogateFactory:
         """A person-name candidate contains no alphabetic original key of 4+ letters (V2's rule) and no registered
         name part of the document's people."""
         key = match_key(candidate)
-        return not any(k in key for k in self._contained) and not any(k in key for k in self._name_parts)
+        return self.not_containing(candidate) and not any(k in key for k in self._name_parts)
+
+    def not_containing(self, text: str) -> bool:
+        """True when ``text`` contains no alphabetic original key of 4+ letters: V2 reads such a key inside any word as
+        a leak ('Hill' in 'Hillsdale', 'Orange' in 'Orangeville')."""
+        key = match_key(text)
+        return not any(k in key for k in self._contained)
 
     def _unique_pool(self, domain: str, value_key: str, pool: Sequence[str], *, names: bool = False) -> str:
         """Pick from a pool: a few keyed random draws, then a keyed deterministic sweep of the whole
@@ -450,12 +456,12 @@ class SurrogateFactory:
     ) -> Locality:
         """A fake locality of ``state`` and ``klass`` ('metro' or 'regional'; None for any) from the suburb list's
         ``fake_pool`` rows, chosen from ``key`` (default: the original ``value``).  ``accept`` filters rows (the fake
-        rules); the original values of the document are never offered.  An empty choice widens (the class, then the
-        state) and never raises."""
+        rules); the original values of the document, and names that contain one, are never offered.  An empty choice
+        widens (the class, then the state) and never raises."""
         k = key if key is not None else match_key(value)
 
         def ok(loc: Locality) -> bool:
-            return self.not_original(loc.name) and (accept is None or accept(loc))
+            return self.not_original(loc.name) and self.not_containing(loc.name) and (accept is None or accept(loc))
 
         for st, kl in ((state, klass), (state, None), (None, None)):
             hit = self._pick(f"locality:{st or 'any'}:{kl or 'any'}", k, self._pools.localities_in(st, kl), ok)
@@ -470,9 +476,14 @@ class SurrogateFactory:
         return self._unique("postcode", key, lambda a: lead + self._c.digit_string("postcode", key, 3, a))
 
     def street_name(self, key: str, accept: Callable[[str], bool] | None = None) -> str:
-        """A street name from the pool, chosen from ``key``: no uniqueness across originals, and never an error."""
+        """A street name from the pool, chosen from ``key``: no uniqueness across originals, none that contains an
+        original word, and never an error."""
         pool = self._pools.street_names
-        hit = self._pick("street", key, pool, lambda w: self.not_original(w) and (accept is None or accept(w)))
+
+        def ok(w: str) -> bool:
+            return self.not_original(w) and self.not_containing(w) and (accept is None or accept(w))
+
+        hit = self._pick("street", key, pool, ok)
         return hit if hit is not None else pool[self._c.index("street:last", key, len(pool))]
 
     def number_like(self, domain: str, value: str) -> str:
