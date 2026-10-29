@@ -516,6 +516,40 @@ class TestPendingCases:
         assert unit.kind is UnitKind.PLACE_ONLY
 
 
+# -------------------------------------------------------------------------------------- addresses cut by a line wrap
+WRAPPED = [
+    ("The claimant lives at", "Unit 4, 23 Lomandra Street, Chermside QLD 4032", "with her two children."),
+    ("Please send all correspondence to", "PO Box 123, Chermside QLD 4032", "as soon as possible."),
+    ("The claimant now resides in", "Castle Hill NSW 2154", "with her husband and children."),
+    ("She was injured on", "Victoria Road, Ryde NSW 2112", "while walking to work."),
+    ("She now resides in", "Penrith NSW 2750", "with her mother and sister."),
+    ("Please reply to", "Locked Bag 5000, Parramatta NSW 2124", "by the end of the month."),
+    ("Re: Jane Citizen,", "12 Smith Street, Penrith NSW 2750", "- Claim 123456 is now being assessed by us."),
+]
+
+
+def _wraps() -> list[tuple[str, str, str]]:
+    out = []
+    for before, address, after in WRAPPED:
+        words = address.split()
+        for k in range(1, len(words)):
+            out.append((f"{before} {' '.join(words[:k])}", f"{' '.join(words[k:])} {after}", address))
+    return out
+
+
+@pytest.mark.parametrize(("first", "second", "address"), _wraps())
+def test_an_address_cut_by_a_line_wrap_in_running_text_is_one_unit(first: str, second: str, address: str) -> None:
+    """In justified prose a line may wrap inside an address: the end of the line and the start of the next are read as
+    one line, so the unit is the same wherever the wrap falls."""
+    doc, result = run_join([first, second])
+    assert unit_texts(doc, result) == [address]
+
+
+def test_a_place_of_birth_cut_by_a_line_wrap_stays_kept() -> None:
+    doc, result = run_join(["She was born in Penrith", "NSW 2750 and grew up there."])
+    assert unit_texts(doc, result) == []
+
+
 # ------------------------------------------------------------------------------------- shapes found in the review
 class TestMoreShapes:
     """Address shapes the case table does not hold, each replaced whole (fictional lines)."""

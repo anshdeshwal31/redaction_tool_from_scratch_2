@@ -520,6 +520,96 @@ def _layout_part(run: Sequence[Pos], spec: _Spec) -> tuple[UnitPart, int | None]
     return (UnitPart.JOINED if not all(at_place) else UnitPart.PLACE), start
 
 
+_WRAP_WORDS = 10  # the words of each line a wrapped address may hold
+_WRAP_GAP = 0.8  # line heights between a line and the next one of its paragraph
+_SENTENCE_END = (".", ";", "!", "?")
+
+
+def _prose(line: AddrLine) -> bool:
+    """Running text: three or more lower-case words (the grammar's test)."""
+    return sum(1 for w in line.words if w.text[:1].islower() and len(w.text) >= 2 and w.text.isalpha()) >= 3
+
+
+def _wrap_pairs(lines: Sequence[AddrLine]) -> list[int]:
+    """The lines of running text whose sentence goes on at the start of the next line: the next line of the same page,
+    frame and column, at most ``_WRAP_GAP`` line heights below, after a line that ends no sentence."""
+    out: list[int] = []
+    for li in range(len(lines) - 1):
+        a, b = lines[li], lines[li + 1]
+        if a.page != b.page or a.frame != b.frame or not a.words or not b.words:
+            continue
+        height = max(1.0, a.y1 - a.y0)
+        if not 0 <= b.y0 - a.y1 <= _WRAP_GAP * height or min(a.x1, b.x1) - max(a.x0, b.x0) <= 0:
+            continue
+        if a.words[-1].text.rstrip("\"'’”)").endswith(_SENTENCE_END) or not (_prose(a) or _prose(b)):
+            continue
+        out.append(li)
+    return out
+
+
+def _add_wrapped_units(specs: list[_Spec], lines: Sequence[AddrLine], gazetteer: Gazetteer | None) -> None:
+    """An address in running text that a line wrap cuts ('lives at Unit 4, 23 Lomandra' / 'Street, Chermside QLD 4032'):
+    the end of the line and the start of the next are read as one line, and a unit that crosses the wrap is added.  A
+    sentence break stays a boundary."""
+    for li in _wrap_pairs(lines):
+        a, b = lines[li], lines[li + 1]
+        head = [(li, wi) for wi in range(max(0, len(a.words) - _WRAP_WORDS), len(a.words))]
+        tail = [(li + 1, wi) for wi in range(min(len(b.words), _WRAP_WORDS))]
+        _add_virtual_units(specs, lines, [head, tail], gazetteer, "wrapped_prose")
+
+
+def _add_virtual_units(
+    specs: list[_Spec],
+    lines: Sequence[AddrLine],
+    pieces: Sequence[Sequence[Pos]],
+    gazetteer: Gazetteer | None,
+    route: str,
+) -> None:
+    """Read the words of ``pieces`` (runs of positions of different lines) as one line and add each unit that crosses
+    two pieces.  It takes the place of the grammar's units inside it (a street line alone, a place alone); when one
+    unit already holds all its words, or a unit overlaps only part of it, nothing changes."""
+    back: list[Pos] = []
+    words: list[AddrWord] = []
+    x = 0.0
+    for piece in pieces:
+        for li, wi in piece:
+            w = lines[li].words[wi]
+            width = max(1.0, w.x1 - w.x0)
+            words.append(AddrWord(w.text, x, x + width, w.blocked))
+            back.append((li, wi))
+            x += width + 4.0
+    if not words:
+        return
+    first = lines[pieces[0][0][0]]
+    line = dataclasses.replace(first, words=tuple(words), x0=0.0, x1=x)
+    taken = {p: s for s in specs for p in s.roles}
+    for u in parse_document([line], gazetteer).units:
+        roles = {back[wi]: role for (_li, wi), role in u.roles.items()}
+        if len({k for k, piece in enumerate(pieces) if set(piece) & roles.keys()}) < 2:
+            continue  # within one line: the grammar reads it there
+        inside = {id(s): s for p in roles if (s := taken.get(p)) is not None}
+        if any(roles.keys() <= s.roles.keys() or not s.roles.keys() <= roles.keys() for s in inside.values()):
+            continue
+        spec = _spec_of(
+            dataclasses.replace(
+                u,
+                uid=f"{u.uid}.{route}.{back[0][0]}",
+                roles=roles,
+                street=tuple(dict.fromkeys(back[p[1]] for p in u.street if roles[back[p[1]]] is u.roles[p])),
+                locality=tuple(dict.fromkeys(back[p[1]] for p in u.locality)),
+                partial=tuple(dataclasses.replace(w, pos=back[w.pos[1]]) for w in u.partial),
+                form_parts=(),
+                repeat_of=None,
+            )
+        )
+        spec.how = (*spec.how, route)
+        for s in inside.values():
+            specs.remove(s)
+            spec.uids |= s.uids
+        specs.append(spec)
+        taken.update((p, spec) for p in roles)
+
+
 def _apply_pairs(
     specs: list[_Spec],
     pairs: Mapping[str, str | None],
@@ -700,6 +790,7 @@ def join_addresses(
     lines = _addr_lines(pages, blocked, band_fraction, bands or {}, boxes or {})
     parse = parse_document(lines, gazetteer)
     specs = [_spec_of(u) for u in parse.units if repeat_sweep or "repeat_sweep" not in u.how]
+    _add_wrapped_units(specs, lines, gazetteer)
     if pairs:
         _apply_pairs(specs, pairs, known, doc, lines, gazetteer)
     specs.sort(key=lambda s: min(s.roles))

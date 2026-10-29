@@ -134,6 +134,23 @@ class TestWholeAddresses:
         assert sum(1 for v in fake.values() if v) >= 4
         assert "nsw" in r.tokens()  # the state word stays (address_state: keep)
 
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("The claimant lives at Unit 4, 23 Lomandra", "Street, Chermside QLD 4032 with her two children."),
+            ("Please reply to Locked", "Bag 5000, Parramatta NSW 2124 by the end of the month."),
+            ("The claimant now resides in Castle", "Hill NSW 2154 with her husband and children."),
+        ],
+    )
+    def test_an_address_cut_by_a_line_wrap_is_replaced_whole(
+        self, run: Callable[..., Run], first: str, second: str
+    ) -> None:
+        r = run(column("Ms Jane Citizen", "", first, second))
+        released_clean(r)
+        words = set(r.tokens())
+        assert not {"lomandra", "4032", "23", "5000", "2124", "parramatta", "castle", "2154"} & words
+        assert r.result.trace is not None and len(r.result.trace.units) == 1
+
     def test_an_address_over_a_page_break_is_one_unit(self, run: Callable[..., Run]) -> None:
         lines = [
             GridLine("Please reply to", 0, 0),

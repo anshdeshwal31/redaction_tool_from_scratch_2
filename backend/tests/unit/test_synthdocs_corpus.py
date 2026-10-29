@@ -206,9 +206,9 @@ def test_a_place_inside_an_address_takes_the_street_address_action_and_one_on_it
     assert {v["action"] for v in alone} <= {"keep"}
 
 
-# Values of an address that the pipeline still leaves readable, by document.  A numbered street name split over a
-# wrapped line of running text ("She lives at 23 Lomandra" / "Street, Chermside QLD 4032.") is read as a place alone.
-KNOWN_LEAKS = {"low-03-solicitor-instruction-letter": ["23 Lomandra Street"]}
+# Values of an address that the pipeline still leaves readable, by document (none: a numbered street name split over
+# a wrapped line of running text, "She lives at 23 Lomandra" / "Street, Chermside QLD 4032.", is one unit now).
+KNOWN_LEAKS: dict[str, list[str]] = {}
 
 
 @pytest.mark.parametrize("slug", sorted(SPECS))
