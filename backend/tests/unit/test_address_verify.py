@@ -365,11 +365,19 @@ def test_v4_a_correct_output_is_clean_and_a_leaking_one_is_residual(case: dict[s
 class TestExplained:
     def test_a_mention_within_one_fake_is_explained_but_one_that_contains_a_fake_is_not(self) -> None:
         fake = ["91oceanlanekempseynsw2440"]
-        assert _explained("91 Ocean Lane, Kempsey NSW 2440", fake)
-        assert _explained("Ocean Lane", fake)
-        assert not _explained("Address: 91 Ocean Lane, Penrith NSW 2750", fake)
-        assert not _explained("Address: 91 Ocean Lane, Kempsey NSW 2440", fake)
-        assert not _explained("Ms", fake)
+        street = EntityType.STREET_ADDRESS
+        assert _explained("91 Ocean Lane, Kempsey NSW 2440", fake, street)
+        assert _explained("Ocean Lane", fake, street)
+        assert not _explained("Address: 91 Ocean Lane, Penrith NSW 2750", fake, street)
+        assert not _explained("Address: 91 Ocean Lane, Kempsey NSW 2440", fake, street)
+        assert not _explained("Ms", fake, street)
+
+    def test_a_mention_of_another_type_that_contains_a_fake_is_explained(self) -> None:
+        """OCR glues a fake phone to the next label and re-reads the run as one phone (syn-mrc in oracle_regions)."""
+        fake = ["0491570760"]
+        assert _explained("0491 570 760Email:", fake, EntityType.PHONE)
+        assert not _explained("0491 570 760Email:", fake, EntityType.STREET_ADDRESS)
+        assert not _explained("0412 345 678", fake, EntityType.PHONE)
 
 
 class TestSwaps:

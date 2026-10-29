@@ -27,7 +27,7 @@ from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, Region
 from mlredact.detect.engine import default_detectors
 from mlredact.detect.fusion import fuse
 from mlredact.detect.propagate import Target, propagate
-from mlredact.policy.addresses import fold_word, join_addresses
+from mlredact.policy.addresses import ADDRESS_TYPES, fold_word, join_addresses
 from mlredact.text.address import STRUCTURE_ROLES, KeptKind
 from mlredact.text.normalize import match_key
 from mlredact.text.views import TextView, build_views
@@ -63,17 +63,20 @@ def _covered(box: BBox, ops: Sequence[RenderOp]) -> bool:
     return box.area > 0 and covered / box.area >= _COVERED_FRACTION
 
 
-def _explained(value: str, replacement_keys: Sequence[str]) -> bool:
+def _explained(value: str, replacement_keys: Sequence[str], etype: EntityType) -> bool:
     """A re-detected mention that lies within one of our own surrogates / labels is not residual.
 
     Safe because V5 guarantees no surrogate equals or nearly equals any original value; the
-    removed-value probe (which this never suppresses) still catches every visible original.  A mention that merely
-    contains a surrogate is not explained: 'Address: 40 Bridge Street, Penrith NSW 2750' with only the street line
-    replaced contains the fake street line, and the place after it is still there."""
+    removed-value probe (which this never suppresses) still catches every visible original.  An address mention that
+    merely contains a surrogate is not explained: 'Address: 40 Bridge Street, Penrith NSW 2750' with only the street
+    line replaced contains the fake street line, and the place after it is still there.  A mention of another type is:
+    OCR glues a fake phone to the next label ('0491 570 760Email:') and re-reads the run as one phone."""
     key = match_key(value)
     if len(key) < 3:
         return False
-    return any(key in r for r in replacement_keys)
+    if any(key in r for r in replacement_keys):
+        return True
+    return etype not in ADDRESS_TYPES and any(len(r) >= 3 and r in key for r in replacement_keys)
 
 
 def _inside_any(box: BBox, regions: Sequence[BBox]) -> bool:
@@ -133,7 +136,7 @@ def find_residuals(
             continue
         if not any(e.strength is EvidenceStrength.STRONG for e in m.evidence):
             continue
-        if _explained(m.value, replacement_keys):
+        if _explained(m.value, replacement_keys, m.entity_type):
             continue
         # A mention that runs on into kept words (a fake street line read with the kept place after it) leaves them.
         record(
