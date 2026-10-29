@@ -54,6 +54,9 @@ OTHER_COUNTRIES: Final = frozenset(
         ("germany",),
         ("canada",),
         ("usa",),
+        ("us",),
+        ("uk",),
+        ("nz",),
         ("united", "states"),
         ("south", "africa"),
         ("malaysia",),
@@ -468,6 +471,11 @@ POSTCODE_UK_OUT: Final = re.compile(r"^[A-Z]{1,2}\d[A-Z\d]?$")
 POSTCODE_UK_IN: Final = re.compile(r"^\d[A-Z]{2}$")
 POSTCODE_CA_OUT: Final = re.compile(r"^[A-Z]\d[A-Z]$")
 POSTCODE_CA_IN: Final = re.compile(r"^\d[A-Z]\d$")
+# An Irish Eircode: a routing key ('D02', 'D6W') and a unique identifier ('X285').
+POSTCODE_IE_OUT: Final = re.compile(r"^(?:[AC-FHKNPRTV-Y]\d{2}|D6W)$")
+POSTCODE_IE_IN: Final = re.compile(r"^[0-9AC-FHKNPRTV-Y]{4}$")
+# Country abbreviations: read only in upper case or dotted ('UK', 'U.S.A.'), never the pronoun 'us'.
+COUNTRY_ABBREVIATIONS: Final = frozenset({("us",), ("uk",), ("nz",), ("usa",)})
 
 # ----------------------------------------------------------------------------------------------------- labels
 # Form and field labels (compared on normalised words: lower case, ':' and '.' removed, '/' kept).

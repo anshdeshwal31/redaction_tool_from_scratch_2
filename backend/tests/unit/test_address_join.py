@@ -675,6 +675,28 @@ class TestMoreShapes:
         assert [k.kind for k in result.kept] == [KeptKind.PLACE_AFTER_CUE]
 
     @pytest.mark.parametrize(
+        ("texts", "unit"),
+        [
+            (["He moved to 10 High Street, Oxford OX1 4AA, UK in 2019."], "10 High Street, Oxford OX1 4AA, UK"),
+            (["Address: 120 Main Street, Springfield 62701, U.S.A."], "120 Main Street, Springfield 62701, U.S.A."),
+            (["Ms Jane Citizen", "12 Queen Street", "Auckland 1010", "NZ"], "12 Queen Street Auckland 1010 NZ"),
+            (["Address: 4 Grafton Street, Dublin D02 X285, Ireland"], "4 Grafton Street, Dublin D02 X285, Ireland"),
+            (["She now lives at 12 Queen Street, Auckland 1010, NZ."], "12 Queen Street, Auckland 1010, NZ."),
+            (["10 Downing Street, London SW1A 2AA, UK"], "10 Downing Street, London SW1A 2AA, UK"),
+        ],
+    )
+    def test_an_overseas_address_with_a_country_abbreviation_or_an_eircode(self, texts: list[str], unit: str) -> None:
+        doc, result = run_join(texts)
+        assert unit_texts(doc, result) == [unit]
+        (joined,) = result.units.values()
+        assert joined.overseas and joined.key.state is None, "never an Australian state for an overseas address"
+
+    def test_the_pronoun_us_is_no_country(self) -> None:
+        _doc, result = run_join(["Please send it to us at 12 Smith Street, Penrith NSW 2750."])
+        (joined,) = result.units.values()
+        assert not joined.overseas and joined.key.state == "NSW"
+
+    @pytest.mark.parametrize(
         ("line", "unit"),
         [
             ("L4/123 George St, Sydney NSW 2000", "L4/123 George St, Sydney NSW 2000"),

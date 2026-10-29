@@ -11,10 +11,13 @@ from mlredact.text.address.labels import LabelStage
 from mlredact.text.address.model import Pos, Role, UnitKind
 from mlredact.text.address.tables import (
     COUNTRY,
+    COUNTRY_ABBREVIATIONS,
     GLUED,
     OTHER_COUNTRIES,
     POSTCODE_CA_IN,
     POSTCODE_CA_OUT,
+    POSTCODE_IE_IN,
+    POSTCODE_IE_OUT,
     POSTCODE_ONE_WORD,
     POSTCODE_UK_IN,
     POSTCODE_UK_OUT,
@@ -36,11 +39,18 @@ class LineStart:
 
 
 def foreign_country_at(ws: list[Word], k: int) -> int | None:
-    """The last word of a foreign country name starting at word ``k`` (title or upper case), or None."""
+    """The last word of a foreign country name starting at word ``k`` (title or upper case; an abbreviation such as
+    'UK', 'NZ' or 'U.S.A.' in upper case or dotted), or None."""
     for m in (2, 1):
         run = ws[k : k + m]
-        if len(run) == m and tuple(w.lo for w in run) in OTHER_COUNTRIES and all(w.cap for w in run):
-            return k + m - 1
+        if len(run) != m or not all(w.cap for w in run):
+            continue
+        key = tuple(w.lo.replace(".", "") for w in run)
+        if key not in OTHER_COUNTRIES:
+            continue
+        if key in COUNTRY_ABBREVIATIONS and not all(w.upper or "." in w.b for w in run):
+            continue
+        return k + m - 1
     return None
 
 
@@ -54,8 +64,10 @@ def postcode_before(ws: list[Word], p: int) -> tuple[int, int] | None:
         return p, p
     if p >= 1:
         out_code = ws[p - 1].b
-        if (POSTCODE_UK_OUT.fullmatch(out_code) and POSTCODE_UK_IN.fullmatch(b)) or (
-            POSTCODE_CA_OUT.fullmatch(out_code) and POSTCODE_CA_IN.fullmatch(b)
+        if (
+            (POSTCODE_UK_OUT.fullmatch(out_code) and POSTCODE_UK_IN.fullmatch(b))
+            or (POSTCODE_CA_OUT.fullmatch(out_code) and POSTCODE_CA_IN.fullmatch(b))
+            or (POSTCODE_IE_OUT.fullmatch(out_code) and POSTCODE_IE_IN.fullmatch(b))
         ):
             return p - 1, p
     return None
@@ -115,7 +127,7 @@ class PlaceStage(LabelStage):
             if (
                 span is not None
                 and span[0] >= 1
-                and (span[0] != span[1] or len(ws[n - 1].b) >= 5)
+                and (span[0] != span[1] or len(ws[n - 1].b) >= 5 or self._foreign_line_below(ln))
                 and ws[span[0] - 1].name
                 and state_at(ws, span[0] - 1, ocr=True) is None
             ):
@@ -327,9 +339,15 @@ class PlaceStage(LabelStage):
                 return run
         return []
 
+    def _foreign_line_below(self, ln: Line) -> bool:
+        """A foreign country alone on the line below: a four-digit code above it is an overseas postcode ('Auckland
+        1010' over 'NZ'), not an Australian one."""
+        return self.country_line_below(ln, foreign=True) is not None
+
     def country_line_below(self, ln: Line, *, foreign: bool) -> Line | None:
-        """The line below ``ln`` holding only a country: 'Australia', or (``foreign``) a foreign country name."""
-        nb = self.geo.below(ln)
+        """The line below ``ln`` holding only a country: 'Australia', or (``foreign``) a foreign country name.  A line
+        that holds a country alone may sit a little lower than a block's other lines (up to 1.2 line heights)."""
+        nb = self.geo.below(ln, max_gap=1.2)
         if nb is None or not nb.words:
             return None
         if not foreign:
