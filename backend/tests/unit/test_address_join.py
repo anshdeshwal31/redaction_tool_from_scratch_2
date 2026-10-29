@@ -630,6 +630,51 @@ class TestMoreShapes:
         assert unit_texts(doc, result) == []
 
     @pytest.mark.parametrize(
+        "texts",
+        [
+            ["Since the accident she moved to Penrith NSW 2750 with her mother."],
+            ["After the injury he relocated to Penrith NSW 2750 last year."],
+            ["She was born in 1980 and grew up at Penrith NSW 2750 with her family."],
+            ["Ms Jane Citizen", "Personal Injury Lawyers", "PENRITH NSW 2750"],
+            ["Mr John Citizen", "c/- Accident Claims Pty Ltd", "PENRITH NSW 2750"],
+            ["Injury Management Advisor", "Penrith NSW 2750"],
+            ["Workplace Injury Management", "PENRITH NSW 2750"],
+            ["Injured worker, Penrith NSW 2750"],
+        ],
+    )
+    def test_a_place_kind_word_out_of_reach_keeps_no_residence(self, texts: list[str]) -> None:
+        """Owner ruling 2 keeps a place right after a label or phrase naming its kind; a residence further on in the
+        sentence, or under a firm's or an occupation's name, is an address."""
+        doc, result = run_join(texts)
+        assert [doc.text_of(list(u.roles)) for u in result.units.values()] == [
+            texts[-1]
+            .split(" with")[0]
+            .split(" last")[0]
+            .split("Injured worker, ")[-1]
+            .split(" at ")[-1]
+            .split(" to ")[-1]
+        ]
+        assert not [k for k in result.kept if k.kind is KeptKind.PLACE_AFTER_CUE]
+
+    @pytest.mark.parametrize(
+        "texts",
+        [
+            ["Place of injury: Penrith NSW 2750"],
+            ["Date and place of birth: 12 June 1980, Penrith NSW 2750"],
+            ["Injured 12 June, Penrith NSW 2750"],
+            ["She was born in Penrith NSW 2750."],
+            ["Declared at Penrith NSW 2750"],
+            ["The accident occurred in Penrith NSW 2750."],
+            ["Accident location", "Penrith NSW 2750"],
+            ["Place of injury (suburb)", "Penrith NSW 2750"],
+        ],
+    )
+    def test_a_place_right_after_its_kind_stays_kept(self, texts: list[str]) -> None:
+        _doc, result = run_join(texts)
+        assert not result.units
+        assert [k.kind for k in result.kept] == [KeptKind.PLACE_AFTER_CUE]
+
+    @pytest.mark.parametrize(
         ("line", "unit"),
         [
             ("L4/123 George St, Sydney NSW 2000", "L4/123 George St, Sydney NSW 2000"),

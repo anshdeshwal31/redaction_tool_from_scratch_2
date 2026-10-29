@@ -15,15 +15,21 @@ from mlredact.text.address.model import BoxRole
 from mlredact.text.address.state import ParseState
 from mlredact.text.address.tables import (
     BOXNUM,
+    CUE_FILLERS,
+    CUE_REACH,
     LABEL_FAMILY,
     LABEL_MODS,
     LABEL_QUALS,
     LABELS,
+    MONTHS,
     NUMBERING,
+    OCC_STOP,
     OTHER_LABELS,
     PHRASE_CUES,
     PLACE_KIND_CUES,
+    PLACE_LABEL_WORDS,
     RESIDENCE_CUES,
+    TITLES,
 )
 from mlredact.text.address.words import Line, Word, pc_value, state_at
 
@@ -214,36 +220,40 @@ class LabelStage(ParseState):
         return self._cell_cue(ln)
 
     def _cue_scan(self, ln: Line) -> list[int]:
-        """For each word, the outcome of scanning backwards from it for a place-kind cue, as the grammar defines it:
-        the word before is checked for a cue; every earlier word first for a sentence stop."""
+        """For each word, the outcome of scanning backwards from it for a place-kind cue (owner ruling 2: a place right
+        after a label or phrase naming another kind of place).  The scan reaches back at most ``CUE_REACH`` words, over
+        fillers only (prepositions and articles, numbers and month names, event verbs, a place's label words: 'Date
+        and place of birth: 12 June 1980, X', 'The accident occurred in X'); any other word ends it as no cue, so 'Since
+        the accident she moved to X' or 'Personal Injury Lawyers, X' is no place of another kind.  A residence word
+        ends it as no cue; a sentence stop or the line start ends it unresolved (a label cell or line may still
+        name the place's kind)."""
         ws = ln.words
         n = len(ws)
         letters = [_LETTERS.sub("", w.text.lower()) for w in ws]
         kind = [lo in PLACE_KIND_CUES for lo in letters]
         resid = [lo in RESIDENCE_CUES for lo in letters]
+        filler = [
+            not lo or lo in CUE_FILLERS or lo in MONTHS or any(c.isdigit() for c in w.text)
+            for lo, w in zip(letters, ws, strict=True)
+        ]
         stop = [w.sbreak and not w.label for w in ws]
-        # g[k]: the outcome of scanning from word k downwards (k is not the word right before the start)
-        g = [_BREAK] * (n + 1)  # g[k + 1] holds the outcome for word k; g[0] is word -1
-        for k in range(n):
-            if stop[k]:
-                g[k + 1] = _BREAK
-            elif kind[k]:
-                g[k + 1] = _KIND
-            elif resid[k]:
-                g[k + 1] = _NONE
-            else:
-                g[k + 1] = g[k]
         out = [_BREAK] * n
         for start in range(n):
-            k = start - 1
-            if k < 0 or stop[k]:
-                out[start] = _BREAK  # the sentence ended right before the place
-            elif kind[k]:
-                out[start] = _KIND
-            elif resid[k]:
-                out[start] = _NONE
+            got = _BREAK
+            for k in range(start - 1, max(-1, start - 1 - CUE_REACH), -1):
+                if stop[k]:
+                    got = _BREAK  # the sentence ended before the place
+                    break
+                if kind[k]:
+                    got = _KIND
+                    break
+                if resid[k] or not filler[k]:
+                    got = _NONE
+                    break
             else:
-                out[start] = g[k]  # words k - 1 and below: g[(k - 1) + 1]
+                if start - CUE_REACH > 0:
+                    got = _NONE  # out of reach
+            out[start] = got
         return out
 
     def _cell_cue(self, ln: Line) -> bool:
@@ -258,10 +268,20 @@ class LabelStage(ParseState):
             if o.words[-1].sbreak:
                 continue  # a finished sentence is no label ('She was injured on Victoria Road.')
             txt = _NON_LETTER_SPACE.sub(" ", o.text.lower()).split()
-            if any(t in PLACE_KIND_CUES for t in txt) and len(txt) <= 6:
-                result = True
+            if not txt or len(txt) > 6:
+                continue
+            if any(t in RESIDENCE_CUES for t in txt):
                 break
-            if any(t in RESIDENCE_CUES for t in txt) and len(txt) <= 6:
+            # A label: it ends with a colon or a dash, or with the cue or a place's label word, and holds no
+            # organisation, occupation or public-body word and no title ('Personal Injury Lawyers', 'Injury Management
+            # Advisor' are a firm and an occupation, and the place under them is replaced).
+            labelled = o.text.rstrip().endswith((":", "-", "–")) or txt[-1] in PLACE_KIND_CUES | PLACE_LABEL_WORDS
+            if (
+                labelled
+                and any(t in PLACE_KIND_CUES for t in txt)
+                and not any(t in OCC_STOP or t in TITLES for t in txt)
+            ):
+                result = True
                 break
         self._cell_cues[ln.li] = result
         return result

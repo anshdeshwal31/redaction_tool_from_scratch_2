@@ -421,8 +421,22 @@ PLACE_KIND_CUES: Final = frozenset(
 RESIDENCE_CUES: Final = frozenset(
     """
     resides reside residing resided lives live living lived address addresses residence residential postal home
+    moved moving relocated relocating returned returning grew settled stays stay stayed staying
     """.split()
 )
+# The words that may stand between a place-kind cue and its place ('Place of birth - City: Parramatta', 'The accident
+# occurred in Ryde'): prepositions and articles, event verbs, the label words of a place.  Any other word ends the
+# cue's reach, and the cue reaches back at most CUE_REACH words.
+CUE_FILLERS: Final = frozenset(
+    """
+    in at on of the a an near to from within around outside into onto by and its
+    occurred occur occurs happened happen took take was were is be been had
+    place date location site details suburb town city locality state country
+    """.split()
+)
+CUE_REACH: Final = 6
+# The last words of a label cell or line that names a place ('Accident location', 'Place of injury (suburb)').
+PLACE_LABEL_WORDS: Final = frozenset({"location", "place", "site", "details", "suburb", "town", "city", "locality"})
 PHRASE_CUES: Final = frozenset(
     {"lives", "living", "lived", "resides", "residing", "resided", "reside", "located", "situated", "based"}
 )
