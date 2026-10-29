@@ -39,16 +39,15 @@ FILES = (
     "text.json",
 )
 PLANTED = ("person", "phone", "email", "medicare")  # planted values none of which may be read in the output
-# The benchmark and its environment, when they sit next to tool 2.
+# The benchmark and its environment, when they sit next to tool 2: the interpreter of this platform (a Windows venv
+# copied to Linux, or the reverse, cannot run).
 BENCHMARK = Path(__file__).resolve().parents[4] / "redaction_benchmark"
-BENCHMARK_PYTHON = next(
-    (
-        p
-        for p in (BENCHMARK / ".venv" / "Scripts" / "python.exe", BENCHMARK / ".venv" / "bin" / "python")
-        if p.is_file()
-    ),
-    None,
+_VENV_PYTHONS = (
+    (BENCHMARK / ".venv" / "Scripts" / "python.exe",)
+    if sys.platform == "win32"
+    else (BENCHMARK / ".venv-linux" / "bin" / "python", BENCHMARK / ".venv" / "bin" / "python")
 )
+BENCHMARK_PYTHON = next((p for p in _VENV_PYTHONS if p.is_file()), None)
 
 
 def _json(path: Path) -> Any:
