@@ -85,6 +85,8 @@ _DRIVE = re.compile(r"^[A-Za-z]:$")
 # Years and day/month numbers in file names are dates, which the policies keep.
 _PATH_DATE_PART = re.compile(r"^(?:(?:19|20)\d\d|\d{1,2})$")
 _MAX_ATTEMPTS = 64
+#: An alphabetic original key this long or longer must not occur inside a person-name fake (V2's ``min_len``).
+NAME_CONTAINMENT_MIN = 4
 _ADDRESS_ATTEMPTS = 48  # keyed draws of an address number before the first one is used regardless
 _STRICT_ATTEMPTS = 24  # of them, the draws that must keep a range's digit counts and gap
 _STRICT, _RELAXED, _FORCED = 0, 1, 2  # how a range is faked (see _fake_number)
@@ -148,6 +150,10 @@ class SurrogateFactory:
         self._c = chooser
         self._forbidden = {k for k in forbidden_keys if k}
         self._forbidden_sorted = sorted(self._forbidden)
+        # A person-name fake must not contain an original word: V2 reads a removed value of 4+ letters inside any
+        # word as a leak, and the benchmark grades an original name inside its in-place fake as surviving.
+        self._contained = sorted(k for k in self._forbidden if k.isalpha() and len(k) >= NAME_CONTAINMENT_MIN)
+        self._name_parts: set[str] = set()
         self._pools = pools or load_pools()
         self._cache: dict[tuple[str, str], str] = {}
         self._issued: set[str] = set()
@@ -208,9 +214,21 @@ class SurrogateFactory:
         return "".join(out)
 
     # ------------------------------------------------------------------------------------ people
-    def _unique_pool(self, domain: str, value_key: str, pool: Sequence[str]) -> str:
+    def add_name_parts(self, keys: Iterable[str]) -> None:
+        """Register the given-name and surname keys of the document's people: no person-name fake contains one of
+        3 or more letters ('Ann' never becomes 'Joanne', 'Ray' never 'Murray')."""
+        self._name_parts.update(k for k in keys if k.isalpha() and len(k) >= 3)
+
+    def _name_ok(self, candidate: str) -> bool:
+        """A person-name candidate contains no alphabetic original key of 4+ letters (V2's rule) and no registered
+        name part of the document's people."""
+        key = match_key(candidate)
+        return not any(k in key for k in self._contained) and not any(k in key for k in self._name_parts)
+
+    def _unique_pool(self, domain: str, value_key: str, pool: Sequence[str], *, names: bool = False) -> str:
         """Pick from a pool: a few keyed random draws, then a keyed deterministic sweep of the whole
-        pool (so heavy exclusion can never exhaust the attempts while an acceptable entry exists)."""
+        pool (so heavy exclusion can never exhaust the attempts while an acceptable entry exists).
+        ``names``: the pool holds person names, which also must not contain an original word (:meth:`_name_ok`)."""
         cache_key = (domain, value_key)
         hit = self._cache.get(cache_key)
         if hit is not None:
@@ -219,7 +237,7 @@ class SurrogateFactory:
         start = self._c.index(domain + ":sweep", value_key, len(pool))
         candidates.extend(pool[(start + i) % len(pool)] for i in range(len(pool)))
         for candidate in candidates:
-            if self._acceptable(candidate):
+            if self._acceptable(candidate) and (not names or self._name_ok(candidate)):
                 self._cache[cache_key] = candidate
                 self._issued.add(match_key(candidate))
                 return candidate
@@ -230,10 +248,10 @@ class SurrogateFactory:
             "m": self._pools.given_male,
             "f": self._pools.given_female,
         }.get(gender, self._pools.given_male + self._pools.given_female)
-        return apply_case(template, self._unique_pool(f"given:{gender}", key, pool))
+        return apply_case(template, self._unique_pool(f"given:{gender}", key, pool, names=True))
 
     def surname(self, key: str, template: str) -> str:
-        return apply_case(template, self._unique_pool("surname", key, self._pools.surnames))
+        return apply_case(template, self._unique_pool("surname", key, self._pools.surnames, names=True))
 
     def initial(self, key: str) -> str:
         return chr(ord("A") + self._c.index("initial", key, 26))

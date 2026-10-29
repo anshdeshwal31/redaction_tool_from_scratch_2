@@ -82,6 +82,9 @@ class SurrogateAssigner:
     ) -> None:
         self._f = factory
         self._persons = persons
+        factory.add_name_parts(
+            t.key for pm in persons.mentions.values() for t in pm.tokens if t.role in (Role.GIVEN, Role.SURNAME)
+        )
         self._tokens = tokens
         self._layouts = layouts or {}
         self._units = units or {}

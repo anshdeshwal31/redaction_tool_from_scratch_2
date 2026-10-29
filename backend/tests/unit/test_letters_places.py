@@ -18,22 +18,37 @@ from mlredact.config.loader import load_config
 from mlredact.core.types import JobStatus
 from mlredact.pipeline.runner import JobResult, Redactor
 from mlredact.text.normalize import match_key
+from mlredact.verify.needles import tokens_of
+from support import column, pdf_from_grid
 
 PROFILES = ("client", "broad", "claimant_focused", "maximal")
 
 
-def redacted(
-    doc: SynthDoc, profile: str = "client", overrides: dict[str, object] | None = None
+def redacted_pdf(
+    pdf: bytes, profile: str = "client", overrides: dict[str, object] | None = None, scope_id: str | None = None
 ) -> tuple[JobResult, str]:
+    """The job and its output's text layer (the strings the builder wrote, a row at a time)."""
     pool = InProcessPool()
     config = load_config(profile, (), {**NO_MODELS, "surrogate": {"allow_development_key": True}, **(overrides or {})})
     with pytest.MonkeyPatch.context() as mp:
         pool.install(mp)
         with Redactor(config) as redactor:
-            result = redactor.run(doc.pdf, keep_held_back=True)
-    pdf = result.pdf or result.held_back_pdf
-    assert pdf is not None
-    return result, match_key(layer_text(pdf))
+            result = redactor.run(pdf, keep_held_back=True, scope_id=scope_id)
+    out = result.pdf or result.held_back_pdf
+    assert out is not None
+    return result, layer_text(out)
+
+
+def redacted(
+    doc: SynthDoc, profile: str = "client", overrides: dict[str, object] | None = None, scope_id: str | None = None
+) -> tuple[JobResult, str]:
+    result, layer = redacted_pdf(doc.pdf, profile, overrides, scope_id)
+    return result, match_key(layer)
+
+
+def words_containing(layer: str, word: str) -> list[str]:
+    """The output's words that contain ``word``: an original word left whole, or inside a fake."""
+    return [w for w in tokens_of(layer) if word in w]
 
 
 def readable(doc: SynthDoc, text: str, *, in_address: bool) -> list[str]:
@@ -104,13 +119,25 @@ class TestThePlacesLetter:
     @pytest.mark.parametrize("profile", PROFILES)
     def test_every_profile_replaces_the_address_whole(self, profile: str) -> None:
         doc = make_places_letter(scanned=False)
-        result, text = redacted(doc, profile)
+        result, layer = redacted_pdf(doc.pdf, profile)
         assert result.status is JobStatus.RELEASED, result.manifest["reasons"]
-        assert readable(doc, text, in_address=True) == []
-        assert match_key("Marsh") not in text
+        assert readable(doc, match_key(layer), in_address=True) == []
+        assert "marsh" not in tokens_of(layer), "the street name of the address is replaced"
 
     def test_under_parts_the_suburb_and_postcode_of_the_address_stay(self) -> None:
         doc = make_places_letter(scanned=False)
-        _result, text = redacted(doc, overrides={"policy": {"addresses": "parts"}})
-        assert match_key("Marsh") not in text
-        assert sorted(readable(doc, text, in_address=True)) == ["2500", "Wollongong"]
+        _result, layer = redacted_pdf(doc.pdf, overrides={"policy": {"addresses": "parts"}})
+        assert "marsh" not in tokens_of(layer)
+        assert sorted(readable(doc, match_key(layer), in_address=True)) == ["2500", "Wollongong"]
+
+
+class TestAPersonsFake:
+    LETTER = column("Ms Jane Citizen", "Re: Mr Peter Marsh", "", "Mr Marsh was injured at work.")
+
+    @pytest.mark.parametrize("scope", ("scope-0", "scope-1", "scope-76", "scope-97", "scope-214"))
+    def test_never_contains_an_original_name_so_v2_never_holds_the_letter(self, scope: str) -> None:
+        """Before the fix these scopes drew 'Marshall' for 'Marsh' (or for 'Citizen'), and V2 read the original
+        'marsh' inside it: a false hold with nothing real readable."""
+        result, layer = redacted_pdf(pdf_from_grid(self.LETTER), scope_id=scope)
+        assert result.status is JobStatus.RELEASED, result.manifest["reasons"]
+        assert words_containing(layer, "marsh") == [] and words_containing(layer, "citizen") == []

@@ -1,6 +1,7 @@
 """V5: surrogate safety (plan §12), re-checked independently of the generators.
 
-* no surrogate equals, or is within one edit of, any original value or name component;
+* no surrogate equals, or is within one edit of, any original value or name component, and no person-name surrogate
+  contains an alphabetic original key of 4+ letters (which V2 would read as a leak);
 * identifier surrogates fail their check digit (a surrogate can never be a real identifier);
 * phone surrogates lie in ACMA's ranges reserved for fiction;
 * e-mail / URL surrogates use RFC 2606 reserved domains;
@@ -30,6 +31,7 @@ from mlredact.detect.rules.checksums import (
     tfn_valid,
 )
 from mlredact.surrogate.dates import UNPARSEABLE_DATE
+from mlredact.surrogate.generators import NAME_CONTAINMENT_MIN
 from mlredact.text.normalize import digits_only, match_key
 from mlredact.verify.addresses import AddressFakes, check_address_fakes
 from mlredact.verify.checks import CheckResult
@@ -115,12 +117,13 @@ def check_surrogates(
     contact and date types are checked as whole values.
     """
     originals = sorted({k for k in original_keys if k})
+    contained = [k for k in originals if k.isalpha() and len(k) >= NAME_CONTAINMENT_MIN]
     problems = {"collision": 0, "checksum_valid": 0, "phone_not_reserved": 0, "domain_not_reserved": 0}
     for etype, text, replaced in items:
         parts = replaced if etype in TOKENWISE else (text,)
         for part in parts:
             key = match_key(part)
-            if key and near_any(key, originals):
+            if key and (near_any(key, originals) or (etype is EntityType.PERSON and any(k in key for k in contained))):
                 problems["collision"] += 1
                 break
         check = _CHECKSUMS.get(etype)

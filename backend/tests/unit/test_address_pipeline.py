@@ -14,18 +14,22 @@ from typing import Any
 
 import pikepdf
 import pytest
+from pixel_reread import PixelPool
 from test_bench_runner import NO_MODELS, InProcessPool
 
 import mlredact.pipeline.runner as runner_module
 from mlredact.config.loader import load_config
-from mlredact.core.model import Mention
-from mlredact.core.types import ActionKind, JobStatus
+from mlredact.core.geometry import BBox
+from mlredact.core.model import Mention, PageGeometry, RenderOp
+from mlredact.core.types import ActionKind, JobStatus, VerificationCheck
 from mlredact.pipeline.runner import JobResult, Redactor
 from mlredact.policy.addresses import AddressJoin, MentionLayout, UnitPart
+from mlredact.verify.checks import CheckResult
 from mlredact.verify.needles import tokens_of
 from support import GridLine, column, pdf_from_grid
 
 FOOTER_ROW = 52  # the bottom 5% of the page: 60 + 52 * 14.4 pt of 842
+GEOMETRY = PageGeometry(0, 595.0, 842.0, 300, 2480, 3508)
 
 
 @dataclass
@@ -81,8 +85,12 @@ def run(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Run]:
         profile: str = "client",
         overrides: dict[str, Any] | None = None,
         join: Callable[[Callable[..., AddressJoin]], Callable[..., AddressJoin]] | None = None,
+        scope_id: str | None = None,
+        reread: str = "text",
     ) -> Run:
-        pool = InProcessPool()
+        """``reread``: 'text' re-reads the output's text layer, 'pixel' takes word positions from its image as OCR
+        does (:mod:`pixel_reread`)."""
+        pool = PixelPool() if reread == "pixel" else InProcessPool()
         pool.install(monkeypatch)
         if join is not None:
             monkeypatch.setattr(runner_module, "join_addresses", join(runner_module.join_addresses))
@@ -90,7 +98,7 @@ def run(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Run]:
             profile, (), {**NO_MODELS, "surrogate": {"allow_development_key": True}, **(overrides or {})}
         )
         with Redactor(config) as redactor:
-            result = redactor.run(pdf_from_grid(lines), keep_held_back=True, trace=True)
+            result = redactor.run(pdf_from_grid(lines), keep_held_back=True, trace=True, scope_id=scope_id)
         return Run(result, pool)
 
     return go
@@ -297,28 +305,51 @@ class TestVerificationCatches:
     def test_a_re_plan_replaces_the_left_over_place_and_the_job_is_released(self, run: Callable[..., Run]) -> None:
         r = run(LABELLED, join=street_line_only)
         assert r.result.status is JobStatus.RELEASED, r.failed
-        assert len(r.replans) >= 1
+        assert r.checks["V4_residual"]["metrics"]["replans"] >= 1
+        assert r.replans == [], "the re-typeset line drops the left-over words itself: no box drawn over it"
         words = r.tokens()
         assert "penrith" not in words and "2750" not in words
+
+    @pytest.mark.parametrize("reread", ["text", "pixel"])
+    @pytest.mark.parametrize("scope", [f"scope-{i}" for i in range(32)])
+    def test_a_re_plan_on_a_re_typeset_line_never_keeps_a_left_over_word_whatever_the_fake(
+        self, run: Callable[..., Run], scope: str, reread: str
+    ) -> None:
+        """The re-typeset line is drawn again from its text, so every word after a fake of another width moves: the
+        re-plan finds the left-over words in the line's text by their re-read text, not by the input boxes (which
+        released 'Address: 34 Glenview Link, 2750' or held the letter on V2, depending on the fake's width)."""
+        r = run(LABELLED, join=street_line_only, scope_id=scope, reread=reread)
+        assert r.result.status is JobStatus.RELEASED, r.failed
+        assert not {"penrith", "2750"} & set(r.tokens())
+        assert r.replans == [] and r.checks["V4_residual"]["metrics"]["replans"] >= 1
 
     def test_a_footer_repeat_the_join_missed_is_caught(self, run: Callable[..., Run]) -> None:
         r = run(WITH_FOOTER, overrides=NO_REPLAN, join=without_the_sweep)
         assert r.result.status is JobStatus.QUARANTINED
         assert r.failed == ["V2_text", "V4_residual"]
 
-    def test_a_missed_repeat_is_re_planned_with_the_fake_of_its_unit(self, run: Callable[..., Run]) -> None:
-        r = run(WITH_FOOTER, join=without_the_sweep)
+    @pytest.mark.parametrize("reread", ["text", "pixel"])
+    @pytest.mark.parametrize("scope", [None, *(f"scope-{i}" for i in range(32))])
+    def test_a_missed_repeat_is_re_planned_with_the_fake_of_its_unit(
+        self, run: Callable[..., Run], scope: str | None, reread: str
+    ) -> None:
+        r = run(WITH_FOOTER, join=without_the_sweep, scope_id=scope, reread=reread)
         assert r.result.status is JobStatus.RELEASED, r.failed
         assert r.blackouts == [], "the repeat takes the fake of the address it repeats, not a black box"
-        assert r.replans and all(op.kind is ActionKind.SURROGATE and op.text for op in r.replans)
-        words = r.tokens()
-        assert not {"king", "50", "2000"} & set(words)
+        assert r.checks["V4_residual"]["metrics"]["replans"] >= 1
+        assert r.replans == [], "the footer line draws the fake itself: never a second fake drawn over it"
         trace = r.result.trace
         assert trace is not None
+        footer = max(
+            (op for ops in trace.ops.values() for op in ops if op.kind is ActionKind.RETYPESET_REGION),
+            key=lambda op: op.box.y0,
+        )
+        drawn = tokens_of(footer.text or "")
+        assert not {"george", "sydney", "123"} & set(drawn), "the repeat is gone from the footer"
         (fake,) = trace.address_fakes.values()
         fake_words = {w for text in fake.values() for w in tokens_of(text)}
-        drawn = {w for op in r.replans for w in tokens_of(op.text or "")}
-        assert drawn and drawn <= fake_words, "the same fake words as the letterhead's"
+        assert set(drawn) & fake_words, "the repeat takes the fake words of the letterhead's address"
+        assert "1234" not in drawn and drawn[:3] == ["smith", "jones", "lawyers"], "the rest as drawn before"
 
     def test_the_exemptions_hold_a_kept_place_in_the_unit_suburb_is_not_a_hit(self, run: Callable[..., Run]) -> None:
         r = run(
@@ -327,6 +358,54 @@ class TestVerificationCatches:
         assert r.result.status is JobStatus.RELEASED, r.failed
         assert r.checks["V2_text"]["metrics"]["address_hits"] == 0
         assert r.checks["V4_residual"]["metrics"]["residual_tokens"] == 0
+
+
+class TestRetext:
+    """A re-plan on a re-typeset line is applied to the line's drawn words, found by their re-read text."""
+
+    LINE = RenderOp(
+        0,
+        ActionKind.RETYPESET_REGION,
+        BBox(100, 100, 700, 130),
+        "street_address",
+        "L-line",
+        "Address: 11 Hawthorn Gardens, Penrith NSW 2750",
+        BBox(102, 104, 690, 126),
+    )
+
+    @staticmethod
+    def replan(x0: int, x1: int, covers: str, fake: str | None = None) -> RenderOp:
+        kind = ActionKind.SURROGATE if fake else ActionKind.BLACKOUT
+        return RenderOp(0, kind, BBox(x0, 106, x1, 124), "street_address", f"R-{x0}", fake, source_text=covers)
+
+    def test_the_covered_words_are_dropped_wherever_the_re_read_put_them(self) -> None:
+        hits = [self.replan(420, 476, "Penrith"), self.replan(483, 525, "NSW"), self.replan(530, 571, "2750")]
+        line, missed = runner_module._retext(self.LINE, hits, self.LINE.box)
+        assert line.text == "Address: 11 Hawthorn Gardens," and missed == []
+
+    def test_a_swap_takes_the_place_of_its_words_and_a_misreading_still_finds_them(self) -> None:
+        line, missed = runner_module._retext(self.LINE, [self.replan(420, 476, "Penrlth", "Rhodes")], self.LINE.box)
+        assert line.text == "Address: 11 Hawthorn Gardens, Rhodes NSW 2750" and missed == []
+
+    def test_of_two_equal_words_the_one_at_the_operations_place_goes(self) -> None:
+        twice = dataclasses.replace(self.LINE, text="Penrith Road, Penrith NSW 2750")
+        line, _missed = runner_module._retext(twice, [self.replan(330, 420, "Penrith")], twice.box)
+        assert line.text == "Penrith Road, NSW 2750"
+        line, _missed = runner_module._retext(twice, [self.replan(110, 190, "Penrith")], twice.box)
+        assert line.text == "Road, Penrith NSW 2750"
+
+    def test_words_not_in_the_line_are_drawn_over_the_page_and_v2_checks_the_line(self) -> None:
+        other = self.replan(420, 476, "Katoomba")
+        ink = self.LINE.ink_box
+        assert ink is not None
+        merged, stale = Redactor._merge_ops({0: (self.LINE,)}, {0: [other]}, {0: GEOMETRY}, load_config("client"))
+        assert [op.ref_id for op in merged[0]] == ["L-line", "R-420"]
+        assert stale == [runner_module._StaleWords(0, ink, ("katoomba",))]
+        passed = CheckResult(VerificationCheck.TEXT, True, {"hits": 0})
+        assert runner_module._with_stale_lines(passed, stale, merged).passed, "the line does not hold it"
+        left = runner_module._StaleWords(0, ink, ("2750",))
+        held = runner_module._with_stale_lines(passed, [left], merged)
+        assert not held.passed and held.metrics["replan_stale"] == 1
 
 
 # ------------------------------------------------------------------------------------------------ detector fixes

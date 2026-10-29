@@ -14,6 +14,8 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from rapidfuzz import fuzz
+
 from mlredact import __version__
 from mlredact.config.loader import config_hash
 from mlredact.config.schema import AppConfig
@@ -66,6 +68,7 @@ from mlredact.surrogate.drbg import Chooser
 from mlredact.surrogate.generators import SurrogateFactory
 from mlredact.surrogate.keys import MasterKey, load_master_key
 from mlredact.surrogate.labels import assign_labels
+from mlredact.text.normalize import match_key
 from mlredact.verify.addresses import AddressFakes, AddressReread, reread_of
 from mlredact.verify.checks import CheckResult, check_integrity, check_structure, check_text_leak
 from mlredact.verify.needles import MASK, AddressNeedles, AddressText, needles_of
@@ -323,6 +326,7 @@ class Redactor:
                 )
                 with scrub_terms([*(m.value for m in checks_of.removed), *checks_of.scrub]):
                     replans = 0
+                    stale: list[_StaleWords] = []
                     while True:
                         t0 = time.perf_counter()
                         redacted = self._pool.map(
@@ -339,6 +343,8 @@ class Redactor:
                             [m.value for m in checks_of.removed],
                             addresses=self._address_text(checks_of, redacted, pages, ops, notice),
                         )
+                        if stale:
+                            v2 = _with_stale_lines(v2, stale, ops)
                         v6, v3 = check_integrity(
                             [(r.geometry.width_pt, r.geometry.height_pt) for r in redacted],
                             pdf,
@@ -371,9 +377,14 @@ class Redactor:
                         replan = hits if inject is None else inject.replan_hits(hits)
                         if replan and replans < cfg.verification.max_replans:
                             replans += 1
-                            ops = self._merge_ops(
-                                ops, residual_ops(replan, input_sha, replans), geoms, cfg, checks_of.mask
+                            ops, missed = self._merge_ops(
+                                ops,
+                                residual_ops(replan, input_sha, replans),
+                                geoms,
+                                cfg,
+                                {(a.ref_id, a.planned): a.erased for r in redacted for a in r.applied},
                             )
+                            stale.extend(missed)
                             _log.warning("verify.replan", job=job_id, iteration=replans, tokens=len(replan))
                             continue
                         checks = [v1, v2, v3, residual_result(hits, replans), v5, v6]
@@ -723,49 +734,135 @@ class Redactor:
         extra: Mapping[int, list[RenderOp]],
         geoms: Mapping[int, Any],
         cfg: AppConfig,
-        mask: LayerMask | None = None,
-    ) -> dict[int, tuple[RenderOp, ...]]:
-        """The ops with a re-plan's operations added.  A re-typeset line a re-plan draws over takes the re-plan's words
-        in place of the ones it replaces (``mask`` holds the lines and what was drawn in place of their tokens): the
-        text layer must not keep the words the page no longer shows."""
+        erased: Mapping[tuple[str, BBox], BBox] | None = None,
+    ) -> tuple[dict[int, tuple[RenderOp, ...]], list[_StaleWords]]:
+        """The ops with a re-plan's operations added.
+
+        A re-plan operation on a re-typeset line is applied to the line itself: the line is drawn again whole from its
+        text, so its words move whenever a fake has another width than its original, and the re-read boxes of the
+        re-plan never line up with the input boxes of the line's tokens.  The words the operation covers are found in
+        the line's drawn text by their re-read text, in reading order (the re-read and the drawn line differ in
+        geometry, never in word order), and replaced by the operation's fake or dropped; no separate operation is
+        drawn over the line, so nothing is drawn twice and no box drifts.  ``erased``: the boxes the previous build
+        erased, by (ref id, planned box); they give the extent of each drawn line.
+
+        Returns the ops and the words of the re-plan operations on a re-typeset line that could not be found in its
+        text: those are drawn over the page as before, and V2 checks that the line's text no longer holds them."""
+        erased = erased or {}
         merged: dict[int, list[RenderOp]] = {p: list(v) for p, v in ops.items()}
-        for page, page_ops in extra.items():
+        stale: list[_StaleWords] = []
+        for page, page_ops in sorted(extra.items()):
+            lines = [o for o in merged.get(page, []) if o.kind is ActionKind.RETYPESET_REGION and o.text and o.ink_box]
+            extents = [erased.get((o.ref_id, o.box), o.box) for o in lines]
+            on_line: dict[int, list[RenderOp]] = {}
+            overlay: list[RenderOp] = []
             for op in page_ops:
+                at = _line_under(op, extents) if op.source_text else None
+                if at is None:
+                    overlay.append(op)
+                else:
+                    on_line.setdefault(at, []).append(op)
+            for at, line_ops in sorted(on_line.items()):
+                line = lines[at]
+                retexted, missed = _retext(line, line_ops, extents[at])
+                merged[page] = [retexted if o is line else o for o in merged[page]]
+                overlay.extend(missed)
+                if missed and line.ink_box is not None:
+                    keys = {k for r in missed for w in (r.source_text or "").split() if (k := match_key(w))}
+                    stale.append(_StaleWords(page, line.ink_box, tuple(sorted(keys))))
+            for op in overlay:
                 padded = pad_box(op.box, op.box.height, cfg.redaction, geoms[page].bounds)
                 merged.setdefault(page, []).append(replace(op, box=padded))
-        if mask is not None:
-            for page, page_ops in extra.items():
-                merged[page] = [
-                    _retext(o, page_ops, mask) if o.kind is ActionKind.RETYPESET_REGION else o for o in merged[page]
-                ]
-        return {p: tuple(sorted(v, key=lambda o: o.sort_key)) for p, v in sorted(merged.items())}
+        return {p: tuple(sorted(v, key=lambda o: o.sort_key)) for p, v in sorted(merged.items())}, stale
 
 
-def _retext(op: RenderOp, replans: Sequence[RenderOp], mask: LayerMask) -> RenderOp:
-    """A re-typeset line with the words under a re-plan's operations replaced by the operation's text (or dropped)."""
-    line = mask.lines.get((op.page, op.ink_box)) if op.ink_box is not None else None
-    if line is None:
-        return op
-    words: list[str] = []
-    used: set[int] = set()
-    changed = False
-    for tok in line:
-        under = next(
-            (
-                i
-                for i, r in enumerate(replans)
-                if (inter := tok.bbox.intersection(r.box)) is not None and inter.area * 2 >= tok.bbox.area
-            ),
-            None,
-        )
-        if under is None:
-            words.append(mask.replacement.get(tok.token_id, tok.text))
+@dataclass(frozen=True, slots=True)
+class _StaleWords:
+    """The keys of re-read words a re-plan covered on a re-typeset line, which were not found in the line's text."""
+
+    page: int
+    ink_box: BBox
+    keys: tuple[str, ...] = field(repr=False)
+
+
+_LINE_MATCH = 80  # the lowest similarity (0-100) at which a re-read word stands for a drawn word (an OCR misreading)
+
+
+def _line_under(op: RenderOp, extents: Sequence[BBox]) -> int | None:
+    """The re-typeset line (index into ``extents``, the drawn extent of each) a re-plan operation lies on: the one it
+    overlaps most in height, by at least half of its own, with its centre inside the line's width."""
+    best: tuple[float, int] | None = None
+    centre = (op.box.x0 + op.box.x1) / 2
+    for i, ext in enumerate(extents):
+        if not ext.x0 <= centre <= ext.x1:
             continue
-        changed = True
-        if under not in used:
-            used.add(under)
-            words.append(replans[under].text or "")
-    return replace(op, text=" ".join(w for w in words if w)) if changed else op
+        overlap = min(op.box.y1, ext.y1) - max(op.box.y0, ext.y0)
+        if overlap * 2 < op.box.height:
+            continue
+        score = overlap / max(1, op.box.height)
+        if best is None or score > best[0]:
+            best = (score, i)
+    return best[1] if best is not None else None
+
+
+def _retext(line: RenderOp, replans: Sequence[RenderOp], extent: BBox) -> tuple[RenderOp, list[RenderOp]]:
+    """A re-typeset line with the words its re-plan operations cover replaced by an operation's fake (or dropped),
+    and the operations whose words were not found in the line's text.
+
+    Each operation's re-read text is matched against runs of the line's drawn words: an equal comparison key first,
+    else the most similar run (at least ``_LINE_MATCH``); between equal matches, the run whose place in the text is
+    nearest the operation's place in the line's extent."""
+    words = (line.text or "").split()
+    keys = [match_key(w) for w in words]
+    total = max(1, len(" ".join(words)))
+    starts = [len(" ".join(words[:i])) + (1 if i else 0) for i in range(len(words))]
+    used = [False] * len(words)
+    out: list[str | None] = list(words)
+    missed: list[RenderOp] = []
+    for op in sorted(replans, key=lambda o: (o.box.x0, o.box.y0, o.ref_id)):
+        target = match_key(op.source_text or "")
+        span = max(1, len((op.source_text or "").split()))
+        where = ((op.box.x0 + op.box.x1) / 2 - extent.x0) / max(1, extent.width)
+        best: tuple[float, float, int, int] | None = None
+        for i in range(len(words)):
+            for k in range(1, min(len(words) - i, span + 1) + 1):
+                if any(used[i : i + k]):
+                    break
+                run = "".join(keys[i : i + k])
+                if not run or not target:
+                    continue
+                score = 100.0 if run == target else float(fuzz.ratio(run, target))
+                mid = (starts[i] + (starts[i + k - 1] + len(words[i + k - 1]) - starts[i]) / 2) / total
+                candidate = (score, -abs(mid - where), i, k)
+                if best is None or candidate[:2] > best[:2]:
+                    best = candidate
+        if best is None or best[0] < _LINE_MATCH:
+            missed.append(op)
+            continue
+        _score, _dist, i, k = best
+        for j in range(i, i + k):
+            used[j] = True
+            out[j] = None
+        if op.kind is ActionKind.SURROGATE and op.text:
+            out[i] = op.text
+    text = " ".join(w for w in out if w)
+    return (replace(line, text=text) if text != line.text else line), missed
+
+
+def _with_stale_lines(
+    v2: CheckResult, stale: Sequence[_StaleWords], ops: Mapping[int, Sequence[RenderOp]]
+) -> CheckResult:
+    """V2 with the safety net of the re-plans on re-typeset lines: a word a re-plan covered that the line's text still
+    holds (a number included, which V2 never searches for on its own) is a hit."""
+    texts = {
+        (op.page, op.ink_box): {match_key(w) for w in op.text.split()}
+        for page_ops in ops.values()
+        for op in page_ops
+        if op.kind is ActionKind.RETYPESET_REGION and op.text and op.ink_box is not None
+    }
+    hits = sum(1 for s in stale if set(s.keys) & texts.get((s.page, s.ink_box), set()))
+    metrics = {**v2.metrics, "replan_stale": hits}
+    return CheckResult(v2.check, v2.passed and hits == 0, metrics)
 
 
 def _reason_for(check: CheckResult) -> str:

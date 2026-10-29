@@ -43,8 +43,8 @@ _DESCENDERS = frozenset("gjpqy,;()[]{}_")  # as the planner's: they calibrate th
 @dataclass(frozen=True, slots=True)
 class ResidualHit:
     """``fake``: for a residual that repeats a found address unit, the text of that unit's fake to draw over ``box``
-    (the union of the residual words on one line) instead of a black box; ``original`` is the text it covers (it
-    calibrates the drawing and never leaves the process)."""
+    (the union of the residual words on one line) instead of a black box; ``original`` is the re-read text it covers
+    (it calibrates the drawing, finds the words in a re-typeset line, and never leaves the process)."""
 
     page: int
     box: BBox
@@ -110,7 +110,7 @@ def find_residuals(
     def record(token_slice: Sequence[Token], etype: EntityType, source: str) -> None:
         for tok in token_slice:
             if not _covered(tok.bbox, planned.get(tok.page, ())):
-                hits.append(ResidualHit(tok.page, tok.bbox, etype.value, source))
+                hits.append(ResidualHit(tok.page, tok.bbox, etype.value, source, original=tok.text))
 
     targets: dict[tuple[str, EntityType], Target] = {}
     for m in removed:
@@ -195,7 +195,7 @@ def _address_hits(
             hits.append(ResidualHit(window[0].page, box, reason, source, fake, " ".join(t.text for t in window)))
             done.update(t.token_id for t in window)
         else:
-            hits.extend(ResidualHit(t.page, t.bbox, reason, source) for t in todo)
+            hits.extend(ResidualHit(t.page, t.bbox, reason, source, original=t.text) for t in todo)
             done.update(t.token_id for t in todo)
 
     # The probe: the units' targets in the re-read output (a repeat of a found address too).
@@ -255,7 +255,8 @@ def _unit_residuals(
 
 def residual_ops(hits: Sequence[ResidualHit], doc_key: str, iteration: int) -> dict[int, list[RenderOp]]:
     """The re-plan's operations: a black box over each hit, or, where the hit repeats a found address unit, that
-    unit's fake drawn over it."""
+    unit's fake drawn over it.  Each carries the re-read text it covers as ``source_text`` (in memory only), so a hit
+    on a re-typeset line can be applied to the line's words (``Redactor._merge_ops``)."""
     out: dict[int, list[RenderOp]] = {}
     for h in hits:
         ref_id = content_id("R", doc_key, iteration, h.page, *h.box.as_tuple())
@@ -272,7 +273,7 @@ def residual_ops(hits: Sequence[ResidualHit], doc_key: str, iteration: int) -> d
                 h.original,
             )
             if h.fake is not None
-            else RenderOp(h.page, ActionKind.BLACKOUT, h.box, h.reason, ref_id)
+            else RenderOp(h.page, ActionKind.BLACKOUT, h.box, h.reason, ref_id, source_text=h.original)
         )
         out.setdefault(h.page, []).append(op)
     return out
