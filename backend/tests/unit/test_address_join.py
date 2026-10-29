@@ -688,6 +688,38 @@ class TestMoreShapes:
         assert unit_texts(doc, result) == [unit]
 
     @pytest.mark.parametrize(
+        ("texts", "unit"),
+        [
+            (["Ms Jane Citizen", "12 Smith Street Penrith"], "12 Smith Street Penrith"),
+            (["Ms Jane Citizen", "Unit 4, 12 Smith Street Penrith"], "Unit 4, 12 Smith Street Penrith"),
+            (["Ms Jane Citizen", "12 Smith Street Penrith", "NSW 2750"], "12 Smith Street Penrith NSW 2750"),
+            (["Ms Jane Citizen", "12 Smith Street Smithfield Hospital"], "12 Smith Street"),
+            (["She lives at 12 Smith Street Penrith with her mother."], "12 Smith Street Penrith"),
+            (["Address: 12 Smith Street Penrith"], "12 Smith Street Penrith"),
+            (["Address: 12 Smith Street Penrith Claim no. 123456"], "12 Smith Street Penrith"),
+            (["Residential address: 4/12 Smith St Penrith"], "4/12 Smith St Penrith"),
+        ],
+    )
+    def test_a_street_line_in_a_block_or_after_a_cue_with_its_suburb_and_no_comma(
+        self, texts: list[str], unit: str
+    ) -> None:
+        """A block position is an address cue (FINAL_PLAN TOOL2 section 2); in an address position a suburb follows the
+        street line with no comma, and the address label's value ends where that place ends."""
+        doc, result = run_join(texts)
+        assert unit_texts(doc, result) == [unit]
+
+    @pytest.mark.parametrize(
+        "texts",
+        [
+            ["12 Smith Street Penrith"],  # no cue: nothing says it is an address
+            ["She was seen on 12 May.", "12 Smith Street Penrith"],  # a sentence above is no block
+        ],
+    )
+    def test_a_street_line_with_no_cue_and_no_place_is_no_unit(self, texts: list[str]) -> None:
+        doc, result = run_join(texts)
+        assert unit_texts(doc, result) == []
+
+    @pytest.mark.parametrize(
         "line",
         [
             "12 Smith Street,Penrith NSW 2750",

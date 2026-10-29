@@ -32,6 +32,9 @@ _LEVEL_DESIG = frozenset({"level", "floor"})
 _AND = ("and", "&")
 _ROAD_FLOOR_WORDS = frozenset({"floor", "flr", "level"})
 
+# Words that start the next field of a line after an address ('... Penrith Claim no. 123456', '... Penrith Ph 02 ...').
+_ID_LABEL_WORDS = frozenset({"claim", "ref", "reference", "file", "policy", "ph", "phone", "tel", "mobile", "fax"})
+
 
 class JoinStage(StreetStage):
     def join_street(self, s: Street) -> None:
@@ -95,6 +98,26 @@ class JoinStage(StreetStage):
                         tail_loc.update(cont)
                         route = "suburb_tail_next_line"
                 self._emit(s, tail_loc, [*how, route], unit_roles)
+                return
+        # ---- a suburb after the street line with no comma, in an address position: after an address label or a
+        # residence phrase, or in a name or address block ('Address: 12 Smith Street Penrith', 'lives at 12 Smith
+        # Street Penrith with ...', 'Ms Jane Citizen' over '12 Smith Street Penrith')
+        if (
+            s.kind is UnitKind.STREET
+            and Flag.TYPED in s.flags
+            and not (ws[s.end].comma or ws[s.end].sbreak)
+            and s.end + 1 < len(ws)
+            and (self.address_cue_before(s.li, s.start) in ("address_label", "phrase") or self._block_position(s))
+        ):
+            starts = {lab.start for lab in self.labels[s.li]} | {
+                x for x in range(s.end + 1, len(ws)) if ws[x].lo in _ID_LABEL_WORDS
+            }
+            tail = self.suburb_tail(ws, s.end + 1, starts)
+            if tail:
+                tail_loc = {(s.li, x): Role.SUBURB for x in tail}
+                if tail[-1] == len(ws) - 1:  # the state and postcode on the line below
+                    tail_loc.update(self._tail_continuation(ln, ws, tail) or {})
+                self._emit(s, tail_loc, [*how, "suburb_tail_no_comma"], unit_roles)
                 return
         # ---- the line below in the block, or the first line of the next page
         rest = [w for w in ws[s.end + 1 :] if w.alnum_text]
@@ -197,7 +220,7 @@ class JoinStage(StreetStage):
             return True
         if not any(w.alnum_text for w in ws[s.end + 1 :]):
             return True
-        if self.address_cue_before(s.li, s.start) is not None:
+        if self.address_cue_before(s.li, s.start) is not None or self._block_position(s):
             return True
         # a street, lower-case words, then a place of its own ('walked from 12 George Street to Parramatta NSW 2150')
         if nxt.lowr and any(
@@ -210,6 +233,20 @@ class JoinStage(StreetStage):
             if o and Flag.TYPED in o[0].flags:
                 return True
         return False
+
+    def _block_position(self, s: Street) -> bool:
+        """A number-led street line that starts its line in a name or address block: the line right above it in its
+        column holds a name or an address line (capitalised words and numbers, no sentence), as 'Ms Jane Citizen' over
+        '12 Smith Street Penrith' (FINAL_PLAN TOOL2 section 2: a block position is an address cue)."""
+        if s.start != 0 or s.kind is not UnitKind.STREET or Flag.NUMBERLESS in s.flags:
+            return False
+        up = self.geo.above(self.L[s.li])
+        if up is None or self.is_prose(up) or not up.words or up.words[-1].sbreak:
+            return False
+        words = [w for w in up.words if w.alnum_text]
+        return 0 < len(words) <= 8 and all(
+            w.cap or w.upper or w.digits or w.lo in ("&", "c/-", "c/o", "of", "and") for w in words
+        )
 
     def _emit(
         self, s: Street, loc: dict[Pos, Role], how: list[str], unit_roles: dict[Pos, Role], *, overseas: bool = False

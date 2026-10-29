@@ -3,6 +3,7 @@ where a street line meets its place on one line or at the start of the line belo
 
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 from mlredact.text.address.internal import Anchor, AnchorKind, Flag, Street
@@ -306,9 +307,10 @@ class PlaceStage(LabelStage):
                 out[(li, x)] = Role.COUNTRY
         return out
 
-    def suburb_tail(self, ws: list[Word], j: int) -> list[int]:
-        """The suburb-only tail after a street line's comma ('lives at 4 Rose Lane, Katoomba with ...'): 1-3
-        capitalised words that name a real locality."""
+    def suburb_tail(self, ws: list[Word], j: int, label_starts: AbstractSet[int] = frozenset()) -> list[int]:
+        """The suburb-only tail after a street line ('lives at 4 Rose Lane, Katoomba with ...'): 1-3 capitalised words
+        that name a real locality, then the line end, a lower-case word, a separator or a label (``label_starts``:
+        the words that start one)."""
         for n in (3, 2, 1):
             run = list(range(j, j + n))
             if run[-1] >= len(ws):
@@ -319,7 +321,7 @@ class PlaceStage(LabelStage):
                 continue
             nxt = ws[run[-1] + 1] if run[-1] + 1 < len(ws) else None
             last = ws[run[-1]]
-            if nxt is not None and not (nxt.lowr or nxt.sep or last.stop or last.comma):
+            if nxt is not None and not (nxt.lowr or nxt.sep or last.stop or last.comma or run[-1] + 1 in label_starts):
                 continue
             if self.gaz.states_of([ws[x].b for x in run]):
                 return run

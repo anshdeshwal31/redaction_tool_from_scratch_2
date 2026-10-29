@@ -420,6 +420,19 @@ class TestAddressLabels:
         assert all("5550" not in v for t, v in found if t is S)
 
     @pytest.mark.parametrize("profile", _PROFILES)
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "Address: 12 Smith Street Penrith",
+            "Address: 12 Smith Street Penrith Claim no. 123456",
+            "Residential address: 4/12 Smith St Penrith",
+        ],
+    )
+    def test_an_address_value_keeps_its_suburb_written_with_no_comma(self, profile: str, line: str) -> None:
+        assert "Penrith" in _covered_words([line], profile)
+        assert "123456" not in {v for t, v in _mentions([line], profile) if t is S}
+
+    @pytest.mark.parametrize("profile", _PROFILES)
     def test_the_boxes_of_a_form_are_labels_never_values(self, profile: str) -> None:
         lines = [
             "Address:",
