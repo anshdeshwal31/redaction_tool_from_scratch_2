@@ -435,15 +435,20 @@ class AddressFaker:
 
 # ---------------------------------------------------------------------------------------------- helpers
 def _effective(w: UnitWord) -> Role | None:
+    return effective_role(w.role, w.text, w.place)
+
+
+def effective_role(role: Role | None, text: str, place: bool) -> Role | None:
     """The role of a word.  A word the grammar did not read (a pairing forced it into the unit) is identifying, so it
-    takes the role of its shape: a state code, a four-digit postcode or a suburb word in the place; a number or a
-    street-name word in the street line; punctuation alone has none and stays."""
-    if w.role is not None:
-        return w.role
-    core = _bare(w.text)
+    takes the role of its shape: a state code, a four-digit postcode or a suburb word in the place (``place``); a
+    number or a street-name word in the street line; punctuation alone has none and stays.  V5 reads words by the same
+    rule, so a kept state word of a forced unit is no collision."""
+    if role is not None:
+        return role
+    core = _bare(text)
     if not core:
         return None
-    if w.place:
+    if place:
         if is_state_token(core):
             return Role.STATE
         if core.isdigit() and len(core) == 4:

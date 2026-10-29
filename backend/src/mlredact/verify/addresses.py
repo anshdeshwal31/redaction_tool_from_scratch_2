@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from mlredact.core.geometry import BBox
 from mlredact.core.model import Line
 from mlredact.policy.addresses import JoinedUnit, UnitTargets, fold_word
-from mlredact.surrogate.addresses import postcode_ok
+from mlredact.surrogate.addresses import effective_role, postcode_ok
 from mlredact.surrogate.exclusions import Exclusions, digit_runs
 from mlredact.surrogate.generators import canonical_state
 from mlredact.text.address import STRUCTURE_ROLES, Role, canonical_street_type
@@ -219,8 +219,8 @@ class AddressFakes:
 def _identifying(unit: JoinedUnit, tid: str, text: str) -> str | None:
     """The part of a token's text that is identifying (None for a structure word): a partial word counts by its
     changing part."""
-    role = unit.roles[tid]
-    if role is not None and role in STRUCTURE_ROLES:
+    role = effective_role(unit.roles[tid], text, tid in unit.locality)  # as the faker reads it
+    if role is None or role in STRUCTURE_ROLES:
         return None
     for p in unit.partial:
         if p.token_id == tid:

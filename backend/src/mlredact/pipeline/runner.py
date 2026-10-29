@@ -68,6 +68,7 @@ from mlredact.surrogate.drbg import Chooser
 from mlredact.surrogate.generators import SurrogateFactory
 from mlredact.surrogate.keys import MasterKey, load_master_key
 from mlredact.surrogate.labels import assign_labels
+from mlredact.text.address import STRUCTURE_ROLES
 from mlredact.text.normalize import match_key
 from mlredact.verify.addresses import AddressFakes, AddressReread, reread_of, words_on_their_own
 from mlredact.verify.checks import CheckResult, check_integrity, check_structure, check_text_leak
@@ -730,6 +731,18 @@ class Redactor:
         items = []
         shifted: list[tuple[str, str]] = []
         generalised: list[str] = []
+        # A unit's structure words (the state under address_state: replace, designators, box kinds) identify no one:
+        # V5's address check (``addresses``) reads the unit's identifying words, the generic check leaves them.
+        structure = (
+            {
+                t
+                for unit in addresses.units.values()
+                for t, role in unit.roles.items()
+                if role is not None and role in STRUCTURE_ROLES
+            }
+            if addresses is not None
+            else set()
+        )
         for d in decisions:
             sur = surrogates.get(d.mention.mention_id)
             if sur is None:
@@ -742,7 +755,11 @@ class Redactor:
                 generalised.append(text)
                 continue
             orig = [tokens[t].text for t in d.mention.token_ids]
-            replaced = tuple(s for s, o in zip(sur.tokens, orig, strict=True) if s and s != o)
+            replaced = tuple(
+                s
+                for s, o, t in zip(sur.tokens, orig, d.mention.token_ids, strict=True)
+                if s and s != o and t not in structure
+            )
             items.append((d.mention.entity_type, text, replaced))
         return check_surrogates(items, originals, shifted_dates=shifted, generalised=generalised, addresses=addresses)
 

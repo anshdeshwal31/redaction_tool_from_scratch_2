@@ -47,6 +47,7 @@ from mlredact.surrogate.assign import MentionSurrogate, SurrogateAssigner, forbi
 from mlredact.surrogate.drbg import Chooser
 from mlredact.surrogate.generators import SurrogateFactory
 from mlredact.text.address import UnitKind
+from mlredact.verify.addresses import AddressFakes, check_address_fakes
 from mlredact.verify.residual import ResidualHit
 
 E = EntityType
@@ -675,6 +676,10 @@ def test_a_location_with_no_address_is_a_place_only_unit(tmp_path: Path) -> None
     fake = drawn(s)
     assert fake[tid(1, 0)] != "Zarnok" and fake[tid(1, 1)] == "NSW" and fake[tid(1, 2)] != "2750"
     assert "0 locations joined to their address, 1 places alone as units" in s.note("injected mentions")
+    # V5 reads the unread words by their shape, as the faker does: the kept state word is no collision
+    texts = {t: tok.text for p in s.stage.pages for tok in p.tokens() if (t := tok.token_id) in unit.roles}
+    fakes = {unit.unit_id: {t: fake[t] for t in unit.roles}}
+    assert not any(check_address_fakes(AddressFakes(join.units, texts, fakes, frozenset(unit.roles))).values())
 
 
 def test_a_box_per_field_form_address_is_one_unit(tmp_path: Path) -> None:

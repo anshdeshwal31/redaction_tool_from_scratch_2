@@ -637,3 +637,20 @@ class TestDetectorFixes:
         words = moved.tokens()
         assert words.count("nsw") == 1, "the lone 'State: NSW' stays, the form's state box moved"
         assert not {"penrith", "2750"} & set(words)
+
+    @pytest.mark.parametrize("scope", [None, "probe-matter", *(f"scope-{i}" for i in range(12))])
+    def test_under_replace_a_state_moved_to_another_addresss_state_is_no_collision(
+        self, run: Callable[..., Run], scope: str | None
+    ) -> None:
+        """Each state moves to one other state, so in a document with addresses in two states one address's new state
+        can be the other's original: a structure word, which identifies no one (V5 compares identifying words)."""
+        letter = column(
+            "Ms Jane Citizen",
+            "Work: 7 Example Avenue, Toowoomba QLD 4350",
+            "Home: Unit 4, 9 Lake Road, Belconnen ACT 2617",
+            "",
+            "Thank you.",
+        )
+        r = run(letter, "client", {"policy": {"address_state": "replace"}}, scope_id=scope)
+        released_clean(r)
+        assert r.checks["V5_surrogate"]["metrics"]["collision"] == 0
