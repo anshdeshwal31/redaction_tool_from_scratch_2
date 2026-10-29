@@ -598,30 +598,52 @@ def _add_row_units(specs: list[_Spec], lines: Sequence[AddrLine], gazetteer: Gaz
         )
 
 
+_GLUED_COMMA = re.compile(r"^([A-Za-z]+\.?|\d{1,6}[A-Za-z]?),([A-Z][A-Za-z'-]+)$")  # 'Street,Penrith', '123,Parramatta'
+
+
+def _add_glued_units(specs: list[_Spec], lines: Sequence[AddrLine], gazetteer: Gazetteer | None) -> None:
+    """A word glued at a comma ('12 Smith Street,Penrith NSW 2750', 'PO Box 123,Parramatta NSW 2150'): the line is read
+    with the word as two words, and a unit that holds it is added.  The word takes the role of its second part (a
+    suburb), so the whole word is replaced; the street line before it, untyped then, gets a fake type."""
+    for li, line in enumerate(lines):
+        split = {
+            (li, wi): (m.group(1) + ",", m.group(2))
+            for wi, w in enumerate(line.words)
+            if (m := _GLUED_COMMA.match(w.text.strip()))
+        }
+        if split:
+            _add_virtual_units(
+                specs, lines, [[(li, wi) for wi in range(len(line.words))]], gazetteer, "glued_comma", split
+            )
+
+
 def _add_virtual_units(
     specs: list[_Spec],
     lines: Sequence[AddrLine],
     pieces: Sequence[Sequence[Pos]],
     gazetteer: Gazetteer | None,
     route: str,
+    split: Mapping[Pos, tuple[str, str]] | None = None,
 ) -> None:
     """Read the words of ``pieces`` (runs of positions of different lines) as one line and add each unit that crosses
-    two pieces.  It takes the place of the grammar's units inside it (a street line alone, a place alone); when one
-    unit already holds all its words, or a unit overlaps only part of it, nothing changes."""
+    two pieces (``split``: words read as two words, each kept unit holding one of them).  It takes the place of the
+    grammar's units inside it (a street line alone, a place alone); when one unit already holds all its words, or a
+    unit overlaps only part of it, nothing changes."""
     back: list[Pos] = []
     words: list[AddrWord] = []
     x = 0.0
     for k, piece in enumerate(pieces):
         for n, (li, wi) in enumerate(piece):
             w = lines[li].words[wi]
-            text = w.text
+            texts = list((split or {}).get((li, wi), (w.text,)))
             last = n == len(piece) - 1 and k < len(pieces) - 1
-            if last and route == "table_row" and not text.rstrip().endswith((",", ".", ";", ":")):
-                text += ","  # a cell ends as a field does
-            width = max(1.0, w.x1 - w.x0)
-            words.append(AddrWord(text, x, x + width, w.blocked))
-            back.append((li, wi))
-            x += width + 4.0
+            if last and route == "table_row" and not texts[-1].rstrip().endswith((",", ".", ";", ":")):
+                texts[-1] += ","  # a cell ends as a field does
+            width = max(1.0, w.x1 - w.x0) / len(texts)
+            for text in texts:
+                words.append(AddrWord(text, x, x + width, w.blocked))
+                back.append((li, wi))
+                x += width + 4.0
     if not words:
         return
     first = lines[pieces[0][0][0]]
@@ -629,7 +651,10 @@ def _add_virtual_units(
     taken = {p: s for s in specs for p in s.roles}
     for u in parse_document([line], gazetteer).units:
         roles = {back[wi]: role for (_li, wi), role in u.roles.items()}
-        if len({k for k, piece in enumerate(pieces) if set(piece) & roles.keys()}) < 2:
+        if split:
+            if not roles.keys() & split.keys():
+                continue  # no glued word in it: the grammar reads it as it is
+        elif len({k for k, piece in enumerate(pieces) if set(piece) & roles.keys()}) < 2:
             continue  # within one line or cell: the grammar reads it there
         inside = {id(s): s for p in roles if (s := taken.get(p)) is not None}
         if any(roles.keys() <= s.roles.keys() or not s.roles.keys() <= roles.keys() for s in inside.values()):
@@ -836,6 +861,7 @@ def join_addresses(
     specs = [_spec_of(u) for u in parse.units if repeat_sweep or "repeat_sweep" not in u.how]
     _add_wrapped_units(specs, lines, gazetteer)
     _add_row_units(specs, lines, gazetteer)
+    _add_glued_units(specs, lines, gazetteer)
     if pairs:
         _apply_pairs(specs, pairs, known, doc, lines, gazetteer)
     specs.sort(key=lambda s: min(s.roles))

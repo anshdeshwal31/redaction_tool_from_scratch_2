@@ -643,10 +643,29 @@ class TestMoreShapes:
         assert unit_texts(doc, result) == [unit]
 
     @pytest.mark.parametrize(
+        "line",
+        [
+            "12 Smith Street,Penrith NSW 2750",
+            "12 Smith St,Penrith NSW 2750",
+            "PO Box 123,Parramatta NSW 2150",
+            "She lives at 12 Smith Street,Penrith NSW 2750 with her mother.",
+        ],
+    )
+    def test_a_word_glued_at_a_comma_is_read_as_two_words(self, line: str) -> None:
+        """Typed or read with no space after a comma: the address is one unit with the glued word in it."""
+        doc, result = run_join([line])
+        (unit,) = unit_texts(doc, result)
+        assert ",P" in unit and unit.endswith(("2750", "2150"))
+
+    @pytest.mark.parametrize(
         "line", ["She drives a 4 Wheel Drive.", "They rented a 3 Bedroom Place.", "It was a 2 Storey Terrace."]
     )
     def test_a_count_noun_after_a_number_is_no_street(self, line: str) -> None:
         doc, result = run_join([line])
+        assert unit_texts(doc, result) == []
+
+    def test_a_name_glued_at_a_comma_is_no_address(self) -> None:
+        doc, result = run_join(["Smith,John attended on 3 May."])
         assert unit_texts(doc, result) == []
 
     @pytest.mark.parametrize(
