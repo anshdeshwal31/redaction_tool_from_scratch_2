@@ -31,7 +31,7 @@ from mlredact.surrogate.generators import SurrogateFactory, apply_case, canonica
 from mlredact.surrogate.keys import load_master_key
 from mlredact.surrogate.pools import load_pools
 from mlredact.text.address import TYPE_FORMS, AddressKey, canonical_street_type, is_abbreviated_type
-from mlredact.text.gazetteer import RANGES, fold_name, load_gazetteer
+from mlredact.text.gazetteer import RANGES, fold_name, load_gazetteer, name_variants
 from mlredact.text.normalize import digits_only, match_key
 from mlredact.verify.surrogates import acma_phone, check_surrogates
 from support import column
@@ -239,6 +239,18 @@ _HANDLED = {
     "keep": ("keep", "replace"),
     "replace": ("replace",),
 }
+
+
+def expected_class(words: Sequence[str], state: str, written: str | None) -> str | None:
+    """The class of an original suburb as the case table's resolver reads it: the row of the written postcode, else a
+    primary row, else the most populous row of the name in the state (rows straight from the list)."""
+    digits = (written or "").strip(_EDGES + ".").translate(str.maketrans("OoIlSB", "001158"))
+    names = set(name_variants(fold_name(" ".join(words))))
+    rows = [r for r in _GAZ.rows if r.state == state and r.folded in names]
+    if not rows:
+        return None
+    pick = [r for r in rows if r.postcode == digits] or [r for r in rows if r.primary] or rows
+    return max(pick, key=lambda r: (r.population, r.postcode)).klass
 
 
 @functools.cache
@@ -537,7 +549,7 @@ def unit_errors(case_id: str, e: dict[str, Any], unit: JoinedUnit, fakes: Mappin
                 if mode == "replace" and orig_state in states and len(states) == 1:
                     errs.append("replace mode kept the state")
                 if orig_state is not None:
-                    klass = _GAZ.klass_of(o_words, orig_state)
+                    klass = expected_class(o_words, orig_state, pcs[0] if pcs else None)
                     if klass is not None and mode == "keep" and klass not in {r.klass for r in suburb_rows}:
                         errs.append("fake suburb of another class")
         elif role == "suburb":  # an overseas town: a pool name, no foreign gazetteer
@@ -849,6 +861,16 @@ class TestPostcodeRule:
         assert not postcode_ok("NSW", "2830", "0872")  # the second digit is 8 in both
         assert postcode_ok("NSW", "2830", "0872", "NT")
 
+    def test_an_original_outside_its_states_prefix_may_share_the_digits_the_state_fixes(self) -> None:
+        """A cross-border NT postcode (4825): every NT postcode starts '08', and '8' is the original's second digit."""
+        assert postcode_ok("NT", "4825", "0870") and not postcode_ok("NT", "4825", "0820")
+        assert not postcode_ok("NSW", "3644", "2341")  # NSW fixes only the '2': the '4' at 2 still clashes
+
+    @pytest.mark.parametrize("scope", range(len(_KEYS)))
+    def test_a_cross_border_nt_address_stays_in_the_nt(self, scope: int) -> None:
+        fake = one_fake("Address: 5 King Street, Alpurrurulam NT 4825", scope=scope)
+        assert re.search(r"\bNT 08\d\d$", fake), fake
+
 
 class TestNumbers:
     @pytest.mark.parametrize(
@@ -992,6 +1014,8 @@ class TestTypesNamesAndStates:
             ("NEW SOUTH WALES", "QLD", "QUEENSLAND"),
             ("Vic", "QLD", "Qld"),
             ("Qld.", "TAS", "Tas."),
+            ("Vic", "NSW", "NSW"),  # a mixed-case original: only Vic, Qld and Tas are written so
+            ("Tas.", "SA", "SA."),
             ("Victoria", "NT", "Northern Territory"),
             ("ACT", "SA", "SA"),
         ],
@@ -1219,6 +1243,17 @@ class TestAddressFakes:
             len({under(n) for n in ("Jane Citizen", "Peter Walsh", "Anna Lee", "Tom Parker", "Sue Brown", "Ann Ng")})
             >= 4
         )
+
+    @pytest.mark.parametrize("scope", range(len(_KEYS)))
+    @pytest.mark.parametrize("place", ["Richmond NSW 2753", "Kew NSW 2440", "Penrith NSW 2750"])
+    def test_a_repeat_without_a_state_takes_the_state_of_the_address_it_repeats(self, place: str, scope: int) -> None:
+        """'Richmond' alone would be read as VIC (the name's most populous row): the join links the repeat to the full
+        address, so both get one fake suburb, in NSW."""
+        suburb = place.split(" NSW")[0]
+        out = fake_lines(f"12 Smith Street, {place}", "", f"Please reply to 12 Smith Street, {suburb}.", scope=scope)
+        assert len(out) == 2, out
+        full, repeat = (f for _o, f in out)
+        assert repeat.endswith(".") and full.startswith(repeat[:-1] + " NSW"), (full, repeat)
 
     def test_unread_words_of_a_forced_unit_are_pool_words_and_numbers(self) -> None:
         """A unit built by the pairing can hold words the grammar did not read: they are identifying, so they change."""

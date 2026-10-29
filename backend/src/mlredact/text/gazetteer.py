@@ -149,21 +149,21 @@ class Gazetteer:
         self.cross_border = tuple(sorted((state, name, pc) for state, name, pc in cross_border))
         names: dict[str, set[str]] = {}
         postcodes: dict[tuple[str, str], set[int]] = {}
-        classes: dict[tuple[str, str], bool] = {}
+        by_name: dict[tuple[str, str], list[Locality]] = {}
         for r in self.rows:
             names.setdefault(r.state, set()).add(r.folded)
             postcodes.setdefault((r.state, r.folded), set()).add(int(r.postcode))
-            classes.setdefault((r.state, r.folded), r.metro)
+            by_name.setdefault((r.state, r.folded), []).append(r)
         for a in self.aliases:
             target = fold_name(a.locality)
             postcodes.setdefault((a.state, a.folded), set()).update(
                 postcodes.get((a.state, target), set()) | {int(a.postcode)}
             )
-            if (a.state, target) in classes:
-                classes.setdefault((a.state, a.folded), classes[(a.state, target)])
+            if (a.state, a.folded) not in by_name:
+                by_name[(a.state, a.folded)] = list(by_name.get((a.state, target), ()))
             names.setdefault(a.state, set()).add(a.folded)
         self._postcodes = {k: frozenset(v) for k, v in postcodes.items()}
-        self._classes = classes
+        self._rows_of = {k: tuple(v) for k, v in by_name.items()}
         index: dict[str, set[str]] = {}
         by_len: dict[tuple[str, int], list[str]] = {}
         for state in sorted(names):
@@ -218,12 +218,16 @@ class Gazetteer:
         """The postcode lies in the state's ranges, or the pair is a listed cross-border pair."""
         return in_range(code, postcode) or (code, postcode) in self._exceptions
 
-    def klass_of(self, words: Sequence[str], state: str) -> str | None:
-        """'metro' or 'regional' for the named locality of ``state`` (an alias takes its target's), else None."""
+    def klass_of(self, words: Sequence[str], state: str, postcode: str | None = None) -> str | None:
+        """'metro' or 'regional' for the named locality of ``state`` (an alias takes its target's), else None.  A name
+        with rows of both classes (Kingswood NSW: 2340 regional, 2747 metro) takes the class of the row of the written
+        ``postcode``, else of its most populous primary row, else of its most populous row (the case table's rule)."""
         for v in name_variants(fold_name(" ".join(words))):
-            metro = self._classes.get((state, v))
-            if metro is not None:
-                return "metro" if metro else "regional"
+            rows = self._rows_of.get((state, v))
+            if not rows:
+                continue
+            pick = [r for r in rows if postcode and r.postcode == postcode] or [r for r in rows if r.primary] or rows
+            return max(pick, key=lambda r: (r.population, r.postcode)).klass
         return None
 
     def is_capital(self, words: Sequence[str]) -> bool:

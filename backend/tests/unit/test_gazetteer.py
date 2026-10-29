@@ -152,6 +152,14 @@ def test_class_metro_or_regional() -> None:
     assert all(r.klass in ("metro", "regional") for r in GAZ.rows)
 
 
+def test_a_name_with_rows_of_both_classes_takes_the_class_of_the_written_postcode() -> None:
+    """Kingswood NSW is 2340 (Tamworth, regional, listed first) and 2747 (Penrith, metro, the more populous)."""
+    assert GAZ.klass_of(["Kingswood"], "NSW", "2747") == "metro"
+    assert GAZ.klass_of(["Kingswood"], "NSW", "2340") == "regional"
+    assert GAZ.klass_of(["Kingswood"], "NSW") == "metro"  # no postcode: the most populous primary row
+    assert GAZ.klass_of(["Newtown"], "QLD", "4350") == "regional"
+
+
 def test_capitals() -> None:
     assert all(GAZ.is_capital([c]) for c in ("Sydney", "Melbourne", "Brisbane", "Perth", "Adelaide", "Hobart"))
     assert GAZ.is_capital(["canberra"]) and GAZ.is_capital(["DARWIN"])

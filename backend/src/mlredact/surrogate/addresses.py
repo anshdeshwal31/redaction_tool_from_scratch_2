@@ -82,13 +82,14 @@ class UnitWord:
 @dataclass(frozen=True, slots=True)
 class UnitView:
     """What the faker needs of one unit.  ``heading`` is the canonical name of the person or organisation heading the
-    block of a place-only unit ('' when none)."""
+    block of a place-only unit ('' when none); ``repeat_of`` is the unit this one repeats (the join's link)."""
 
     unit_id: str
     key: AddressKey
     words: tuple[UnitWord, ...] = field(repr=False)
     overseas: bool = False
     heading: str = field(default="", repr=False)
+    repeat_of: str | None = None
 
 
 def view_of(unit: JoinedUnit, texts: Mapping[str, str], heading: str = "") -> UnitView:
@@ -106,22 +107,23 @@ def view_of(unit: JoinedUnit, texts: Mapping[str, str], heading: str = "") -> Un
         )
         for tid, role in unit.roles.items()
     )
-    return UnitView(unit.unit_id, unit.key, words, unit.overseas, heading)
+    return UnitView(unit.unit_id, unit.key, words, unit.overseas, heading, unit.repeat_of)
 
 
 def postcode_ok(state: str | None, original: str, fake: str, fake_state: str | None = None) -> bool:
     """Amendment D3.  The original's leading digits that match its state's prefix may stay, matched from the left; every
     later digit of the fake differs at its position.  An original outside its state's usual prefix (a PO-box block, a
-    cross-border code) shares no digit.  The fake is never the original.  When the fake lies in another state
-    (``address_state: replace``), the digits that state fixes ('08' for NT) may coincide too: they are not a choice."""
+    cross-border code) shares no digit of its own.  The fake is never the original.  The digits the fake's state fixes
+    ('08' for NT) are not a choice, so they may coincide when the fake lies in another state (``address_state:
+    replace``) or the original lies outside its state's prefix (NT 4825: every NT postcode starts '08')."""
     if fake == original:
         return False
     prefix = _POSTCODE_PREFIX.get(state or "", "")
     k = 0
     while k < len(prefix) and k < len(original) and original[k] == prefix[k]:
         k += 1
-    if fake_state is not None and fake_state != state:
-        fixed = _POSTCODE_PREFIX.get(fake_state, "")
+    if (fake_state is not None and fake_state != state) or k < len(prefix):
+        fixed = _POSTCODE_PREFIX.get(fake_state or state or "", "")
         if fake.startswith(fixed):
             k = max(k, len(fixed))
     return all(a != b for a, b in zip(original[k:], fake[k:], strict=False))
@@ -205,6 +207,7 @@ class AddressFaker:
         self._gaz = gazetteer or load_gazetteer()
         self._replace_state = address_state == "replace"
         self._ex = self._exclusions(units)
+        self._by_id = {u.unit_id: u for u in units}
         self.fakes: dict[str, Mapping[str, str]] = {}
         issued: dict[tuple[str, ...], list[AddressKey]] = {}
         order = sorted(
@@ -253,6 +256,15 @@ class AddressFaker:
         draw = "" if redraw == 0 else f"\x1f{redraw}"
         kb = base + (draw if not has_place else "")  # the street side redraws only when there is no place
         origin = None if u.overseas else self._origin(u, words, roles)
+        ref = self._by_id.get(u.repeat_of or "")
+        if origin is not None and u.key.state is None and ref is not None and not ref.overseas:
+            # A repeat without a state is the address it repeats: its suburb takes that address's state and class
+            # ('Richmond' after 'Richmond NSW 2753' stays in NSW, though the name's most populous row is in VIC).
+            head = self._origin(ref, ref.words, [_effective(w) for w in ref.words])
+            if head.state is not None:
+                origin = _Origin(
+                    head.state, head.klass, origin.written, tuple(sorted({*origin.written, *head.postcodes}))
+                )
         if origin is None:
             place_key = f"{base}\x1f{u.key.place_text()}\x1f{u.heading}{draw}"
         else:  # the suburb and the state the unit writes or the list gives it (so a repeat without a state agrees)
@@ -366,7 +378,7 @@ class AddressFaker:
             state = next(iter(states)) if len(states) == 1 else None
         if state is None and names:
             state = _likely_state(gaz, names, written)
-        klass = gaz.klass_of(names, state) if names and state else None
+        klass = gaz.klass_of(names, state, written[0] if written else None) if names and state else None
         if klass is None and state and written:
             metro = _class_by_postcode(gaz).get((state, written[0]))
             klass = None if metro is None else ("metro" if metro else "regional")

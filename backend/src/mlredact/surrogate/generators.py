@@ -101,6 +101,7 @@ STATE_NAMES = {
     "ACT": "Australian Capital Territory",
 }
 _STATE_NAME_WORDS = frozenset(n.lower() for n in STATE_NAMES.values())
+_TITLE_CASE_CODES = frozenset({"VIC", "QLD", "TAS"})  # the codes written in mixed case; NSW, SA, WA, NT, ACT never are
 # Directionals as (code, abbreviation, word), the three styles of a street-type suffix.
 _DIRECTIONS = {
     "N": ("N", "Nth", "North"),
@@ -655,7 +656,9 @@ class SurrogateFactory:
             return (name.upper() if body.isupper() else name.lower() if body.islower() else name) + dot
         if body.isupper() or not body.isalpha():
             return code + dot
-        return (code.lower() if body.islower() else code.title()) + dot
+        if body.islower():
+            return code.lower() + dot
+        return (code.title() if code in _TITLE_CASE_CODES else code) + dot  # 'Vic', 'Qld', 'Tas'; never 'Nsw'
 
     def organisation(self, value: str) -> str:
         key = match_key(value)
