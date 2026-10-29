@@ -39,13 +39,15 @@ class SharedBlob:
 
 
 def read_blob(ref: BlobRef) -> bytes:
-    """Copy the blob into this process.  Attaching processes must not unlink it on exit."""
-    shm = shared_memory.SharedMemory(name=ref.name, create=False)
+    """Copy the blob into this process.  The creating process owns the blob: it unlinks it on close, and its resource
+    tracker unlinks it if it dies first.  Pool workers are spawned by the creator and share that tracker, so an attach
+    registers nothing new and must remove nothing either (removing the registration on attach removed the creator's
+    own: a crashed job then left the document in /dev/shm, and every normal close printed a KeyError)."""
+    if sys.version_info >= (3, 13):
+        shm = shared_memory.SharedMemory(name=ref.name, create=False, track=False)
+    else:
+        shm = shared_memory.SharedMemory(name=ref.name, create=False)
     try:
-        if sys.platform != "win32":  # Python < 3.13: attachers are tracked and would unlink on exit
-            from multiprocessing import resource_tracker
-
-            resource_tracker.unregister(shm._name, "shared_memory")  # type: ignore[attr-defined]
         buf = shm.buf
         assert buf is not None
         return bytes(buf[: ref.size])
