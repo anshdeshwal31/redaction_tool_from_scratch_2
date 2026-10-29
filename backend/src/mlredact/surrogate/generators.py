@@ -498,7 +498,7 @@ class SurrogateFactory:
     def street_type(self, original: str | None, key: str, ex: Exclusions | None = None) -> str:
         """Another canonical street type, written in the original's style: an abbreviation stays an abbreviation, a
         plural stays plural, the case is the original's.  An untyped street (``original`` None) gets a common type
-        written in full."""
+        written in full, or any fake type when the document's own types leave no common one (amendment D1)."""
         ex = ex or NO_EXCLUSIONS
         old = canonical_street_type(original) if original else None
         pool = _FAKE_TYPES if original else _COMMON_TYPES
@@ -507,7 +507,10 @@ class SurrogateFactory:
             forms = TYPE_FORMS[canon]
             return canon != old and all(ex.word_ok(f) for f in forms) and self.not_original(forms[0])
 
-        canon = self._pick("addr.type", key, pool, ok) or self._pick("addr.type:any", key, pool, lambda c: c != old)
+        canon = self._pick("addr.type", key, pool, ok)
+        if canon is None and not original:
+            canon = self._pick("addr.type:wide", key, _FAKE_TYPES, ok)
+        canon = canon or self._pick("addr.type:any", key, pool, lambda c: c != old)
         canon = canon or pool[self._c.index("addr.type:last", key, len(pool))]
         forms = TYPE_FORMS[canon]
         written = forms[0]

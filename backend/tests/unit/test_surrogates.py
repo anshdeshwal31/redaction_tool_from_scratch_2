@@ -979,6 +979,22 @@ class TestTypesNamesAndStates:
         only_lane = Exclusions.of([w for forms in TYPE_FORMS.values() for w in forms if forms[0] != "lane"], [])
         assert f.street_type("Rd", "k", only_lane) in ("Ln", "Lane")
 
+    def test_an_untyped_street_takes_any_fake_type_when_the_document_writes_every_common_one(self) -> None:
+        """'8 Broadway' in a document whose other streets are a Street, Road, ... and Lane: no common type is left, so
+        the type comes from the wider pool rather than repeat one of them (which V5 would hold)."""
+        f = factory()
+        common = Exclusions.of(
+            [
+                w
+                for c in ("STREET", "ROAD", "AVENUE", "DRIVE", "COURT", "PLACE", "CRESCENT", "LANE")
+                for w in TYPE_FORMS[c]
+            ],
+            [],
+        )
+        for i in range(30):
+            fake = f.street_type(None, f"k{i}", common)
+            assert common.word_ok(fake) and canonical_street_type(fake) is not None, fake
+
     def test_a_suffix_is_another_directional_in_the_originals_style(self) -> None:
         f = factory()
         for i in range(30):
