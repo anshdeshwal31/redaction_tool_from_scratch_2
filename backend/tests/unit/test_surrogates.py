@@ -16,11 +16,11 @@ from test_address_join import Doc, join_case
 from mlredact.config.loader import load_config
 from mlredact.core.errors import EnvironmentErrorMl
 from mlredact.core.model import Mention
-from mlredact.core.types import ActionKind, EntityType
+from mlredact.core.types import ActionKind, EntityType, ViewKind
 from mlredact.detect.rules.checksums import abn_valid, ihi_valid, medicare_valid, provider_number_valid, tfn_valid
 from mlredact.policy.addresses import AddressJoin, JoinedUnit, join_addresses
 from mlredact.policy.engine import Decision
-from mlredact.resolve.persons import PersonResolution
+from mlredact.resolve.persons import PersonResolution, resolve_persons
 from mlredact.resources import loader
 from mlredact.surrogate import pools as pools_module
 from mlredact.surrogate.addresses import AddressFaker, UnitView, UnitWord, postcode_ok, view_of
@@ -33,6 +33,8 @@ from mlredact.surrogate.pools import load_pools
 from mlredact.text.address import TYPE_FORMS, AddressKey, canonical_street_type, is_abbreviated_type
 from mlredact.text.gazetteer import RANGES, fold_name, load_gazetteer, name_variants
 from mlredact.text.normalize import digits_only, match_key
+from mlredact.text.views import build_views
+from mlredact.verify.needles import tokens_of
 from mlredact.verify.surrogates import acma_phone, check_surrogates
 from support import column
 
@@ -1245,6 +1247,21 @@ class TestAddressFakes:
         )
 
     @pytest.mark.parametrize("scope", range(len(_KEYS)))
+    def test_a_person_heading_written_with_an_initial_keys_the_place_as_the_full_name(self, scope: int) -> None:
+        def under(name: str) -> str:
+            lines = (name, "PENRITH NSW 2750")
+            n = len(name.split()) - 1
+
+            def person(doc: Doc) -> list[Mention]:
+                return [doc.span(EntityType.PERSON, 0, 0, n)]
+
+            doc = Doc(column(*lines))
+            persons = resolve_persons(person(doc), build_views(doc.pages)[ViewKind.LINE])
+            return one_fake(*lines, mentions=person, persons=persons, scope=scope)
+
+        assert under("John Smith") == under("J. Smith") == under("J Smith") == under("Mr John Smith")
+
+    @pytest.mark.parametrize("scope", range(len(_KEYS)))
     @pytest.mark.parametrize("place", ["Richmond NSW 2753", "Kew NSW 2440", "Penrith NSW 2750"])
     def test_a_repeat_without_a_state_takes_the_state_of_the_address_it_repeats(self, place: str, scope: int) -> None:
         """'Richmond' alone would be read as VIC (the name's most populous row): the join links the repeat to the full
@@ -1254,6 +1271,27 @@ class TestAddressFakes:
         assert len(out) == 2, out
         full, repeat = (f for _o, f in out)
         assert repeat.endswith(".") and full.startswith(repeat[:-1] + " NSW"), (full, repeat)
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            ("12 Smith Street, Balwyn North VIC 3104", "12 Smith Street, North Balwyn VIC 3104"),
+            ("Locked Bag 7, Penrith NSW 2750", "Locked Mail Bag 7, Penrith NSW 2750"),
+            ("Private Bag 7, Penrith NSW 2750", "PMB 7, Penrith NSW 2750"),
+            ("12 Smith-Jones Road, Penrith NSW 2750", "12 Smith Jones Road, Penrith NSW 2750"),
+            ("Level 4, 12 Smith Street, Penrith NSW 2750", "4th Floor, 12 Smith Street, Penrith NSW 2750"),
+        ],
+    )
+    def test_spellings_of_one_address_get_one_fake_across_a_matter(self, a: str, b: str) -> None:
+        """One address in two documents of a matter (one scope key), written two ways: one fake, in each spelling."""
+        spelling = {"level", "floor", "locked", "private", "mail", "bag", "pmb"}
+
+        def canon(fake: str) -> tuple[list[str], list[str]]:
+            words = [w for w in tokens_of(fake) if not w.isdigit() and w not in spelling | {"st", "nd", "rd", "th"}]
+            return [d.lstrip("0") for d in re.findall(r"\d+", fake)], words
+
+        for scope in range(len(_KEYS)):
+            assert canon(one_fake(a, scope=scope)) == canon(one_fake(b, scope=scope)), scope
 
     def test_unread_words_of_a_forced_unit_are_pool_words_and_numbers(self) -> None:
         """A unit built by the pairing can hold words the grammar did not read: they are identifying, so they change."""

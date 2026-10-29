@@ -178,6 +178,11 @@ class Gazetteer:
         )
 
     # ------------------------------------------------------------------ lookups
+    def listed_form(self, folded: str) -> str:
+        """The form of a folded name the list holds: the name itself when listed, else its reversed-directional form
+        when that is listed ('north balwyn' -> 'balwyn north'), else the name."""
+        return next((v for v in name_variants(folded) if v in self._states_of), folded)
+
     def states_of(self, words: Sequence[str], *, fuzzy: bool = False, state: str | None = None) -> frozenset[str]:
         """The states in which ``words`` name a real locality (exact, reversed directionals folded).  With ``fuzzy`` one
         edit is allowed on names of 5 or more letters (OCR damage).  ``state`` restricts the answer to that state."""

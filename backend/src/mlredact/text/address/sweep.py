@@ -17,6 +17,7 @@ from mlredact.text.address.tables import (
     STREET_ROLES,
     SUFFIX_CANON,
     TYPE_CANON,
+    level_key,
 )
 from mlredact.text.address.words import Line, Word, pc_value, state_at
 from mlredact.text.gazetteer import STATE_CODES, fold_name, range_states
@@ -375,7 +376,8 @@ class FinalStage(FormStage):
             nums = [w.b.upper() for w in by.get(Role.NUMBER, [])] + [
                 w.b.upper().split("/")[-1] for w in by.get(Role.UNIT_NUMBER_AND_NUMBER, [])
             ]
-            names = tuple(fold_name(w.b).upper() for w in by[Role.STREET_NAME])
+            # folded as one string: 'Smith-Jones' and 'Smith Jones' are one name
+            names = tuple(fold_name(" ".join(w.b for w in by[Role.STREET_NAME])).upper().split())
             types = tuple(TYPE_CANON.get(w.lo, w.lo.upper()) for w in by.get(Role.STREET_TYPE, []))
             suffix = tuple(SUFFIX_CANON.get(w.lo, w.b.upper()) for w in by.get(Role.STREET_SUFFIX, []))
             street_kind, parts = "ST", (tuple(nums), names, types, suffix)
@@ -385,13 +387,14 @@ class FinalStage(FormStage):
         subs: list[tuple[str, str]] = []
         for role in (Role.UNIT_NUMBER, Role.LEVEL_NUMBER):
             for w in by.get(role, []):
-                subs.append((role.value, w.b.upper()))
+                # a level by its number: '4th Floor' and 'Floor 4' are one level
+                subs.append((role.value, level_key(w.b) if role is Role.LEVEL_NUMBER else w.b.upper()))
         for w in by.get(Role.UNIT_NUMBER_AND_NUMBER, []):
             subs.append((Role.UNIT_NUMBER.value, w.b.upper().split("/")[0]))
         suburb = ""
         state: str | None = None
-        if Role.SUBURB in by:
-            suburb = fold_name(" ".join(w.b for w in by[Role.SUBURB])).upper()
+        if Role.SUBURB in by:  # the list's form: 'North Balwyn' is 'Balwyn North'
+            suburb = self.gaz.listed_form(fold_name(" ".join(w.b for w in by[Role.SUBURB]))).upper()
             if not u.overseas:
                 state = self._state_of(by)
         return AddressKey(street_kind, parts, tuple(sorted(subs)), suburb, state)

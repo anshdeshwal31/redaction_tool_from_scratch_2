@@ -288,6 +288,15 @@ BUILDING_DESIG: Final = frozenset({"building", "block", "tower", "wing"})
 LEVEL_CODE: Final = re.compile(r"^(LG|UG|B|G|M)(\d{1,4}[A-Za-z]?(?:/\d{1,5}[A-Za-z]?)?)$")
 ORDINAL: Final = re.compile(r"^(\d{1,2})(st|nd|rd|th)$", re.IGNORECASE)
 
+
+def level_key(text: str) -> str:
+    """A level number as an address key holds it: upper case, an ordinal's suffix dropped ('4th' and '4' are one
+    level)."""
+    core = text.strip(" ,.;:()").upper()
+    m = ORDINAL.match(core)
+    return m.group(1) if m else core
+
+
 # ----------------------------------------------------------------------------------------------------- buildings
 BUILDING_WORDS: Final = frozenset(
     """
@@ -325,7 +334,15 @@ BOX_PHRASES: Final[tuple[tuple[str, ...], ...]] = (
     ("cma",),
     ("cpa",),
 )
-BOX_KEY_KINDS: Final[Mapping[str, str]] = {"p o box": "po box", "pobox": "po box", "post office box": "po box"}
+# Spellings of one box kind (amendments B and E): one canonical key, so one box gets one fake whatever its spelling.
+BOX_KEY_KINDS: Final[Mapping[str, str]] = {
+    "p o box": "po box",
+    "pobox": "po box",
+    "post office box": "po box",
+    "locked mail bag": "locked bag",
+    "private mail bag": "private bag",
+    "pmb": "private bag",
+}
 BOX_FIRST_WORDS: Final = frozenset(p[0] for p in BOX_PHRASES)
 
 # ----------------------------------------------------------------------------------------------------- word lists

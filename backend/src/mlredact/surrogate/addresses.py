@@ -39,6 +39,7 @@ from mlredact.policy.addresses import JoinedUnit
 from mlredact.surrogate.exclusions import Exclusions, digit_runs
 from mlredact.surrogate.generators import STATE_NAMES, SurrogateFactory, apply_case, is_state_token
 from mlredact.text.address import STRUCTURE_ROLES, AddressKey, Role
+from mlredact.text.address.tables import level_key
 from mlredact.text.gazetteer import (
     STATE_CODES,
     Gazetteer,
@@ -349,7 +350,7 @@ class AddressFaker:
             core, trail = core[:-1], "." + trail
         keep, change = (w.keep, w.change) if w.change is not None else ("", None)
         if role is Role.LEVEL_NUMBER:
-            new = f.level_number(core, f"{kb}\x1flevel\x1f{core.upper()}", ex)
+            new = f.level_number(core, f"{kb}\x1flevel\x1f{level_key(core)}", ex)  # '4th' draws as '4' does
         elif role is Role.UNIT_NUMBER_AND_NUMBER and "/" in core:
             left, _, right = core.partition("/")
             keep = keep if left.startswith(keep) else ""

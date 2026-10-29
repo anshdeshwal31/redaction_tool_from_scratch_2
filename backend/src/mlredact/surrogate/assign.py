@@ -296,7 +296,7 @@ class SurrogateAssigner:
         if pm is None:
             return "p:" + match_key(m.value)
         surname = "".join(t.key for t in pm.tokens if t.role is Role.SURNAME)
-        given = next((t.key for t in pm.tokens if t.role is Role.GIVEN), "")
+        given = next((t.key for t in pm.tokens if t.role in (Role.GIVEN, Role.INITIAL)), "")  # 'John' or 'J.'
         if pm.cluster:
             given = (self._given_by_cluster.get(pm.cluster) or [given])[0]
         return f"p:{surname},{given[:1]}"
