@@ -550,6 +550,45 @@ def test_a_place_of_birth_cut_by_a_line_wrap_stays_kept() -> None:
     assert unit_texts(doc, result) == []
 
 
+# ------------------------------------------------------------------------------------ table rows of separate cells
+CELLS_X = (40, 170, 330, 420, 470)
+
+
+def table(*rows: tuple[str, ...]) -> list[GridLine]:
+    """One line per cell, as OCR reads a table (cells at the x of ``CELLS_X``); an empty text is an empty cell."""
+    return [GridLine(text, 0, r, CELLS_X[c]) for r, cells in enumerate(rows) for c, text in enumerate(cells) if text]
+
+
+@pytest.mark.parametrize(
+    ("rows", "units"),
+    [
+        (
+            [
+                ("Provider", "Street", "Suburb", "State", "Postcode"),
+                ("Dr A Sample", "45 High Street", "Penrith", "NSW", "2750"),
+                ("Dr B Sample", "12 Oak Avenue", "Ryde", "NSW", "2112"),
+                ("Dr C Sample", "PO Box 9", "Katoomba", "NSW", "2780"),
+            ],
+            ["45 High Street Penrith NSW 2750", "12 Oak Avenue Ryde NSW 2112", "PO Box 9 Katoomba NSW 2780"],
+        ),
+        ([("Dr B Sample", "45 High Street", "Penrith", "NSW", "2750")], ["45 High Street Penrith NSW 2750"]),
+        ([("", "45 High Street", "Penrith NSW", "2750")], ["45 High Street Penrith NSW 2750"]),
+        ([("", "12 Smith St", "Penrith NSW 2750")], ["12 Smith St Penrith NSW 2750"]),
+        (
+            [("Address", "Suburb", "State", "Postcode", "From"), ("12 Oak Avenue", "Ryde", "NSW", "2112", "2019")],
+            ["12 Oak Avenue Ryde NSW 2112"],
+        ),
+        ([("Pain level", "4 of 10"), ("Seen", "3 May 2023")], []),
+        ([("Place of birth", "Penrith NSW 2750")], []),
+    ],
+)
+def test_an_address_over_the_cells_of_a_table_row_is_one_unit(rows: list[tuple[str, ...]], units: list[str]) -> None:
+    """Every row of a provider or address-history table, under its header or with none: one unit per row."""
+    doc = Doc(table(*rows))
+    result = join_addresses([], doc.pages, _POLICY["client"], band_fraction=0.0)
+    assert unit_texts(doc, result) == units
+
+
 # ------------------------------------------------------------------------------------- shapes found in the review
 class TestMoreShapes:
     """Address shapes the case table does not hold, each replaced whole (fictional lines)."""

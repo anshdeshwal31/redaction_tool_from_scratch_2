@@ -26,6 +26,7 @@ sorted by first token.  Nothing here holds document text in a repr or an excepti
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -558,6 +559,45 @@ def _add_wrapped_units(specs: list[_Spec], lines: Sequence[AddrLine], gazetteer:
         _add_virtual_units(specs, lines, [head, tail], gazetteer, "wrapped_prose")
 
 
+_CELL_WORDS = 6  # a table cell: a line of at most this many words
+
+
+def _table_rows(lines: Sequence[AddrLine]) -> list[list[int]]:
+    """The rows of a table whose cells are separate lines (OCR reads a cell as a line): two or more short lines of one
+    page and frame side by side, each overlapping the first one's height by half, in x order."""
+    rows: list[list[int]] = []
+    used: set[int] = set()
+    for li, a in enumerate(lines):
+        if li in used or not 0 < len(a.words) <= _CELL_WORDS:
+            continue
+        height = max(1.0, a.y1 - a.y0)
+        row = [
+            lj
+            for lj, b in enumerate(lines)
+            if lj not in used
+            and b.page == a.page
+            and b.frame == a.frame
+            and 0 < len(b.words) <= _CELL_WORDS
+            and min(a.y1, b.y1) - max(a.y0, b.y0) >= 0.5 * min(height, max(1.0, b.y1 - b.y0))
+        ]
+        row.sort(key=lambda lj: lines[lj].x0)
+        if len(row) < 2 or any(lines[x].x1 > lines[y].x0 for x, y in itertools.pairwise(row)):
+            continue
+        used.update(row)
+        rows.append(row)
+    return rows
+
+
+def _add_row_units(specs: list[_Spec], lines: Sequence[AddrLine], gazetteer: Gazetteer | None) -> None:
+    """An address over the cells of a table row ('12 Oak Avenue' | 'Ryde' | 'NSW' | '2112'): the cells are read as one
+    line, left to right, each ending as a field does (a comma), and a unit over two or more cells is added (FINAL_PLAN
+    TOOL2 sections 1 and 3e: units in table cells, a suburb, state and postcode in adjacent boxes)."""
+    for row in _table_rows(lines):
+        _add_virtual_units(
+            specs, lines, [[(li, wi) for wi in range(len(lines[li].words))] for li in row], gazetteer, "table_row"
+        )
+
+
 def _add_virtual_units(
     specs: list[_Spec],
     lines: Sequence[AddrLine],
@@ -571,11 +611,15 @@ def _add_virtual_units(
     back: list[Pos] = []
     words: list[AddrWord] = []
     x = 0.0
-    for piece in pieces:
-        for li, wi in piece:
+    for k, piece in enumerate(pieces):
+        for n, (li, wi) in enumerate(piece):
             w = lines[li].words[wi]
+            text = w.text
+            last = n == len(piece) - 1 and k < len(pieces) - 1
+            if last and route == "table_row" and not text.rstrip().endswith((",", ".", ";", ":")):
+                text += ","  # a cell ends as a field does
             width = max(1.0, w.x1 - w.x0)
-            words.append(AddrWord(w.text, x, x + width, w.blocked))
+            words.append(AddrWord(text, x, x + width, w.blocked))
             back.append((li, wi))
             x += width + 4.0
     if not words:
@@ -586,7 +630,7 @@ def _add_virtual_units(
     for u in parse_document([line], gazetteer).units:
         roles = {back[wi]: role for (_li, wi), role in u.roles.items()}
         if len({k for k, piece in enumerate(pieces) if set(piece) & roles.keys()}) < 2:
-            continue  # within one line: the grammar reads it there
+            continue  # within one line or cell: the grammar reads it there
         inside = {id(s): s for p in roles if (s := taken.get(p)) is not None}
         if any(roles.keys() <= s.roles.keys() or not s.roles.keys() <= roles.keys() for s in inside.values()):
             continue
@@ -791,6 +835,7 @@ def join_addresses(
     parse = parse_document(lines, gazetteer)
     specs = [_spec_of(u) for u in parse.units if repeat_sweep or "repeat_sweep" not in u.how]
     _add_wrapped_units(specs, lines, gazetteer)
+    _add_row_units(specs, lines, gazetteer)
     if pairs:
         _apply_pairs(specs, pairs, known, doc, lines, gazetteer)
     specs.sort(key=lambda s: min(s.roles))
