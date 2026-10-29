@@ -523,6 +523,42 @@ class TestMoreShapes:
     @pytest.mark.parametrize(
         ("line", "unit"),
         [
+            ("Westmead Hospital, Hawkesbury Road, Westmead NSW 2145", "Hawkesbury Road, Westmead NSW 2145"),
+            (
+                "Royal Prince Alfred Hospital, Missenden Road, Camperdown NSW 2050",
+                "Missenden Road, Camperdown NSW 2050",
+            ),
+            ("Nepean Hospital, Derby Street, Kingswood NSW 2747", "Derby Street, Kingswood NSW 2747"),
+            ("Ms Jane Citizen, Derby Street, Kingswood NSW 2747", "Derby Street, Kingswood NSW 2747"),
+            ("Seen 3 May 2024, Derby Street, Kingswood NSW 2747", "Derby Street, Kingswood NSW 2747"),
+            (
+                "She was admitted to Nepean Hospital, Derby Street, Kingswood NSW 2747 on 3 May.",
+                "Derby Street, Kingswood NSW 2747",
+            ),
+            ("12 Smith Street, Castle Hill NSW 2154", "12 Smith Street, Castle Hill NSW 2154"),
+            ("4 Rose Lane, Kelvin Grove QLD 4059", "4 Rose Lane, Kelvin Grove QLD 4059"),
+            ("8 Station Street, Box Hill Vic 3128", "8 Station Street, Box Hill Vic 3128"),
+            ("3 Queensland Avenue, Victoria Point QLD 4165", "3 Queensland Avenue, Victoria Point QLD 4165"),
+            ("Nepean Hospital, Local Court, Penrith NSW 2750", "Penrith NSW 2750"),
+            ("Penrith Plaza, Penrith NSW 2750", "Penrith NSW 2750"),
+            ("Dr Jane Smith, Orthopaedic Surgeon, Kingswood NSW 2747", "Kingswood NSW 2747"),
+        ],
+    )
+    def test_a_numberless_street_after_a_name_and_its_comma(self, line: str, unit: str) -> None:
+        """After a hospital, a person or a date and its comma a numberless 'Name Type' before a place is a street line;
+        right after a street line's own comma a suburb ending in a type word starts; Court, Plaza and an occupation
+        stay outside."""
+        doc, result = run_join([line])
+        assert unit_texts(doc, result) == [unit]
+        assert not [k for k in result.kept if k.kind is KeptKind.STREET_IN_PROSE]
+
+    def test_a_numberless_street_after_a_name_with_no_state_or_postcode_is_no_unit(self) -> None:
+        doc, result = run_join(["Nepean Hospital, Derby Street, Kingswood."])
+        assert unit_texts(doc, result) == []
+
+    @pytest.mark.parametrize(
+        ("line", "unit"),
+        [
             ("L4/123 George St, Sydney NSW 2000", "L4/123 George St, Sydney NSW 2000"),
             ("U5/3 Smith Street, Penrith NSW 2750", "U5/3 Smith Street, Penrith NSW 2750"),
             ("#12 Smith Street, Penrith NSW 2750", "#12 Smith Street, Penrith NSW 2750"),

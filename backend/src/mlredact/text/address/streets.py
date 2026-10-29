@@ -356,12 +356,15 @@ class StreetStage(PlaceStage):
 
     def _numberless_at(self, ln: Line, i: int) -> Street | None:
         """A numberless 'Name Type' street line, with a street-type suffix if one follows the type ('Smith Street
-        North,'): at the line start, after a separator or a label, or in prose after a lower-case word ('injured on
-        Victoria Road, Ryde NSW 2112').  It becomes a unit only with a place carrying a state or postcode (a postcode in
-        prose) that directly follows it, never alone (owner question 3 and the ruling on open point 6)."""
+        North,'): at the line start, after a separator or a label, after a name and its comma ('Nepean Hospital, Derby
+        Street, Kingswood NSW 2747'), or in prose after a lower-case word ('injured on Victoria Road, Ryde NSW 2112').
+        It becomes a unit only with a place carrying a state or postcode (a postcode in prose) that directly follows
+        it, never alone (owner question 3 and the ruling on open point 6).  Right after a street line's own comma it is
+        no street: there a suburb ending in a type word ('12 Smith Street, Castle Hill') starts."""
         ws = ln.words
         prose = False
-        if i > 0 and not (ws[i - 1].sep or ws[i - 1].label or self.label_ending_before(ln.li, i)):
+        after_name = i > 0 and ws[i - 1].comma and not ws[i - 1].sep and not ws[i - 1].typ
+        if i > 0 and not (ws[i - 1].sep or ws[i - 1].label or after_name or self.label_ending_before(ln.li, i)):
             if not (ws[i - 1].lowr and ws[i - 1].b.isalpha()):
                 return None
             prose = True
