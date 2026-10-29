@@ -226,7 +226,7 @@ def _identifying(unit: JoinedUnit, tid: str, text: str) -> str | None:
         if p.token_id == tid:
             return p.change
     if role is Role.STATE_AND_POSTCODE:
-        m = _GLUED.match(_edges(text)[1])
+        m = _GLUED.match(_edges(text)[1].rstrip("."))
         return m.group(2) if m else text
     return text
 
@@ -249,7 +249,8 @@ def exclusions_of(addresses: AddressFakes) -> Exclusions:
 
 
 def _digits(text: str) -> str | None:
-    core = _edges(text)[1]
+    """The four digits a postcode word writes ('2750', '2750.', 'NSW2750.'), else None."""
+    core = _edges(text)[1].rstrip(".")
     m = _GLUED.match(core)
     core = m.group(2) if m else core.translate(_OCR_DIGITS)
     return core if core.isdigit() and len(core) == 4 else None
@@ -261,7 +262,7 @@ def _state_word(role: Role | None, text: str) -> str | None:
     if role is Role.STATE:
         return canonical_state(core)
     if role is Role.STATE_AND_POSTCODE:
-        m = _GLUED.match(core)
+        m = _GLUED.match(core.rstrip("."))
         return canonical_state(m.group(1)) if m and m.group(1) else None
     return None
 

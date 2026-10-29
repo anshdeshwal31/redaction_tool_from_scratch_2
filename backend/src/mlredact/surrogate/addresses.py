@@ -140,6 +140,12 @@ def _bare(text: str) -> str:
     return _edges(text)[1].rstrip(".")
 
 
+def _dot(original: str, fake: str) -> str:
+    """The full stop an original word ends with (a sentence's, or an abbreviation's such as 'St.'), for a fake that
+    does not end with one: punctuation is kept."""
+    return "." if _edges(original)[1].endswith(".") and not fake.endswith(".") else ""
+
+
 @cache
 def _rows_by_name(gaz: Gazetteer) -> Mapping[str, tuple[Locality, ...]]:
     """Every row of the list by folded name, an alias reaching the rows of its target in its state."""
@@ -228,7 +234,7 @@ class AddressFaker:
                     continue
                 text = w.change if w.change is not None else w.text
                 if role is Role.STATE_AND_POSTCODE and w.change is None:
-                    m = _GLUED.match(_edges(w.text)[1])
+                    m = _GLUED.match(_edges(w.text)[1].rstrip("."))
                     text = m.group(2) if m else text
                 runs = digit_runs(text)
                 if runs:
@@ -327,6 +333,8 @@ class AddressFaker:
         """A number word: the number rule, or the level rule; a slash form fakes its unit and house numbers apart."""
         f, ex = self._f, self._ex
         lead, core, trail = _edges(w.text)
+        if core.endswith(".") and core[:-1]:  # a number that ends a sentence keeps its full stop
+            core, trail = core[:-1], "." + trail
         keep, change = (w.keep, w.change) if w.change is not None else ("", None)
         if role is Role.LEVEL_NUMBER:
             new = f.level_number(core, f"{kb}\x1flevel\x1f{core.upper()}", ex)
@@ -405,11 +413,11 @@ class AddressFaker:
     def _glued(self, w: UnitWord, loc: Locality, fake_state: str | None) -> str:
         """A glued 'NSW2750': the letters stay (or become the replaced state), the digits are the fake postcode."""
         lead, core, trail = _edges(w.text)
-        m = _GLUED.match(core)
+        m = _GLUED.match(core.rstrip("."))
         letters = w.keep or (m.group(1) if m else "")
         if self._replace_state and fake_state:
             letters = self._f.state_form(letters, fake_state)
-        return lead + letters + loc.postcode + trail
+        return lead + letters + loc.postcode + _dot(w.text, loc.postcode) + trail
 
     def _write_states(
         self, words: Sequence[UnitWord], roles: Sequence[Role | None], fake_state: str, out: dict[str, str]
@@ -476,15 +484,16 @@ def _last_run(runs: Sequence[tuple[Role, list[int]]], role: Role) -> list[int]:
 
 
 def _wrap(w: UnitWord, core: str) -> str:
-    """``core`` with the leading and trailing punctuation of the original word."""
+    """``core`` with the leading and trailing punctuation of the original word, a final full stop included."""
     lead, _, trail = _edges(w.text)
-    return lead + core + trail
+    return lead + core + _dot(w.text, core) + trail
 
 
 def _put(out: dict[str, str], words: Sequence[UnitWord], idx: Sequence[int], value: str) -> None:
-    """Write ``value`` into the first slot of a run (with the run's punctuation) and erase the others."""
+    """Write ``value`` into the first slot of a run (with the run's punctuation, a final full stop included) and erase
+    the others."""
     first, last = words[idx[0]], words[idx[-1]]
-    out[first.token_id] = _edges(first.text)[0] + value + _edges(last.text)[2]
+    out[first.token_id] = _edges(first.text)[0] + value + _dot(last.text, value) + _edges(last.text)[2]
     for i in idx[1:]:
         out[words[i].token_id] = ""
 
@@ -504,6 +513,6 @@ def _postcode_digits(w: UnitWord, role: Role | None) -> str | None:
         core = _bare(w.text).translate(_OCR_DIGITS)
         return core if core.isdigit() and len(core) == 4 else None
     if role is Role.STATE_AND_POSTCODE:
-        m = _GLUED.match(_edges(w.text)[1])
+        m = _GLUED.match(_edges(w.text)[1].rstrip("."))
         return m.group(2) if m else None
     return None

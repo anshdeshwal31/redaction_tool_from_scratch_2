@@ -443,6 +443,15 @@ def _word(case_id: str, role: Role, n: int = 0) -> str:
 
 
 class TestFakeChecks:
+    @pytest.mark.parametrize("fake", ["2751.", "2751", "3999.", "2750."])
+    def test_a_postcode_that_ends_a_sentence_is_checked_too(self, fake: str) -> None:
+        """'... Penrith NSW 2750.': the full stop is punctuation, the four digits are the postcode (D3, the state's
+        ranges, never the original)."""
+        cid = "sentence-resides-place-only"
+        assert not any(_v5(cid).values())
+        bad = _v5(cid, {_word(cid, Role.POSTCODE): fake})
+        assert bad["address_postcode"] == 1
+
     def test_the_real_fakes_pass(self) -> None:
         for cid in ("one-line-basic", "block-person", "unit-slash", "matter-d8-two-addresses-one-suburb"):
             assert not any(_v5(cid).values()), cid

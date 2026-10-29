@@ -489,6 +489,8 @@ def unit_errors(case_id: str, e: dict[str, Any], unit: JoinedUnit, fakes: Mappin
             errs.append(f"{role} leading punctuation")
         if edges(last_o)[2] != edges(last_f)[2] and last_f:
             errs.append(f"{role} trailing punctuation")
+        if last_f and edges(last_o)[1].endswith(".") and not edges(last_f)[1].endswith("."):
+            errs.append(f"{role} trailing full stop")  # a sentence's, or an abbreviation's ('St.' -> 'Cres.')
         if role in ("number", "unit_number", "box_number", "dx_number", "unit_number+number"):
             keep = partial[tid]["keep"] if tid in partial else ""
             if not f.startswith(keep):
