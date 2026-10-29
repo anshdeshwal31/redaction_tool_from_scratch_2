@@ -36,8 +36,8 @@ _OCR_DIGITS: Final = str.maketrans("OoIlSB", "001158")
 
 
 def bare(t: str) -> str:
-    """A word without its surrounding brackets, quotes and trailing punctuation."""
-    s = t.strip().lstrip("([{\"'‘“")
+    """A word without its surrounding brackets, quotes, a leading '#' ('#12') and trailing punctuation."""
+    s = t.strip().lstrip("([{\"'‘“#")
     s = s.rstrip(",;:)]}\"'’”!?")
     if s.endswith("."):
         s = s[:-1]

@@ -311,10 +311,16 @@ class StreetStage(PlaceStage):
                 self._extend_back(s)
                 return s if self._typed_ok(s) else None
             return None
-        if not w.numw or w.comma or w.text.strip().startswith("$"):
+        if not w.numw or w.text.strip().startswith("$"):
             return None
         if i + 1 >= len(ws):
             return None
+        if w.comma and (
+            not self._typed_after(ws, i + 1)
+            or (w.b.isdigit() and len(w.b) == 4 and 1900 <= int(w.b) <= 2099)
+            or (i > 0 and (ws[i - 1].lo in MONTHS or ws[i - 1].digits))
+        ):
+            return None  # '12, Smith Street' only when a name and a street type follow, and never a date's year
         if ws[i + 1].lo in MEASURE_WORDS:
             return None
         roles[i] = Role.UNIT_NUMBER_AND_NUMBER if HN_SLASH.fullmatch(w.b) else Role.NUMBER
@@ -342,6 +348,11 @@ class StreetStage(PlaceStage):
         if Flag.TYPED in flags and not self._typed_ok(s):
             return None
         return s
+
+    def _typed_after(self, ws: list[Word], i: int) -> bool:
+        """A street name and a street type start at word ``i``."""
+        names, typ, _end, _fl = self._name_type(ws, i, set())
+        return bool(names) and typ is not None
 
     def _numberless_at(self, ln: Line, i: int) -> Street | None:
         """A numberless 'Name Type' street line, with a street-type suffix if one follows the type ('Smith Street

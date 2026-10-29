@@ -516,6 +516,43 @@ class TestPendingCases:
         assert unit.kind is UnitKind.PLACE_ONLY
 
 
+# ------------------------------------------------------------------------------------- shapes found in the review
+class TestMoreShapes:
+    """Address shapes the case table does not hold, each replaced whole (fictional lines)."""
+
+    @pytest.mark.parametrize(
+        ("line", "unit"),
+        [
+            ("L4/123 George St, Sydney NSW 2000", "L4/123 George St, Sydney NSW 2000"),
+            ("U5/3 Smith Street, Penrith NSW 2750", "U5/3 Smith Street, Penrith NSW 2750"),
+            ("#12 Smith Street, Penrith NSW 2750", "#12 Smith Street, Penrith NSW 2750"),
+            ("12, Smith Street, Penrith NSW 2750", "12, Smith Street, Penrith NSW 2750"),
+        ],
+    )
+    def test_a_glued_level_or_unit_code_a_hash_or_a_comma_after_the_number(self, line: str, unit: str) -> None:
+        doc, result = run_join([line])
+        assert unit_texts(doc, result) == [unit]
+
+    @pytest.mark.parametrize(
+        "line", ["She drives a 4 Wheel Drive.", "They rented a 3 Bedroom Place.", "It was a 2 Storey Terrace."]
+    )
+    def test_a_count_noun_after_a_number_is_no_street(self, line: str) -> None:
+        doc, result = run_join([line])
+        assert unit_texts(doc, result) == []
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "Level 2 evidence supports L4 fusion.",
+            "MRI shows an L4/5 disc protrusion at the L4/5 Level.",
+            "See page 12, Smith said nothing.",
+        ],
+    )
+    def test_look_alikes_of_those_shapes_are_no_address(self, line: str) -> None:
+        doc, result = run_join([line])
+        assert unit_texts(doc, result) == []
+
+
 # ------------------------------------------------------------------------------------------------ mentions around units
 class TestMentions:
     def test_a_fused_locality_becomes_the_address(self) -> None:

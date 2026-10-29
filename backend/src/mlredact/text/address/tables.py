@@ -285,7 +285,9 @@ LEVEL_WORDS: Final = frozenset({"floor", "flr", "fl", "level"})
 # 'Building C', 'Block 2', 'Tower 2', 'Wing B': designator words before a letter or number designator.
 BUILDING_DESIG: Final = frozenset({"building", "block", "tower", "wing"})
 # A level-type code before a hotel-style unit number ('B02/53'): the code stays.
-LEVEL_CODE: Final = re.compile(r"^(LG|UG|B|G|M)(\d{1,4}[A-Za-z]?(?:/\d{1,5}[A-Za-z]?)?)$")
+# 'L4/123' and 'U5/3' (amendment E: 'Level (L)', 'Unit (U)') are such codes too, read only before a street name and
+# type.
+LEVEL_CODE: Final = re.compile(r"^(LG|UG|LVL|B|G|M|L|U)(\d{1,4}[A-Za-z]?(?:/\d{1,5}[A-Za-z]?)?)$")
 ORDINAL: Final = re.compile(r"^(\d{1,2})(st|nd|rd|th)$", re.IGNORECASE)
 
 
@@ -398,7 +400,8 @@ MEASURE_WORDS: Final = frozenset(
     """
     minute minutes min mins second seconds sec secs hour hours hr hrs day days week weeks wk wks month months
     year years yr yrs metre metres meter meters m km kms cm mm kg kgs g mg ml times percent degree degrees point
-    points repetitions reps step steps
+    points repetitions reps step steps wheel storey storeys story stories star stars door doors bedroom bedrooms
+    seater
     """.split()
 )
 # A clinical or legal-record noun right after a street type vetoes the street ('3 Local Court convictions').
@@ -440,7 +443,7 @@ FURNITURE: Final = re.compile(r"^(?:page\s*\d+(?:\s*(?:of|/)\s*\d+)?|-\s*\d+\s*-
 
 # ----------------------------------------------------------------------------------------------------- word shapes
 HN: Final = re.compile(r"^\d{1,5}[A-Za-z]?(?:[-–]\d{1,5}[A-Za-z]?)?$")  # 12, 12A, 12-14
-HN_SLASH: Final = re.compile(r"^(?:LG|UG|B|G|M)?\d{1,5}[A-Za-z]?/\d{1,5}[A-Za-z]?$")  # 5/3, B02/53
+HN_SLASH: Final = re.compile(r"^(?:LG|UG|LVL|B|G|M|L|U)?\d{1,5}[A-Za-z]?/\d{1,5}[A-Za-z]?$")  # 5/3, B02/53, L4/123
 BOXNUM: Final = re.compile(r"^\d{1,6}[A-Za-z]?$")
 GLUED: Final = re.compile(r"^(NSW|VIC|QLD|SA|WA|TAS|NT|ACT)(\d{4})$")
 PC_OCR: Final = re.compile(r"^[0-9OoIlSB]{4}$")

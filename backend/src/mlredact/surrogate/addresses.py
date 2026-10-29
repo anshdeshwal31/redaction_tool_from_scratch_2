@@ -63,7 +63,7 @@ _GLUED = re.compile(r"^([A-Za-z.]*?)(\d{4})$")
 _GPO = re.compile(r"^g\.?p\.?o\.?$", re.IGNORECASE)
 _FULL_STATE = {fold_name(name): code for code, name in STATE_NAMES.items()}
 _MAX_REDRAWS = 8
-_WORD_EDGES = ",;:()[]{}|!?\"'“”‘’"
+_WORD_EDGES = ",;:()[]{}|!?\"'“”‘’#"
 
 
 @dataclass(frozen=True, slots=True)
