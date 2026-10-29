@@ -97,6 +97,7 @@ class SurrogateAssigner:
         for line in self._lines.values():
             line.sort(key=lambda t: t.word_no)
         self._given_by_cluster: dict[str, list[str]] = {}
+        self._doc_postcodes: set[str] = set()
         for pm in persons.mentions.values():
             if pm.cluster:
                 bucket = self._given_by_cluster.setdefault(pm.cluster, [])
@@ -114,6 +115,13 @@ class SurrogateAssigner:
         """Replacement text for every SURROGATE, DATE_SHIFT (dates) and GENERALISE (ages) decision."""
         out: dict[str, MentionSurrogate] = {}
         shifter: DateShifter | None = None
+        # Every postcode the document writes on its own, kept or not: a place fake never repeats one of them.
+        self._doc_postcodes = {
+            digits
+            for d in decisions
+            if d.mention.entity_type is EntityType.POSTCODE
+            if len(digits := "".join(c for c in d.mention.value if c.isdigit())) == 4
+        }
         if self._units and self._faker is None:
             self._faker = self._address_faker(decisions)
         for d in decisions:
@@ -154,7 +162,12 @@ class SurrogateAssigner:
             return self._whole_address(m) or self._address(m, originals)
         if t is EntityType.LOCALITY:
             state = self._state_after(m)
-            loc = self._f.locality(m.value, state)
+            # The postcode on the same line takes this fake's postcode: it must not repeat an original postcode.
+            loc = self._f.locality(
+                m.value,
+                state,
+                accept=lambda c: c.postcode not in self._doc_postcodes and self._f.not_original(c.postcode),
+            )
             self._line_locality[self._line_of(m)] = loc
             return _aligned(apply_case(" ".join(o.strip(",.") for o in originals), loc.name), originals)
         if t is EntityType.POSTCODE:

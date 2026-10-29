@@ -22,6 +22,10 @@ from mlredact.verify.needles import tokens_of
 from support import column, pdf_from_grid
 
 PROFILES = ("client", "broad", "claimant_focused", "maximal")
+# Fixed scopes make every keyed draw the same on every platform.  The listed ones drew, before the fixes, a person
+# fake containing an original word ('Marshall' for the street 'Marsh') or a place fake whose postcode repeated an
+# original postcode.
+SCOPES = (*(f"scope-{i}" for i in range(8)), "scope-26", "scope-39", "scope-40", "scope-45", "scope-50", "scope-57")
 
 
 def redacted_pdf(
@@ -129,6 +133,17 @@ class TestThePlacesLetter:
         _result, layer = redacted_pdf(doc.pdf, overrides={"policy": {"addresses": "parts"}})
         assert "marsh" not in tokens_of(layer)
         assert sorted(readable(doc, match_key(layer), in_address=True)) == ["2500", "Wollongong"]
+
+    @pytest.mark.parametrize("scope", SCOPES)
+    @pytest.mark.parametrize("profile", PROFILES)
+    def test_every_scope_releases_the_letter_with_no_original_word_in_a_fake(self, profile: str, scope: str) -> None:
+        """Whatever the keyed draws: released, the address replaced whole, no fake holding the street word 'Marsh'
+        (a person fake 'Marshall'), and no place fake repeating an original postcode (a V5 collision)."""
+        doc = make_places_letter(scanned=False)
+        result, layer = redacted_pdf(doc.pdf, profile, scope_id=scope)
+        assert result.status is JobStatus.RELEASED, result.manifest["reasons"]
+        assert readable(doc, match_key(layer), in_address=True) == []
+        assert words_containing(layer, "marsh") == []
 
 
 class TestAPersonsFake:
