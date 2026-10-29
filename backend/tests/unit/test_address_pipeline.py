@@ -248,6 +248,26 @@ class TestWholeAddresses:
         words = r.tokens()
         assert {"penrith", "2750", "parramatta", "2150"} <= set(words) and not {"wattle", "123"} & set(words)
 
+    def test_the_label_style_gives_one_address_one_tag_whatever_its_spelling(self, run: Callable[..., Run]) -> None:
+        letter = column(
+            "Address: 42 Wattle Grove Road, Penrith NSW 2750",
+            "",
+            "Her postal address is 42 Wattle Grove Rd, Penrith NSW 2750.",
+            "",
+            "She resides at 42 Wattle Grove Road and works nearby.",
+            "",
+            "Previously: 7 Example Avenue, Penrith NSW 2750",
+        )
+        r = run(letter, overrides={"redaction": {"style": "label"}})
+        trace = r.result.trace
+        assert trace is not None
+        tags = [
+            trace.surrogates[d.mention.mention_id].tokens[0]
+            for d in trace.decisions
+            if d.mention.entity_type.value == "street_address" and d.mention.mention_id in trace.surrogates
+        ]
+        assert tags == ["[ADDRESS 1]", "[ADDRESS 1]", "[ADDRESS 1]", "[ADDRESS 2]"]
+
     def test_the_trace_records_the_join(self, run: Callable[..., Run]) -> None:
         r = run(column("Address: 42 Wattle Grove Road, Penrith NSW 2750", "", "She grew up in Penrith."))
         trace = r.result.trace

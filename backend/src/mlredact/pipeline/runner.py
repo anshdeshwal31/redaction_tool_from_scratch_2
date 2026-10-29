@@ -296,7 +296,7 @@ class Redactor:
                     surrogates = assigner.assign(decisions)
                     address_fakes = assigner.address_fakes
                 elif cfg.redaction.style == "label":
-                    surrogates = assign_labels(decisions, detection.persons)
+                    surrogates = assign_labels(decisions, detection.persons, join.layouts, join.units)
                 all_lines = [line for p in pages for line in p.lines]
                 rotated = rotated_token_ids(all_lines)
                 planned = (
