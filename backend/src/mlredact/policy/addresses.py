@@ -56,7 +56,7 @@ from mlredact.text.address import (
     UnitKind,
     parse_document,
 )
-from mlredact.text.gazetteer import Gazetteer
+from mlredact.text.gazetteer import Gazetteer, fold_name
 
 E = EntityType
 
@@ -420,6 +420,23 @@ def _force(
         kind, key = base.kind, base.key
     else:
         kind, key = (UnitKind.STREET if street else UnitKind.PLACE_ONLY), AddressKey()
+    if street and not key.has_street:
+        # A pair holds a street line: the unit is keyed by it, never by its place alone, or two streets of one suburb
+        # would share one fake.  The street key of a unit merged or read, else the forced street words as a name.
+        donors = sorted(
+            [(len(u.roles), u.kind, u.key) for u in units if u.key.has_street]
+            + [(len(h.roles), h.kind, h.key) for h in hit if h.key.has_street],
+            key=lambda d: (-d[0], d[2].street_text()),
+        )
+        if donors:
+            _n, donor_kind, donor = donors[0]
+            street_kind, parts, sub = donor.street_kind, donor.street_parts, donor.sub or key.sub
+            kind = donor_kind if kind is UnitKind.PLACE_ONLY else kind
+        else:
+            words = (fold_name(lines[li].words[wi].text).upper() for li, wi in sorted(merged - place))
+            street_kind, parts, sub = "PROP", (tuple(w for w in words if w),), key.sub
+            kind = UnitKind.STREET if kind is UnitKind.PLACE_ONLY else kind
+        key = AddressKey(street_kind, parts, sub, key.suburb, key.state)
     spec = _Spec(roles, kind, key, ("pairs",), forced=True, place=frozenset(place))
     for s in hit:
         spec.uids |= s.uids
@@ -700,6 +717,8 @@ def _apply_pairs(
         hit = [s for s in specs if s.roles.keys() & positions]
         if len(hit) == 1 and positions <= hit[0].roles.keys():
             continue  # the grammar already reads these words as one unit
+        if sum(1 for s in hit if s.key.has_street and s.key.has_place) >= 2:
+            continue  # two whole addresses (a pairing by position across side-by-side blocks): never one unit
         _force(specs, lines, positions, place_at, gazetteer, street is not None)
 
 

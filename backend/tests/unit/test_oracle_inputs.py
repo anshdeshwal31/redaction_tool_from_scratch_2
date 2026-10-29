@@ -579,6 +579,58 @@ def test_a_unit_wider_than_the_injection_redacts_only_the_injected_words(tmp_pat
 
 
 @pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (("Flurble Quux,",), ("Blarg Zonk,",)),  # street lines the grammar cannot read
+        (("12 Flurble Street,",), ("12 Blarg Street,",)),  # readable streets, each a line away from the place
+    ],
+)
+def test_two_paired_street_lines_of_one_suburb_never_share_a_fake(
+    tmp_path: Path, first: tuple[str, ...], second: tuple[str, ...]
+) -> None:
+    """A pair is keyed by its street line, never by its place alone (two addresses in Kings Langley)."""
+    lines = (*first, "Telephone 0400 000 000", "Kings Langley NSW 2148", *second, "Telephone 0400 000 000")
+    tokens = layout(*lines, "Kings Langley NSW 2148")
+    n = len(first[0].split())
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("a", "ADDRESS", tokens=[f"t0.{k}" for k in range(n)]),
+            mention("a-loc", "LOCATION", tokens=["t2.0", "t2.1", "t2.2", "t2.3"]),
+            mention("b", "ADDRESS", tokens=[f"t3.{k}" for k in range(n)]),
+            mention("b-loc", "LOCATION", tokens=["t5.0", "t5.1", "t5.2", "t5.3"]),
+        ],
+    )
+    join = s.stage.join
+    assert join is not None and len(join.units) == 2
+    assert all(u.key.has_street for u in join.units.values())
+    fake = drawn(s)
+    wholes = {" ".join(fake[t] for t in sorted(u.roles) if fake.get(t)) for u in join.units.values()}
+    assert len(wholes) == 2, wholes
+
+
+def test_one_address_on_one_line_or_split_by_a_line_gets_one_fake(tmp_path: Path) -> None:
+    tokens = layout(
+        "12 Flurble Street, Kings Langley NSW 2148", "12 Flurble Street,", "Ph 0400 000 000", "Kings Langley NSW 2148"
+    )
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("a", "ADDRESS", tokens=["t0.0", "t0.1", "t0.2"]),
+            mention("a-loc", "LOCATION", tokens=["t0.3", "t0.4", "t0.5", "t0.6"]),
+            mention("b", "ADDRESS", tokens=["t1.0", "t1.1", "t1.2"]),
+            mention("b-loc", "LOCATION", tokens=["t3.0", "t3.1", "t3.2", "t3.3"]),
+        ],
+    )
+    fake = drawn(s)
+    one_line = [fake[f"p0000.l0000.w{k:03d}"] for k in range(7)]
+    split = [fake[tid(1, k)] for k in range(3)] + [fake[tid(3, k)] for k in range(4)]
+    assert one_line == split
+
+
+@pytest.mark.parametrize(
     ("line", "street"),
     [
         ("Injured on Victoria Road", ["t0.2", "t0.3"]),
@@ -599,6 +651,41 @@ def test_a_street_line_injected_with_no_place_has_every_word_replaced(
     for token in street:
         word = tid(0, int(token.split(".")[1]))
         assert fold(fake[word]) != fold(originals[token]), (originals[token], fake[word])
+
+
+def test_a_pairing_by_position_never_merges_two_side_by_side_addresses(tmp_path: Path) -> None:
+    """Without the id convention a place pairs with the address on the line above in reading order, which beside
+    another block is the other column's: the grammar's two whole addresses stay two units."""
+    rows = (("12 Smith Street,", "PO Box 5,"), ("Penrith NSW 2750", "Sydney NSW 2000"))
+    tokens: list[dict[str, Any]] = []
+    for row, pair in enumerate(rows):
+        for col, text in enumerate(pair):
+            x, y = 60.0 + 270.0 * col, 100.0 + 20.0 * row
+            for k, word in enumerate(text.split()):
+                width = 5.5 * len(word)
+                tokens.append(
+                    {
+                        "id": f"t{row}{col}.{k}",
+                        "text": word,
+                        "poly": poly(x, y, x + width, y + 11.0),
+                        "line": f"l{row}{col}",
+                        "order": len(tokens),
+                    }
+                )
+                x += width + 3.0
+    s = stage(
+        tmp_path,
+        tokens,
+        [
+            mention("sender-street", "ADDRESS", tokens=["t00.0", "t00.1", "t00.2"]),
+            mention("recipient-street", "ADDRESS", tokens=["t01.0", "t01.1", "t01.2"]),
+            mention("sender-place", "LOCATION", tokens=["t10.0", "t10.1", "t10.2"]),
+            mention("recipient-place", "LOCATION", tokens=["t11.0", "t11.1", "t11.2"]),
+        ],
+    )
+    join = s.stage.join
+    assert join is not None
+    assert sorted(u.kind.value for u in join.units.values()) == ["box", "street"]
 
 
 def test_an_address_nobody_injected_is_no_unit(tmp_path: Path) -> None:
