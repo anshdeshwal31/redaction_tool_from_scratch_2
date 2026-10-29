@@ -703,6 +703,28 @@ def _apply_pairs(
         _force(specs, lines, positions, place_at, gazetteer, street is not None)
 
 
+def _apply_streets(
+    specs: list[_Spec],
+    streets: Collection[str],
+    known: Sequence[Mention],
+    doc: _Doc,
+    lines: Sequence[AddrLine],
+    gazetteer: Gazetteer | None,
+) -> None:
+    """Make each street-line mention with no place (``streets``) a unit of its own unless the grammar already reads
+    its words in one: its words take the roles of their shapes, so every identifying word changes (a street type
+    too), and the unit is keyed by its own words."""
+    by_id = {m.mention_id: m for m in known}
+    for street_id in sorted(streets):
+        street = by_id.get(street_id)
+        if street is None:
+            continue
+        positions = {doc.pos_of[t] for t in street.token_ids}
+        if any(positions <= s.roles.keys() for s in specs):
+            continue
+        _force(specs, lines, positions, set(), gazetteer, True)
+
+
 @dataclass(slots=True)
 class _Built:
     """What the units become: the units, the mentions that carry them, their layouts and targets, and the tokens the
@@ -716,9 +738,15 @@ class _Built:
 
 
 def _build_units(
-    specs: Sequence[_Spec], doc: _Doc, owners: Mapping[str, Sequence[Mention]], owned: Collection[EntityType]
+    specs: Sequence[_Spec],
+    doc: _Doc,
+    owners: Mapping[str, Sequence[Mention]],
+    owned: Collection[EntityType],
+    inside: Collection[Pos] | None = None,
 ) -> _Built:
-    """One STREET_ADDRESS mention per run of a unit's tokens (the words another mention owns are left to it)."""
+    """One STREET_ADDRESS mention per run of a unit's tokens (the words another mention owns are left to it).  With
+    ``inside`` only those words are carried and searched for (the injected words of an oracle mode): the unit keeps the
+    roles and key of all its words, so the fake of the words carried is the end-to-end fake."""
     built = _Built()
     held: dict[str, str] = {}  # grammar uid -> the unit that holds it
     repeats: dict[str, str] = {}  # unit id -> grammar uid of the unit it repeats
@@ -728,7 +756,7 @@ def _build_units(
 
     for s in specs:
         pos = sorted(s.roles)
-        carried = [p for p in pos if not foreign(doc.tid_at[p])]
+        carried = [p for p in pos if not foreign(doc.tid_at[p]) and (inside is None or p in inside)]
         if not carried:
             continue
         unit_id = content_id("AU", doc.tid_at[pos[0]], doc.tid_at[pos[-1]])
@@ -775,7 +803,7 @@ def _build_units(
         ]
         built.targets[unit_id] = _unit_targets(
             unit_id,
-            tid_roles,
+            tid_roles if inside is None else {doc.tid_at[p]: s.roles[p] for p in carried},
             {t: doc.tokens[t].text for t in [*tid_roles, *(t for _fp, ids in labelled for t in ids)]},
             {t: doc.pos_of[t] for t in tid_roles},
             [(ids, [doc.tid_at[p] for p in fp.value if p in s.roles]) for fp, ids in labelled],
@@ -827,6 +855,8 @@ def join_addresses(
     bands: Mapping[str, Band] | None = None,
     boxes: Mapping[str, BoxRole] | None = None,
     gazetteer: Gazetteer | None = None,
+    within: Collection[str] | None = None,
+    streets: Collection[str] = (),
 ) -> AddressJoin:
     """Join the document's address mentions into whole-address units.
 
@@ -843,7 +873,11 @@ def join_addresses(
     counts as header and footer (0 turns the position rule off).  It is small on purpose: a continuation line at the top
     margin of a page must stay body text for the page-break join.  ``bands`` and ``boxes`` tag lines by ``line_id``
     where the caller knows better: a letterhead band, or a form's label, value and cell boxes (tool 2 has neither
-    detector yet)."""
+    detector yet).  ``within`` (the oracle modes): the token ids of the injected address mentions; a unit the grammar
+    reads that holds none of them is dropped, and a unit carries and verification searches only those words, so the
+    join redacts exactly what was injected (what is left out stays, and verification counts it against the
+    release).  ``streets`` (the oracle modes): the ids of injected street-line mentions with no place, each a unit even
+    when the grammar reads none (every injected word is replaced, fail closed)."""
     doc = _doc_of(pages)
     if policy.addresses == "parts":
         return AddressJoin(tuple(split_kept_places(mentions, doc.tokens, policy)))
@@ -862,10 +896,15 @@ def join_addresses(
     _add_wrapped_units(specs, lines, gazetteer)
     _add_row_units(specs, lines, gazetteer)
     _add_glued_units(specs, lines, gazetteer)
+    inside = None if within is None else {doc.pos_of[t] for t in within if t in doc.pos_of}
+    if inside is not None:
+        specs = [s for s in specs if s.roles.keys() & inside]
     if pairs:
         _apply_pairs(specs, pairs, known, doc, lines, gazetteer)
+    if streets:
+        _apply_streets(specs, streets, known, doc, lines, gazetteer)
     specs.sort(key=lambda s: min(s.roles))
-    built = _build_units(specs, doc, owners, owned)
+    built = _build_units(specs, doc, owners, owned, inside)
 
     kept = tuple(
         KeptRecord(k.kind, ids, k.after_cue)

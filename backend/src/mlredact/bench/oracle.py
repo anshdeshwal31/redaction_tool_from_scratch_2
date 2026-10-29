@@ -55,7 +55,7 @@ from mlredact.core.types import ActionKind, EntityType, EvidenceStrength, Region
 from mlredact.detect.engine import DetectionResult, default_detectors
 from mlredact.detect.fusion import TYPE_PRIORITY
 from mlredact.pipeline.injection import InjectedPage, InjectedStage, InjectReport, ReportedMention, on_page, pt_box
-from mlredact.policy.addresses import AddressJoin, join_addresses
+from mlredact.policy.addresses import ADDRESS_TYPES, AddressJoin, join_addresses
 from mlredact.policy.engine import Decision, decide, decide_injected
 from mlredact.resolve.persons import resolve_persons, with_clusters
 from mlredact.surrogate.assign import MentionSurrogate
@@ -280,6 +280,7 @@ class _Stager:
         pairing = self._pairing(groups) if whole else {}
         in_units = {k for place, street in pairing.items() for k in (place, street) if k is not None}
         internal: list[Mention] = []
+        alone: list[str] = []  # the street lines injected with no place
         unit_of: dict[int, str] = {}  # group -> the id of its mention (a unit group has exactly one)
         for k, group in enumerate(groups):
             winner = group.winner
@@ -297,13 +298,19 @@ class _Stager:
             for run in runs:
                 parts = self._parts(run, winner, whole)
                 self.counts["location_split"] += len(parts) > 1
-                internal.extend(self._mention(run[start:end], kind, winner) for kind, start, end in parts)
+                made = [self._mention(run[start:end], kind, winner) for kind, start, end in parts]
+                internal.extend(made)
+                if whole and not winner.anchored.family.location:  # a street line with no place: a unit of its own
+                    alone.extend(m.mention_id for m in made if m.entity_type is EntityType.STREET_ADDRESS)
         join: AddressJoin | None = None
         if whole:
             pairs = {
                 unit_of[place]: unit_of[street] if street is not None else None for place, street in pairing.items()
             }
-            join = join_addresses(internal, self.pages, config.policy, pairs, repeat_sweep=False)
+            within = {t for m in internal if m.entity_type in ADDRESS_TYPES for t in m.token_ids}
+            join = join_addresses(
+                internal, self.pages, config.policy, pairs, repeat_sweep=False, within=within, streets=alone
+            )
             mentions = list(join.mentions)
         else:
             mentions = sorted(internal, key=lambda m: (m.token_ids[0], m.token_ids[-1], m.entity_type.value))

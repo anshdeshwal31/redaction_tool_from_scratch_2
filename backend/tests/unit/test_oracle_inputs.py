@@ -485,6 +485,10 @@ def e2e_drawn(s: Staged) -> dict[str, str]:
     }
 
 
+def fold(text: str) -> str:
+    return text.strip(",.").casefold()
+
+
 def tid(line: int, word: int) -> str:
     return f"p0000.l{line:04d}.w{word:03d}"
 
@@ -553,9 +557,11 @@ def test_the_footer_s_box_words_are_replaced(tmp_path: Path) -> None:
         assert fake[tid(line, word)] != original, original
 
 
-def test_a_unit_can_be_wider_than_the_injection(tmp_path: Path) -> None:
-    """The grammar reads 'Level 4,' as part of the address: the unit is redacted whole (one fake for the address),
-    while the injected ADDRESS and LOCATION keep to their own words."""
+def test_a_unit_wider_than_the_injection_redacts_only_the_injected_words(tmp_path: Path) -> None:
+    """The grammar reads 'Level 4,' as part of the address, but only the injected ADDRESS and LOCATION are redacted
+    (the oracle contract: exactly these mentions); 'Level 4,' stays, as any mention left out does, and verification
+    counts it against the release.  The words redacted take the end-to-end fake: the unit keeps the key of all its
+    words."""
     tokens = layout("Level 4, 123 George Street,", "Sydney NSW 2000")
     s = stage(
         tmp_path,
@@ -565,9 +571,51 @@ def test_a_unit_can_be_wider_than_the_injection(tmp_path: Path) -> None:
             mention("addr-loc", "LOCATION", tokens=["t1.0", "t1.1", "t1.2"]),
         ],
     )
-    assert s.mentions == [("street_address", "Level 4, 123 George Street, Sydney NSW 2000")]
+    assert s.mentions == [("street_address", "123 George Street, Sydney NSW 2000")]
     assert s.reported["addr"].token_ids == (tid(0, 2), tid(0, 3), tid(0, 4))
-    assert drawn(s)[tid(0, 1)] != "4,"
+    fake, e2e = drawn(s), e2e_drawn(s)
+    assert tid(0, 0) not in fake and tid(0, 1) not in fake, "'Level 4,' was not injected"
+    assert {t: fake[t] for t in fake} == {t: e2e[t] for t in fake}
+
+
+@pytest.mark.parametrize(
+    ("line", "street"),
+    [
+        ("Injured on Victoria Road", ["t0.2", "t0.3"]),
+        ("Accident at 45 Smith Road after work.", ["t0.2", "t0.3", "t0.4"]),
+        ("Fell outside 7 Queensland Street today", ["t0.2", "t0.3", "t0.4"]),
+    ],
+)
+def test_a_street_line_injected_with_no_place_has_every_word_replaced(
+    tmp_path: Path, line: str, street: list[str]
+) -> None:
+    """An injected ADDRESS with no LOCATION that the grammar reads as no address (a street named in prose, a numbered
+    street with no cue) is a unit of its own: every word changes, the street type and a state-named street too."""
+    s = stage(tmp_path, layout(line), [mention("addr", "ADDRESS", tokens=street)])
+    join = s.stage.join
+    assert join is not None and len(join.units) == 1
+    fake = drawn(s)
+    originals = {t["id"]: t["text"] for t in layout(line)}
+    for token in street:
+        word = tid(0, int(token.split(".")[1]))
+        assert fold(fake[word]) != fold(originals[token]), (originals[token], fake[word])
+
+
+def test_an_address_nobody_injected_is_no_unit(tmp_path: Path) -> None:
+    """Only a person is injected: the grammar's addresses are not redacted (they stay, as any mention left out)."""
+    tokens = layout("Dr Jane Citizen", "12 Smith Street, Penrith NSW 2750")
+    s = stage(tmp_path, tokens, [mention("jane", "PERSON_NAME", tokens=["t0.1", "t0.2"])])
+    join = s.stage.join
+    assert join is not None and not join.units
+    assert s.mentions == [("person", "Jane Citizen")]
+
+
+def test_a_street_line_injected_alone_leaves_its_place(tmp_path: Path) -> None:
+    """A source that reports street lines only (the client's literal Q4): the place after it is not redacted."""
+    tokens = layout("Dr Jane Citizen", "12 Smith Street, Penrith NSW 2750")
+    s = stage(tmp_path, tokens, [mention("addr", "ADDRESS", tokens=["t1.0", "t1.1", "t1.2"])])
+    assert s.mentions == [("street_address", "12 Smith Street,")]
+    assert set(drawn(s)) == {tid(1, 0), tid(1, 1), tid(1, 2)}
 
 
 @pytest.mark.parametrize(
@@ -594,8 +642,8 @@ def test_a_location_joins_the_address_just_before_it(
         ((_, unit),) = join.units.items()
         assert unit.forced and unit.kind is not UnitKind.PLACE_ONLY and len(unit.token_ids) == 5
         assert s.report.aliases[unit.mention_ids[0]] == ("street", "place")
-    else:
-        assert [u.kind for u in join.units.values()] == [UnitKind.PLACE_ONLY]
+    else:  # the street line is a unit of its own (every injected word is replaced), the place a place-only unit
+        assert [u.kind for u in join.units.values()] == [UnitKind.STREET, UnitKind.PLACE_ONLY]
         assert s.mentions == [("street_address", "Flurble Quux,"), ("street_address", "Zarnok NSW 2750")]
 
 
@@ -617,7 +665,8 @@ def test_the_id_convention_comes_before_the_position(tmp_path: Path) -> None:
         [mention("a", "ADDRESS", tokens=street), mention("b", "LOCATION", tokens=place)],
     )
     assert other.stage.join is not None
-    assert [u.kind for u in other.stage.join.units.values()] == [UnitKind.PLACE_ONLY]  # no pair: a place alone
+    # no pair: a place alone, and the street line a unit of its own
+    assert [u.kind for u in other.stage.join.units.values()] == [UnitKind.STREET, UnitKind.PLACE_ONLY]
     tool_2 = stage(
         tmp_path / "tool2",
         tokens,

@@ -272,7 +272,10 @@ RELEASE = {
     # The mobile number was not injected: verification finds it again, and does not re-plan it.  V2 matches the
     # digits of a whole line, and the line's digits (0412345678) hold the injected claim number's (WC1234567).
     "oracle_mentions": {"released": False, "checks_failed": ["V2_TEXT_LEAK", "V4_RESIDUAL"]},
-    "oracle_entities": {"released": True, "checks_failed": []},
+    # Only the injected mentions are redacted: the letter's ground truth leaves out 'Level 4,' before '123 George
+    # Street' and the postcode after 'Parramatta', which the grammar reads as parts of those addresses; they stay, and
+    # verification finds them.
+    "oracle_entities": {"released": False, "checks_failed": ["V4_RESIDUAL"]},
     # The mobile number is injected but not in the plan: it stays, which both checks see, and nothing is re-planned.
     "oracle_regions": {"released": False, "checks_failed": ["V2_TEXT_LEAK", "V4_RESIDUAL"]},
 }
