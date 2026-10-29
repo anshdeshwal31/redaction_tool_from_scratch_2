@@ -33,8 +33,8 @@ The default render style is `surrogate` (realistic replacements derived from a k
 
 Every profile replaces each postal or street address as **one unit**, from its first word (a building or property
 name, floor or unit words, the house number, a corner form, the street, or a box kind and number) to its last (suburb,
-state, postcode, country), with **one same-shape fake**: the house, unit and level numbers keep their digit count and
-every digit changes, the street name and type change, the suburb is a real locality of the same state and class with
+state, postcode, country), with **one same-shape fake**: the house and unit numbers keep their digit count and every
+digit changes, a level becomes another realistic level, the street name and type change, the suburb is a real locality of the same state and class with
 its own postcode (no digit after the state's own matches the original's), glued forms such as `NSW2750` stay glued,
 and the state word stays. An address is found on one line, over the lines of its block, across a page break, in form
 boxes, in letterheads, footers and prose, and again wherever it repeats. Overseas addresses are replaced whole too (the
@@ -48,12 +48,13 @@ after a court's or hospital's name is an address (the name stays outside the uni
 rule). A street named without a house number in running text is kept. Citations, public bodies and clinical phrases
 are never part of an address.
 
-Two policy settings (a deployment YAML or a job override; the built-in profiles set `addresses: whole`):
+Two policy settings (in a deployment YAML, `--config` or `MLREDACT_CONFIG`; there is no per-job switch; the built-in
+profiles set `addresses: whole`):
 
 | setting | values | meaning |
 |---|---|---|
 | `policy.addresses` | `whole` (default), `parts` | `whole`: one unit, one fake. `parts`: each part follows its own type's action (the street line is replaced; with the client's `locality: keep` the suburb and postcode stay, the client's literal answer to Q4). `whole` is refused when `street_address` is `keep` |
-| `policy.address_state` | `keep` (default), `replace` | `keep`: the fake is in the original's state and the state word is written as before. `replace`: every address of one state moves to one other state |
+| `policy.address_state` | `keep` (default), `replace` | `keep`: the fake is in the original's state and the state word is written as before. `replace`: every address of one state moves to one other state. Applies to whole addresses only: under `parts` there are no units to move |
 
 ```yaml
 # deployment YAML (--config): the client profile with the literal Q4 answer

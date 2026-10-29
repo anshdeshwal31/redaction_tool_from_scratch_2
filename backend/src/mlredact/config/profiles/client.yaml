@@ -9,8 +9,9 @@
 # or property name, unit and level words, house number, street, suburb, state, postcode), as one unit with one
 # same-shape fake in the same state.  This departs from the client's literal answer to Q4 (street line replaced,
 # suburb and postcode kept).  `locality: keep` and `postcode: keep` now cover places mentioned on their own only ("she
-# moved to Penrith", "born in Dubbo NSW 2830", "postcode 2750"), which stay as written.  `addresses: parts` (a job
-# override) restores the client's literal answer; `address_state: replace` also moves each address to another state.
+# moved to Penrith", "born in Dubbo NSW 2830", "postcode 2750"), which stay as written.  `addresses: parts` (set in a
+# deployment YAML, --config) restores the client's literal answer; `address_state: replace` also moves each address
+# to another state.
 # The suburb list behind the address rules and the fakes is ABS data (CC BY 4.0): see
 # src/mlredact/resources/gazetteer/ATTRIBUTION.txt.
 # Signatures and photos are replaced with synthetic stand-ins rather than grey boxes; figures and

@@ -292,11 +292,12 @@ chooses whether the fake stays in the original's state). [ADR 0006](docs/adr/000
 - **Verification.** V2 searches for the unit's targets and accounts for each occurrence by an exempt position; V4 joins
   the re-read output again; V5 checks the fakes against every identifying word and number.
 - **Benchmark.** A unit is reported as a street entry and a `<id>.place` locality entry; the oracle modes (perfect
-  text, mentions, entities, regions) build the same units from the injected ADDRESS and LOCATION mentions, so their
-  fakes equal the end-to-end fakes.
-- **Closed risk.** The perfect-input build's LOCATION split (the suburb fake in the first slot, the state slot blank, a
-  suburb from any state) and the open question attached to it are gone: an injected LOCATION is joined to the injected
-  ADDRESS before it as one unit, or is a place-only unit by itself.
+  text, mentions, entities, regions) build the units from the injected ADDRESS and LOCATION mentions, so their fakes
+  equal the end-to-end fakes where the injected parts are the units tool 2 reads (otherwise the oracle follows the
+  injected extent).
+- **Closed risk.** The perfect-input build split an injected LOCATION into parts (the suburb fake in the first slot, the
+  state slot blank, a suburb from any state); now an injected LOCATION is joined to the injected ADDRESS before it as
+  one unit, or is a place-only unit by itself.
 
 ---
 

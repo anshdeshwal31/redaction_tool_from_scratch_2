@@ -51,8 +51,8 @@ place-of-birth, injury, accident, incident or declaration phrase stays kept (pos
 hospital's name it is an address. A street without a house number in running text is kept unless its suburb, state and
 postcode follow it directly.
 
-**One fake per address, chosen from its canonical key** under the scope key (see ARCHITECTURE.md §7): the house, unit
-and level numbers change digit for digit, the street name and type change, the suburb is a fake-pool locality of the
+**One fake per address, chosen from its canonical key** under the scope key (see ARCHITECTURE.md §7): the house and
+unit numbers change digit for digit, a level becomes another realistic level, the street name and type change, the suburb is a fake-pool locality of the
 same state and class with its own postcode, and nothing depends on the rest of the document. `address_state: keep`
 (default) writes the original state; `replace` moves all addresses of one state to one other state. An empty choice
 widens (class, then state) instead of raising.
@@ -67,7 +67,8 @@ address with that address's fake; V5 checks the fakes against every identifying 
 * A place that is not part of an address stays readable in the client profile, together with its postcode ('postcode
   2750' alone, 'born in Dubbo NSW 2830').
 * The bench reports each unit as a street entry and a `<id>.place` locality entry, so both ground-truth parts are
-  scored; the oracle modes build the same units from the injected mentions and their fakes equal the end-to-end fakes.
+  scored; the oracle modes build the units from the injected mentions, and their fakes equal the end-to-end fakes where
+  the injected parts are the units tool 2 reads (otherwise the oracle follows the injected extent).
 * Rules-only over the five real documents' ground truth (perfect text, no models): 30 of 32 street lines exact and
   31 of 32 wholly inside a unit, 39 of 39 localities exact, 40 units, no unit word on a kept place, a citation or any
   other annotated word, none of the 15 'Act <year>' lines anchored, the claim form's 7 street lines and 7 localities in
