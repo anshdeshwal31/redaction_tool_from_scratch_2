@@ -4,28 +4,37 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
+from test_address_join import Doc
 
 from mlredact.config.loader import load_config
-from mlredact.core.types import ActionKind, EntityType
+from mlredact.core.errors import EnvironmentErrorMl
+from mlredact.core.model import Mention, Token
+from mlredact.core.types import ActionKind, EntityType, ViewKind
 from mlredact.detect.engine import detect_document
 from mlredact.policy.engine import decide
+from mlredact.resolve import persons as persons_module
 from mlredact.resolve.persons import (
     Gender,
     NameToken,
     ParsedMention,
     PersonResolution,
     Role,
+    name_gender,
     parse_name,
+    resolve_persons,
     with_clusters,
 )
 from mlredact.surrogate.assign import MentionSurrogate, SurrogateAssigner, forbidden_keys
 from mlredact.surrogate.drbg import Chooser
 from mlredact.surrogate.generators import SurrogateFactory
 from mlredact.surrogate.labels import assign_labels
+from mlredact.surrogate.pools import load_pools
 from mlredact.text.normalize import match_key
-from support import pages_from_lines
+from mlredact.text.views import build_views
+from support import column, pages_from_lines
 
 CFG = load_config("broad")
 
@@ -233,3 +242,165 @@ class TestInjectedClusters:
         assert none.clusters == {} and all(p.cluster is None for p in none.mentions.values())
         # Each mention then votes alone: Mr Smith's John and Mrs Mary Smith's Mary keep their own cue.
         assert none.given_gender[match_key("Mary")] is Gender.FEMALE
+
+
+# ------------------------------------------------------------------------------------- gender of fake given names
+Span = tuple[int, int, int]  # (line, first word, last word) of a person mention
+
+
+def _resolve(lines: Sequence[str], spans: Sequence[Span]) -> tuple[list[Mention], PersonResolution, dict[str, Token]]:
+    doc = Doc(column(*lines))
+    mentions = [doc.span(EntityType.PERSON, *s) for s in spans]
+    tokens = {t.token_id: t for p in doc.pages for t in p.tokens()}
+    return mentions, resolve_persons(mentions, build_views(doc.pages)[ViewKind.LINE]), tokens
+
+
+def _fakes(lines: Sequence[str], spans: Sequence[Span], key: bytes = b"m" * 32) -> dict[str, str]:
+    """Original mention text -> its fake, under one matter's scope key."""
+    mentions, persons, tokens = _resolve(lines, spans)
+    decisions = decide(mentions, CFG.policy)
+    factory = SurrogateFactory(Chooser(key), forbidden_keys(mentions, persons))
+    sur = SurrogateAssigner(factory, persons, tokens).assign(decisions)
+    return {m.value: " ".join(t for t in sur[m.mention_id].tokens if t) for m in mentions}
+
+
+def _gender_of(fake: str) -> str:
+    first = match_key(fake.split()[0])
+    pools = load_pools()
+    male, female = ({match_key(n) for n in p} for p in (pools.given_male, pools.given_female))
+    return "m" if first in male else "f" if first in female else "?"
+
+
+# The fictional benchmark claim (synthetic@0.1.0): the husband is named after a kinship word, and the pronouns
+# around him are about his wife.
+HUSBAND = ("Ms Jane Smithers takes Sertraline daily.", "Her husband Tom Smithers attended with her.", "She is well.")
+HUSBAND_SPANS = ((0, 1, 2), (1, 2, 3))
+
+
+class TestGenderOfGivenNames:
+    @pytest.mark.parametrize(
+        ("lines", "spans", "expected"),
+        [
+            (HUSBAND, HUSBAND_SPANS, ["f", "m"]),
+            (["Tom Smithers, her husband, attended with her."], [(0, 0, 1)], ["m"]),
+            (["Tom Smithers (husband) attended. She said so."], [(0, 0, 1)], ["m"]),
+            (["Her husband Dr Tom Smithers attended with her."], [(0, 3, 4)], ["m"]),
+            (["His wife Pat Smithers and his son Lou Smithers came."], [(0, 2, 3), (0, 7, 8)], ["f", "m"]),
+            (["Mr Tom Smithers said she was well."], [(0, 1, 2)], ["m"]),
+            (["Mrs Lou Smithers said he was well."], [(0, 1, 2)], ["f"]),
+            # The kinship word must end the phrase: "her husband Tom" names Tom, not Jane.
+            (["Jane Smithers, her husband Tom Bloggs and Pat Doe (wife) came."], [(0, 0, 1), (0, 4, 5), (0, 7, 8)],
+             ["f", "m", "f"]),
+            # A kinship word in a list ("son and daughter, ...") names no one in particular.
+            (["His son and daughter, Zorbo Quist and Mia Quist, came."], [(0, 4, 5), (0, 7, 8)], ["u", "f"]),
+            # Nor in a list without a comma, or a list of kinship words.
+            (["Son and daughter Zorbo Quist and Xeno Quist."], [(0, 3, 4), (0, 6, 7)], ["u", "u"]),
+            (["His son, daughter, Zorbo Quist and Xeno Quist came."], [(0, 3, 4), (0, 6, 7)], ["u", "u"]),
+            # A kinship word after a name in a list of people is an item of the list, not the name's aside.
+            (["Attendees: Zorbo Quist, her husband, and Dr Lou Brown."], [(0, 1, 2)], ["u"]),
+            (["Present: Zorbo Quist, her son, her daughter."], [(0, 1, 2)], ["u"]),
+            (["The claimant was accompanied by Zorbo Quist, his wife, and two children."], [(0, 5, 6)], ["u"]),
+            (["Pat Doe, Zorbo Quist, her husband, came."], [(0, 2, 3)], ["u"]),
+            # In a plain sentence the aside still counts.
+            (["She lives with Zorbo Quist, her son, in Penrith."], [(0, 3, 4)], ["m"]),
+            # A kinship word never gives a name the list genders the other sex.
+            (["Attendees: Jane Smithers, her husband, and Dr Lou Brown."], [(0, 1, 2)], ["f"]),
+            (["Present: Robyn Quist, her son, her daughter."], [(0, 1, 2)], ["f"]),
+            (["Her daughter Peter Quist came."], [(0, 2, 3)], ["m"]),
+            # A kinship word ending the sentence before names no one in the next one.
+            (["Pat came with her son. Zorbo Quist drove."], [(0, 5, 6)], ["u"]),
+            # Pronouns are not read: an unlisted name with no title or kinship word stays unknown.
+            (["Zorbo Quist attended. He said he was well."], [(0, 0, 1)], ["u"]),
+        ],
+    )  # fmt: skip
+    def test_the_document_states_the_gender(
+        self, lines: Sequence[str], spans: Sequence[Span], expected: list[str]
+    ) -> None:
+        mentions, persons, _tokens = _resolve(lines, spans)
+        assert [persons.mentions[m.mention_id].gender.value for m in mentions] == expected
+
+    def test_the_name_list_gives_the_gender_of_common_names(self) -> None:
+        assert name_gender("Peter") is Gender.MALE  # surrogate pool
+        assert name_gender("Mary") is Gender.FEMALE  # NSW list only
+        assert name_gender("Thomas") is Gender.MALE
+        assert name_gender("Kellie-Ann") is Gender.FEMALE  # both parts female
+        assert name_gender("KERRY") is Gender.FEMALE  # as before: in the female pool only
+        assert name_gender("Zoë") is name_gender("Chloé") is name_gender("Renée") is Gender.FEMALE  # accents
+        for name in ("Alex", "Sam", "Jordan", "Shannon", "Lee", "Zorbo", "Kelli-Ann", "Jean-Zorbo"):
+            assert name_gender(name) is Gender.UNKNOWN, name
+
+    def test_a_missing_name_list_is_the_tools_resource_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(persons_module, "resource_root", lambda: tmp_path)  # no names/ folder
+        persons_module._listed_genders.cache_clear()
+        try:
+            with pytest.raises(EnvironmentErrorMl):
+                name_gender("Zorbo")
+        finally:
+            monkeypatch.undo()
+            persons_module._listed_genders.cache_clear()
+        assert name_gender("Mary") is Gender.FEMALE
+
+    def test_a_husband_gets_a_male_fake_and_his_wife_a_female_one(self) -> None:
+        fakes = _fakes(HUSBAND, HUSBAND_SPANS)
+        assert _gender_of(fakes["Jane Smithers"]) == "f"
+        assert _gender_of(fakes["Tom Smithers"]) == "m"
+        assert fakes["Jane Smithers"].split()[1] == fakes["Tom Smithers"].split()[1]  # the family keeps one surname
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "Mr Tom Smithers attended with her.",
+            "Her husband Tom Smithers attended.",
+            "Tom Smithers, her husband, came.",
+        ],
+    )
+    def test_a_man_by_title_or_kinship_word_gets_a_male_fake(self, line: str) -> None:
+        first = line.split().index("Tom")
+        for i in range(8):
+            fake = _fakes([line], [(0, first, first + 1)], key=bytes([i]) * 32)[
+                "Tom Smithers" + ("," if "," in line else "")
+            ]
+            assert _gender_of(fake) == "m", fake
+
+    def test_a_woman_gets_a_female_fake(self) -> None:
+        for i in range(8):
+            fake = _fakes(["Her daughter Lou Quist came; he drove."], [(0, 2, 3)], key=bytes([i]) * 32)["Lou Quist"]
+            assert _gender_of(fake) == "f", fake
+
+    def test_an_unknown_name_is_faked_as_before(self) -> None:
+        """No title, kinship word or listed name: the fake comes from both gendered pools, keyed as before."""
+        key = b"u" * 32
+        fake = _fakes(["Zorbo Quist attended. She was well."], [(0, 0, 1)], key=key)["Zorbo Quist"]
+        mentions, persons, _tokens = _resolve(["Zorbo Quist attended. She was well."], [(0, 0, 1)])
+        assert persons.given_gender == {"zorbo": Gender.UNKNOWN}
+        expected = SurrogateFactory(Chooser(key), forbidden_keys(mentions, persons))._unique_pool(
+            "given:u", "zorbo", load_pools().given_male + load_pools().given_female, names=True
+        )
+        assert fake.split()[0] == expected
+
+    def test_unknown_people_keep_their_fake_beside_other_unknown_people(self) -> None:
+        """A person of unknown gender keeps one fake whether alone or among five others of unknown gender in a
+        document as often as before the gender change: unknown gender draws from both gendered pools, as before."""
+        given = ("Tom", "Bob", "Jim", "Mike", "Lizzie", "Bill")
+        people = [
+            f"{g} {s}" for g, s in zip(given, ("Quist", "Varga", "Okafor", "Brandt", "Moreau", "Haddad"), strict=True)
+        ]
+        differ = 0
+        for n in range(20):
+            key = bytes([n, 7]) * 16
+            together = _fakes([f"{p} attended." for p in people], [(i, 0, 1) for i in range(len(people))], key=key)
+            for p in people:
+                alone = _fakes([f"{p} attended."], [(0, 0, 1)], key=key)[p]
+                differ += together[p].split()[0] != alone.split()[0]
+        assert differ <= 4, differ  # of 120 person-documents: 4, exactly as on the base code (ac9dfc9)
+
+    def test_fakes_are_deterministic_and_one_per_person_across_a_matter(self) -> None:
+        """Two documents of one matter (one scope key) that name the husband differently give him one fake."""
+        first = _fakes(HUSBAND, HUSBAND_SPANS)
+        assert _fakes(HUSBAND, HUSBAND_SPANS) == first
+        other = _fakes(["Re: Mr Tom Smithers and Ms Jane Smithers"], [(0, 2, 3), (0, 6, 7)])
+        assert other["Tom Smithers"] == first["Tom Smithers"]
+        assert other["Jane Smithers"] == first["Jane Smithers"]
+        assert _fakes(HUSBAND, HUSBAND_SPANS, key=b"x" * 32) != first  # another matter, other fakes
