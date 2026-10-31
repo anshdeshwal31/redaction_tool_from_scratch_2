@@ -65,6 +65,29 @@ policy:
 The address rules (grammar, join, fakes, verification targets) read one shared list of Australian suburbs, shipped in
 `src/mlredact/resources/gazetteer/` with its provenance and licence (see Third-party data).
 
+## Known limits
+
+- **Sideways and upside-down pages are held for review, not processed.** The tool reads and redacts a page as it is
+  displayed, line by line from left to right, so a page turned on its side or upside down comes out wrecked (broken
+  text, misplaced fakes, black bars, fakes typeset upright over upside-down lines; on an upside-down test letter a
+  locality was left unreplaced and an ID number only partly removed), and it used to pass the tool's own checks and be
+  released. When most of a page's text (at least half of its characters, and at least 30) runs sideways or upside
+  down, the document is now **not released**: it is quarantined (held for review) with one of four reasons:
+  - `E_PAGE_ROTATED_SIDEWAYS`: the page's rotation setting (`/Rotate` 90 or 270) turns it on its side;
+  - `E_PAGE_CONTENT_SIDEWAYS`: the page is upright, but its text was drawn or scanned on its side;
+  - `E_PAGE_ROTATED_UPSIDE_DOWN`: the page's rotation setting (`/Rotate` 180) turns it upside down;
+  - `E_PAGE_CONTENT_UPSIDE_DOWN`: the page is not set to turn, but its text was drawn or scanned upside down.
+
+  A warning in the log names the page (`job.page_sideways` or `job.page_upside_down`, with the page index counted
+  from 0 and the reason). To redact the document, turn the page upright in a PDF editor and submit it again, or
+  redact it by hand. A page whose rotation setting turns turned content upright (a landscape scan stored on its side, a
+  scan stored upside down) displays upright and is processed as usual, and so is a page with only a little turned text
+  (a margin note, a turned table header, a stamp). Sideways text is seen from the lines the tool read, OCR's line boxes
+  and the PDF's own text layer: a line runs along the long side of its box. Upside-down text is seen by OCR's line
+  classifier, which turns each upside-down line before reading it; OCR reads every page, born-digital ones included.
+  A page mixing the two, with neither making up half of its text, is not held. Tesseract's page-orientation detection
+  is not used (its orientation data is not installed with the tool).
+
 ## Quick start (development)
 
 ```bash
@@ -199,7 +222,7 @@ as `e2e` and `oracle_text` write them; the other oracle modes report the injecte
 
 | file | content |
 |---|---|
-| `output.pdf` | the redacted PDF, **also when the tool does not release it**: held back by its verification, or built before a later step failed (the notes in run_info.json say which) |
+| `output.pdf` | the redacted PDF, **also when the tool does not release it**: held back by its verification, held for review because a page displays sideways or upside down (see Known limits), or built before a later step failed (the notes in run_info.json say which) |
 | `run_info.json` | version, configuration, model ids, seed, times, notes, and `release`: the tool's own verdict (`released`, `checks_failed` reason codes) |
 | `text.json` | every token: text, box, confidence, line, reading order |
 | `mentions.json` | what the tool decided to replace or remove: text mentions (with tokens and token boxes) and PII regions (signature, face, photo, handwriting, barcode, logo, stamp, illegible).  Values the policy keeps (dates, places under `client`) are left out (from `oracle_mentions` on: every injected mention) |
@@ -303,7 +326,7 @@ src/mlredact/
   detect/      rule detectors, NER (Privacy Filter, GLiNER), allowlist, fusion, propagation
   resolve/     name parsing, person clustering, roles/gender
   surrogate/   keyed HMAC-DRBG, pools, format-preserving generators, assignment, labels, date shift
-  layout/      barcodes (zxing-cpp), faces (YuNet), ink accounting and region classification
+  layout/      barcodes (zxing-cpp), faces (YuNet), ink accounting and region classification, sideways and upside-down pages (orientation.py)
   imaging/     ink masks against a local background
   policy/      profile -> actions; addresses.py (the join: whole-address units, places on their own, verification targets)
   render/      render planning + raster operations

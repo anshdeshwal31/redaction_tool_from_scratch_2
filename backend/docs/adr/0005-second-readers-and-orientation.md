@@ -25,6 +25,16 @@ across table cells and lines.
   lines more than 25° from horizontal are rendered as blackout, because surrogates and labels are
   only typeset horizontally.  Revisit if the evaluator attributes misses to orientation on real
   scans.
+  *Amended 2026-10-30:* the benchmark found whole sideways pages (a `/Rotate` of 90 or 270, or content
+  scanned on its side) redacted badly yet released.  Such pages are still not turned upright: a document
+  with one is held for review (`E_PAGE_ROTATED_SIDEWAYS`, `E_PAGE_CONTENT_SIDEWAYS`, see
+  `layout/orientation.py`).
+  *Amended 2026-10-31:* the same holds for whole upside-down pages (a `/Rotate` of 180, or content
+  scanned upside down).  The line classifier above still reads each line, but the planner draws fakes
+  upright over upside-down lines, and the benchmark found such a letter released with a locality left
+  unreplaced and an ID number only partly removed.  The classifier now marks each line it turns
+  (`Line.upside_down`), and a page whose text is mostly upside down holds its document for review
+  (`E_PAGE_ROTATED_UPSIDE_DOWN`, `E_PAGE_CONTENT_UPSIDE_DOWN`).
 * **Engine D** (`ingest/embedded.py`, `ocr/fusion.py`): words of the PDF text layer, kept only when
   there is ink under them (paper level measured around the word) and the text is plausibly encoded
   (no private-use or replacement characters).

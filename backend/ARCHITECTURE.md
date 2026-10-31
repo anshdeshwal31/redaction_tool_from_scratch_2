@@ -182,6 +182,14 @@ flowchart TD
 - **No page-level deskew or orientation step.** Engine A handles rotated and skewed lines itself.
   Mentions on lines more than 25° from horizontal are blacked out rather than typeset
   ([ADR 0005](docs/adr/0005-second-readers-and-orientation.md)).
+- **Sideways and upside-down pages are held for review, not processed.** A page is never turned upright. When most of a
+  page's text (at least half of its characters, and at least 30) runs more than 45° from horizontal as displayed, or
+  lies on lines engine A read upside down, the document is quarantined after its output is built (section 8). The
+  sideways direction comes from the lines read: a line runs along the long side of its box, as engine A reads it (a
+  detected box at least 1.5 times taller than wide is read as vertical text), for OCR's boxes and the text layer's
+  alike. Upside down comes from engine A's line classifier, which turns a line half a turn before reading it; the line
+  keeps that mark (`Line.upside_down`). The page's `/Rotate` (recorded by intake) only names the cause
+  ([layout/orientation.py](src/mlredact/layout/orientation.py)).
 - **A token explains ink only if it is plausible** (confidence and size). A garbage read of a
   signature therefore cannot hide the signature
   ([ADR 0004](docs/adr/0004-regions-and-ink-accounting.md)).
@@ -343,8 +351,8 @@ stateDiagram-v2
   Planning --> Rendering
   Rendering --> Verifying
   Verifying --> Rendering: V4 residuals and a re-plan left (blackout added)
-  Verifying --> Released: V1 to V6 all pass
-  Verifying --> Quarantined: any check fails
+  Verifying --> Released: V1 to V6 all pass, no page sideways or upside down
+  Verifying --> Quarantined: any check fails, or a page displays sideways or upside down
   Released --> [*]
   Quarantined --> [*]
   note right of Analysing
@@ -365,6 +373,16 @@ stateDiagram-v2
 
 **Limit:** verification shows that planned removals happened. It cannot find PII that every
 detector missed. Recall is measured by the external evaluator, not here.
+
+**Sideways and upside-down pages are held for review.** The pipeline reads and draws every page as displayed, left to
+right, so a page turned on its side or upside down comes out wrecked (broken text, misplaced fakes, black bars, fakes
+typeset upright over upside-down lines), yet passes V1 to V6. After the checks, the job is therefore quarantined,
+whatever they found, when a page displays sideways: reason `E_PAGE_ROTATED_SIDEWAYS` when the page's `/Rotate` (90 or
+270) turns it on its side, `E_PAGE_CONTENT_SIDEWAYS` when the page is upright but its text was drawn or scanned on its
+side; or upside down: `E_PAGE_ROTATED_UPSIDE_DOWN` when its `/Rotate` (180) turns it, `E_PAGE_CONTENT_UPSIDE_DOWN`
+when its text was drawn or scanned upside down. A warning `job.page_sideways` or `job.page_upside_down` names the page.
+The output is still built: `--keep-held-back` returns it, and `mlredact bench` hands it over as `output.pdf`. A page
+whose `/Rotate` turns turned content upright, and a page with only a little turned text, are processed as before.
 
 ## 9. Data model and identity
 
@@ -607,6 +625,8 @@ flowchart LR
   utility.
 - **Quarantine rate.** Failing closed makes the quarantine rate an operational risk, and there is
   no human-review path.
+- **Sideways and upside-down pages.** A document with a page turned on its side or upside down is held for review,
+  not processed: it needs the page turned upright, or redaction by hand.
 - **Isolation.** There is no OS sandbox or encrypted workspace yet. Isolation rests on process
   boundaries and container settings.
 
