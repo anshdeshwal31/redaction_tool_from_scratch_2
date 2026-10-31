@@ -27,6 +27,11 @@ class ReasonCode(StrEnum):
     PAGE_TOO_LARGE = "E_PAGE_TOO_LARGE"
     OCR_FAILED = "E_OCR_FAILED"
     PAGE_ILLEGIBLE = "E_PAGE_ILLEGIBLE"
+    # Held for review: a page displays sideways or upside down, which the pipeline does not redact (layout.orientation)
+    PAGE_ROTATED_SIDEWAYS = "E_PAGE_ROTATED_SIDEWAYS"  # its /Rotate setting (90 or 270) turns it on its side
+    PAGE_CONTENT_SIDEWAYS = "E_PAGE_CONTENT_SIDEWAYS"  # its text was drawn or scanned on its side
+    PAGE_ROTATED_UPSIDE_DOWN = "E_PAGE_ROTATED_UPSIDE_DOWN"  # its /Rotate setting (180) turns it upside down
+    PAGE_CONTENT_UPSIDE_DOWN = "E_PAGE_CONTENT_UPSIDE_DOWN"  # its text was drawn or scanned upside down
     WORKER_TIMEOUT = "E_WORKER_TIMEOUT"
     WORKER_CRASHED = "E_WORKER_CRASHED"
     # Environment / configuration

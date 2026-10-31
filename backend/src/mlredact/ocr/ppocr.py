@@ -190,6 +190,7 @@ class PPOCREngine:
                     confidence=round(float(np.mean(letters)), 5) if letters else 0.0,
                     engine=self.engine_id,
                     tokens=tuple(tokens),
+                    upside_down=rotated180,
                 )
             )
         return tuple(lines)

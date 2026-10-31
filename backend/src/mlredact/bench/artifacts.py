@@ -70,6 +70,17 @@ PII_REGION_KINDS = frozenset(
 LABELS = tuple(sorted({t.value for t in EntityType} | {k.value for k in PII_REGION_KINDS}))
 # Reason codes of the verification checks (V1-V6); any other code is a step that failed.
 _VERIFICATION_CODES = frozenset(c.value for c in ReasonCode if c.name.startswith("VERIFY_"))
+# Reason codes of a page that displays sideways or upside down: the pipeline finished, and held the document for
+# review.
+_SIDEWAYS_CODES = frozenset(
+    c.value
+    for c in (
+        ReasonCode.PAGE_ROTATED_SIDEWAYS,
+        ReasonCode.PAGE_CONTENT_SIDEWAYS,
+        ReasonCode.PAGE_ROTATED_UPSIDE_DOWN,
+        ReasonCode.PAGE_CONTENT_UPSIDE_DOWN,
+    )
+)
 
 
 def display_poly(box: BBox, geometry: PageGeometry) -> list[list[float]]:
@@ -410,9 +421,16 @@ def run_info(
 
 
 def unreleased_note(reasons: Sequence[str]) -> str:
-    """The ``run_info`` note for an output the tool did not release: held back by its own verification, or
-    built before a later step failed (the checks then never finished, so nothing was held back)."""
-    if reasons and all(r in _VERIFICATION_CODES for r in reasons):
+    """The ``run_info`` note for an output the tool did not release: held for review because a page displays
+    sideways or upside down (its verification may also have failed), held back by its own verification, or built
+    before a later step failed (the checks then never finished, so nothing was held back)."""
+    held = all(r in _VERIFICATION_CODES or r in _SIDEWAYS_CODES for r in reasons)
+    if reasons and held and any(r in _SIDEWAYS_CODES for r in reasons):
+        return (
+            f"held for review ({', '.join(sorted(reasons))}): a page displays sideways or upside down, and the tool "
+            "does not redact such pages: output.pdf is the copy it would not release"
+        )
+    if reasons and held:
         return "held back by the tool's own verification: output.pdf is the copy it would not release"
     codes = ", ".join(sorted(reasons)) or "no reason recorded"
     return f"a step failed after the output was built ({codes}): output.pdf is that unreleased copy"

@@ -1,7 +1,8 @@
 """Job orchestration (plan §5): intake -> analyse -> detect -> resolve -> policy -> surrogates ->
 render -> build -> verify.
 
-Release is fail-closed: the PDF is returned only when every verification check passes.  On request
+Release is fail-closed: the PDF is returned only when every verification check passes and no page displays sideways
+or upside down (``mlredact.layout.orientation``: such a document is held for review).  On request
 a job also returns its trace (what every stage saw and decided) for the benchmark adapter, and takes the
 benchmark's injected stage inputs (``mlredact.pipeline.injection``).
 """
@@ -29,6 +30,7 @@ from mlredact.detect.engine import DetectionResult, Seed, default_detectors, det
 from mlredact.detect.ner import build_ner_detectors
 from mlredact.ingest.images import sniff_format
 from mlredact.ingest.inspect import InspectionReport
+from mlredact.layout.orientation import sideways_pages
 from mlredact.manifest.build import build_manifest
 from mlredact.manifest.sensitive import build_sensitive, seal
 from mlredact.ocr.tesseract import binary_version
@@ -403,7 +405,14 @@ class Redactor:
 
         failed = [c for c in checks if not c.passed]
         reasons.extend(_reason_for(c) for c in failed)
-        released = pdf is not None and bool(checks) and not failed
+        # A page that displays sideways or upside down is not redacted reliably: hold the document for review,
+        # whatever the checks found.  Its output is still built (the held-back copy, the benchmark's output.pdf).
+        sideways = sideways_pages(pages, inspection.rotations if inspection is not None else ())
+        for held in sideways:
+            event = "job.page_upside_down" if held.upside_down else "job.page_sideways"
+            _log.warning(event, job=job_id, page=held.page, reason=held.reason)
+        reasons.extend(dict.fromkeys(held.reason.value for held in sideways))
+        released = pdf is not None and bool(checks) and not failed and not sideways
         status = JobStatus.RELEASED if released else JobStatus.QUARANTINED
         manifest = build_manifest(
             status=status,

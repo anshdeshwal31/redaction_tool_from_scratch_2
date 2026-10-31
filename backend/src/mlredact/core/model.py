@@ -75,6 +75,9 @@ class Line:
     confidence: float
     engine: str
     tokens: tuple[Token, ...]
+    # OCR read the line upside down: its line classifier turned the line half a turn before reading it
+    # (layout.orientation holds a page whose text is mostly upside down).
+    upside_down: bool = False
 
     @property
     def text(self) -> str:

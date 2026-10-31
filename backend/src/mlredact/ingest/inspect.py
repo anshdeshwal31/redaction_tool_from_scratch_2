@@ -25,6 +25,9 @@ class InspectionReport:
     annotation_count: int
     has_optional_content: bool
     user_unit_pages: int
+    # Each page's /Rotate as the renderer applies it: 0, 90, 180 or 270 (clockwise).  Not in the manifest: it only
+    # tells why a sideways page is held (layout.orientation).
+    rotations: tuple[int, ...] = ()
 
     def as_manifest(self) -> dict[str, object]:
         return {
@@ -73,7 +76,9 @@ def inspect_pdf(data: bytes, limits: LimitsConfig) -> InspectionReport:
         has_js = bool((names is not None and "/JavaScript" in names) or "/OpenAction" in root or "/AA" in root)
         annotations = 0
         user_unit = 0
+        rotations: list[int] = []
         for page in pdf.pages:
+            rotations.append(_rotation(page.obj.get("/Rotate")))
             annots = page.obj.get("/Annots")
             if annots is not None:
                 try:
@@ -95,4 +100,15 @@ def inspect_pdf(data: bytes, limits: LimitsConfig) -> InspectionReport:
             annotation_count=annotations,
             has_optional_content="/OCProperties" in root,
             user_unit_pages=user_unit,
+            rotations=tuple(rotations),
         )
+
+
+def _rotation(value: object) -> int:
+    """A page's /Rotate (pikepdf's page list carries an inherited one down to the page) as PDFium applies it: whole
+    quarter turns counted toward zero, so 450 is 90, -90 is 270 and 45 is 0; a missing or malformed value is 0."""
+    try:
+        degrees = int(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return (int(degrees / 90) % 4) * 90

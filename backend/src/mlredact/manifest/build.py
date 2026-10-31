@@ -23,7 +23,7 @@ from mlredact.runtime.profile import RuntimeProfile
 from mlredact.surrogate.assign import MentionSurrogate
 from mlredact.verify.checks import CheckResult
 
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"  # 1.3.0 adds the reason codes of a page that displays sideways or upside down
 
 
 def _evidence(ev: Sequence[Evidence]) -> list[dict[str, Any]]:

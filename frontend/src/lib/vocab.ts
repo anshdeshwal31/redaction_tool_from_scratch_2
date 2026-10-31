@@ -251,6 +251,14 @@ const REASONS: Record<string, string> = {
   E_PAGE_TOO_LARGE: "A page exceeds the maximum raster size.",
   E_OCR_FAILED: "OCR failed on a page.",
   E_PAGE_ILLEGIBLE: "A page is mostly unreadable, and this configuration quarantines illegible pages.",
+  E_PAGE_ROTATED_SIDEWAYS:
+    "Held for review: a page is set to display turned on its side, so its text runs sideways, and this tool does not redact sideways pages. Turn the page upright in a PDF editor, save it and submit it again, or redact it by hand.",
+  E_PAGE_CONTENT_SIDEWAYS:
+    "Held for review: a page's text was drawn or scanned on its side, and this tool does not redact sideways pages. Turn the page upright in a PDF editor, save it and submit it again, or redact it by hand.",
+  E_PAGE_ROTATED_UPSIDE_DOWN:
+    "Held for review: a page is set to display upside down, and this tool does not redact upside-down pages. Turn the page upright in a PDF editor, save it and submit it again, or redact it by hand.",
+  E_PAGE_CONTENT_UPSIDE_DOWN:
+    "Held for review: a page's text was drawn or scanned upside down, and this tool does not redact upside-down pages. Turn the page upright in a PDF editor, save it and submit it again, or redact it by hand.",
   E_WORKER_TIMEOUT: "A page worker exceeded its time limit.",
   E_WORKER_CRASHED: "A page worker process crashed.",
   E_CONFIG_INVALID: "The configuration, or a supplied seed or key file, is invalid.",
