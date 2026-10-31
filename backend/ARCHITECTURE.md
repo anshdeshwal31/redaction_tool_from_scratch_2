@@ -40,7 +40,7 @@ flowchart LR
   subgraph host["Host with no network egress"]
     mlr["mlredact"]
     models[("Pinned models<br/>SHA-256 verified")]
-    res[("Pinned resources<br/>fonts, surrogate pools, allowlists,<br/>suburb list (ABS, CC BY 4.0)")]
+    res[("Pinned resources<br/>fonts, surrogate pools, allowlists,<br/>suburb list (ABS, CC BY 4.0),<br/>given-name gender list (NSW BDM, CC BY 4.0)")]
     tess["Tesseract 5 binary<br/>(OCR engine B, optional)"]
   end
   caller -- "PDF / TIFF / PNG / JPEG<br/>profile, scope id, seeds" --> mlr
@@ -317,7 +317,10 @@ flowchart LR
 ```
 
 - **No mapping table is stored.** The same value in the same scope always maps to the same
-  surrogate, so all documents of one matter stay consistent.
+  surrogate, so all documents of one matter stay consistent. A given name's fake also depends on the gender found
+  for it in that document (a title, the NSW given-name list, else a family word right next to the name; unknown
+  draws from both gendered pools). So when only some documents of a matter state a person's gender, that person can
+  get two first-name fakes; keeping one would need a per-matter record, which is not stored (README, Known limits).
 - **Names map per component** (surname, given name). "John Smith", "Mr Smith", "J. Smith" and
   "SMITH, John" therefore stay consistent, and family members share a surrogate surname.
 - **Exhausted attempts raise an error,** which the orchestrator turns into quarantine. Address parts never run out:
@@ -462,7 +465,9 @@ In place:
   user, dropped capabilities, no core dumps and a RAM-backed `/tmp`.
 - **Licences.** A CI licence gate blocks copyleft and non-commercial dependencies. The suburb list is ABS data under
   CC BY 4.0; its attribution is in [README.md](README.md) (Third-party data) and next to the list
-  (`src/mlredact/resources/gazetteer/ATTRIBUTION.txt`).
+  (`src/mlredact/resources/gazetteer/ATTRIBUTION.txt`). The given-name gender list is NSW Registry of Births, Deaths
+  and Marriages data under CC BY 4.0; its attribution is in the same README section and next to the list
+  (`src/mlredact/resources/names/ATTRIBUTION.txt`).
 
 Planned but not built ([PLAN.md](PLAN.md) §14, §17):
 

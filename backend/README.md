@@ -88,6 +88,23 @@ The address rules (grammar, join, fakes, verification targets) read one shared l
   A page mixing the two, with neither making up half of its text, is not held. Tesseract's page-orientation detection
   is not used (its orientation data is not installed with the tool).
 
+- **A fake first name keeps the gender the tool finds, which is not always the person's.** The fake comes from the
+  male or the female list when the tool can tell the gender, otherwise from both lists, as before. It reads, in this
+  order: a title next to the name (Mr, Mrs, Ms, Miss, ...); the NSW popular-baby-names list (names that reached a
+  yearly top 100 in NSW, 1952-2025; a name used for both sexes counts as unknown); a family word written right next
+  to the name ("her husband Tom Smithers", "Tom Smithers, her husband,", "Tom Smithers (husband)"), only for a name
+  the list does not gender. "He" and "she" are not read. Limits:
+  - nicknames (Tom, Lizzie, Bob), rarer names and most non-English names are not on the list, so without a title or
+    family word they get a fake of either sex;
+  - a family word is not read further from the name ("her husband of 20 years, Tom"); in lists of people and of
+    family words it is ignored ("Attendees: Jane Smithers, her husband, and ...", "son and daughter Tom and Jane"),
+    but an unusual layout can still give an unlisted name the wrong sex;
+  - one person can get two first-name fakes in one matter when only some of the documents give a title or a family
+    word for them ("her husband Tom Smithers" in one, plain "Tom Smithers" in another). Cases like this existed before
+    (with "he"/"she"), and some are new: an unlisted name that a family word genders in one document only. Keeping
+    one fake per person across a matter's documents would need a record kept per matter, which the tool does not
+    have.
+
 ## Quick start (development)
 
 ```bash
@@ -319,7 +336,8 @@ src/mlredact/
   config/      pydantic schema, layered loader, built-in profiles (client, broad, claimant_focused, maximal)
   runtime/     determinism settings, runtime-profile detection
   registry/    pinned model registry (SHA-256), fetch/resolve
-  resources/   pinned fonts (Liberation, OFL), surrogate pools, allowlists, the suburb list (ABS, CC BY 4.0) + SHA256SUMS
+  resources/   pinned fonts (Liberation, OFL), surrogate pools, allowlists, the suburb list (ABS, CC BY 4.0), the given-name
+               gender list (NSW BDM, CC BY 4.0) + SHA256SUMS
   ingest/      sandboxed inspection (pikepdf), canonical rasterisation (PDFium), embedded text, image inputs
   ocr/         PP-OCRv6 engine A, Tesseract engine B, fusion with the PDF text layer (engine D)
   text/        text views with exact offset->token maps, normalisation; address/ (the address grammar), gazetteer.py (the suburb list)
@@ -368,5 +386,18 @@ from Australian Bureau of Statistics (ABS) data and is licensed under CC BY 4.0,
   [Census of Population and Housing: Mesh Block Counts, 2021](https://www.abs.gov.au/census/guide-census-data/mesh-block-counts/2021).
 
 The same text, with the file hashes and the build, is in `src/mlredact/resources/gazetteer/ATTRIBUTION.txt` and
-`PROVENANCE.md`; keep both with the list wherever it is copied. The fonts (Liberation, OFL) and the models
+`PROVENANCE.md`; keep both with the list wherever it is copied.
+
+The given-name gender list (`src/mlredact/resources/names/given_gender.csv`) is built from NSW Registry of Births,
+Deaths and Marriages data and is licensed under CC BY 4.0, which requires this attribution:
+
+- Source: NSW Registry of Births, Deaths and Marriages, "BDM Data - Popular Baby Names 1952 to 2025" (file
+  popular_baby_names_1952_to_2025.csv), [Data.NSW](https://data.nsw.gov.au/data/dataset/popular-baby-names-from-1952),
+  accessed 31 October 2026.
+- Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- Modified: registrations summed over all years per name and gender, names reduced to lower-case letters, and a
+  gender column derived (m or f when at least 90% of a name's registrations are of that gender, otherwise u).
+
+It is only read to tell a given name's usual gender; it is never a source of fakes. Its `ATTRIBUTION.txt` and
+`PROVENANCE.md` (hashes, build with `tools/build_given_gender.py`) sit next to it; keep them with it. The fonts (Liberation, OFL) and the models
 ([MODELS.md](MODELS.md)) carry their own licences.
